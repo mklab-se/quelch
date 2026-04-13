@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-04-14
+
+### Added
+- **Orphan purge** — `sync --purge` deletes documents from Azure that no longer exist in the source; automatic in watch mode
+
+### Changed
+- Increased search truncation limits for better result display
+- Bumped MSRV to 1.94.1
+- Updated upload-artifact action to v5 in release workflow
+
 ## [0.2.0] - 2026-04-14
 
 ### Added
