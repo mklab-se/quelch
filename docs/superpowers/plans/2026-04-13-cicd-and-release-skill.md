@@ -369,7 +369,7 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: quelch-${{ matrix.target }}
           path: quelch-${{ github.ref_name }}-${{ matrix.target }}.*
