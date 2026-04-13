@@ -10,9 +10,25 @@ use tempfile::{NamedTempFile, TempDir};
 use wiremock::matchers::{method, path, path_regex, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+use quelch::azure::schema::EmbeddingConfig;
 use quelch::config::{Config, load_config};
 use quelch::sync::state::SyncState;
 use quelch::sync::{IndexMode, run_sync, setup_indexes};
+
+fn test_embedding() -> EmbeddingConfig {
+    EmbeddingConfig {
+        dimensions: 3072,
+        vectorizer_json: serde_json::json!({
+            "name": "test-vectorizer",
+            "kind": "azureOpenAI",
+            "azureOpenAIParameters": {
+                "resourceUri": "https://test.openai.azure.com",
+                "deploymentId": "text-embedding-3-large",
+                "modelName": "text-embedding-3-large"
+            }
+        }),
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Config helpers
@@ -306,9 +322,15 @@ async fn full_sync_jira_dc_to_azure() {
     let config = load_config(config_file.path()).expect("load config");
     let state_path = state_dir.path().join("state.json");
 
-    run_sync(&config, &state_path, IndexMode::AutoCreate)
-        .await
-        .expect("run_sync failed");
+    run_sync(
+        &config,
+        &state_path,
+        &test_embedding(),
+        IndexMode::AutoCreate,
+        None,
+    )
+    .await
+    .expect("run_sync failed");
 
     // Verify state was persisted with cursor and doc count
     let state = SyncState::load(&state_path).expect("load state");
@@ -369,9 +391,15 @@ async fn full_sync_jira_cloud_to_azure() {
     let config = load_config(config_file.path()).expect("load config");
     let state_path = state_dir.path().join("state.json");
 
-    run_sync(&config, &state_path, IndexMode::AutoCreate)
-        .await
-        .expect("run_sync failed");
+    run_sync(
+        &config,
+        &state_path,
+        &test_embedding(),
+        IndexMode::AutoCreate,
+        None,
+    )
+    .await
+    .expect("run_sync failed");
 
     let state = SyncState::load(&state_path).expect("load state");
     let source_state = state.get_source("test-jira-cloud");
@@ -418,9 +446,15 @@ async fn incremental_sync_uses_cursor() {
     pre_state.update_source("test-jira", prior_cursor, 5);
     pre_state.save(&state_path).expect("save pre-state");
 
-    run_sync(&config, &state_path, IndexMode::AutoCreate)
-        .await
-        .expect("run_sync failed");
+    run_sync(
+        &config,
+        &state_path,
+        &test_embedding(),
+        IndexMode::AutoCreate,
+        None,
+    )
+    .await
+    .expect("run_sync failed");
 
     // Verify: no docs were pushed, count unchanged
     let state = SyncState::load(&state_path).expect("load state");
@@ -466,7 +500,7 @@ async fn setup_indexes_creates_missing() {
     let (config_file, _state_dir) = write_dc_config("http://jira.example.com", &azure_server.uri());
     let config = load_config(config_file.path()).expect("load config");
 
-    let created = setup_indexes(&config, IndexMode::AutoCreate)
+    let created = setup_indexes(&config, &test_embedding(), IndexMode::AutoCreate)
         .await
         .expect("setup_indexes failed");
 
@@ -504,7 +538,7 @@ async fn setup_indexes_skips_existing() {
     let (config_file, _state_dir) = write_dc_config("http://jira.example.com", &azure_server.uri());
     let config = load_config(config_file.path()).expect("load config");
 
-    let created = setup_indexes(&config, IndexMode::AutoCreate)
+    let created = setup_indexes(&config, &test_embedding(), IndexMode::AutoCreate)
         .await
         .expect("setup_indexes failed");
 
@@ -581,9 +615,15 @@ async fn sync_with_confluence_chunking() {
     let config = load_config(config_file.path()).expect("load config");
     let state_path = state_dir.path().join("state.json");
 
-    run_sync(&config, &state_path, IndexMode::AutoCreate)
-        .await
-        .expect("run_sync failed");
+    run_sync(
+        &config,
+        &state_path,
+        &test_embedding(),
+        IndexMode::AutoCreate,
+        None,
+    )
+    .await
+    .expect("run_sync failed");
 
     // Verify state: docs pushed (should be multiple chunks from heading-based split)
     let state = SyncState::load(&state_path).expect("load state");

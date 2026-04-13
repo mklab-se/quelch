@@ -3,10 +3,10 @@ pub mod state;
 use anyhow::{Context, Result};
 use std::io::Write;
 use std::path::Path;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use crate::azure::SearchClient;
-use crate::azure::schema::{IndexSchema, confluence_index_schema, jira_index_schema};
+use crate::azure::schema::{EmbeddingConfig, confluence_index_schema, jira_index_schema};
 use crate::config::{Config, SourceConfig};
 use crate::sources::confluence::ConfluenceConnector;
 use crate::sources::jira::JiraConnector;
@@ -25,17 +25,50 @@ pub enum IndexMode {
     RequireExisting,
 }
 
+/// Load embedding configuration from ailloy.
+/// Returns error if no embedding model is configured.
+pub fn load_embedding_config() -> Result<EmbeddingConfig> {
+    let config = ailloy::config::Config::load()
+        .context("failed to load ailloy config — run 'quelch ai config' to set up AI")?;
+
+    let (_id, node) = config
+        .default_node_for("embedding")
+        .context("no embedding model configured — run 'quelch ai config' to set one up")?;
+
+    let metadata = node.embedding_metadata();
+
+    let dimensions = metadata.dimensions.context(
+        "embedding model has no dimensions configured — reconfigure with 'quelch ai config'",
+    )?;
+
+    let vectorizer_json = metadata
+        .to_azure_search_vectorizer("quelch-vectorizer")
+        .context("failed to generate vectorizer config — ensure you're using an Azure OpenAI embedding model")?;
+
+    Ok(EmbeddingConfig {
+        dimensions,
+        vectorizer_json,
+    })
+}
+
 /// Get the appropriate schema for a source config.
-fn schema_for_source(source_config: &SourceConfig) -> IndexSchema {
+fn schema_for_source(
+    source_config: &SourceConfig,
+    embedding: &EmbeddingConfig,
+) -> crate::azure::schema::IndexSchema {
     match source_config {
-        SourceConfig::Jira(j) => jira_index_schema(&j.index),
-        SourceConfig::Confluence(c) => confluence_index_schema(&c.index),
+        SourceConfig::Jira(j) => jira_index_schema(&j.index, embedding),
+        SourceConfig::Confluence(c) => confluence_index_schema(&c.index, embedding),
     }
 }
 
 /// Check and optionally create all indexes required by the config.
 /// Returns the list of indexes that were created.
-pub async fn setup_indexes(config: &Config, mode: IndexMode) -> Result<Vec<String>> {
+pub async fn setup_indexes(
+    config: &Config,
+    embedding: &EmbeddingConfig,
+    mode: IndexMode,
+) -> Result<Vec<String>> {
     let azure = SearchClient::new(&config.azure.endpoint, &config.azure.api_key);
     let mut created = Vec::new();
 
@@ -43,7 +76,7 @@ pub async fn setup_indexes(config: &Config, mode: IndexMode) -> Result<Vec<Strin
     let mut seen = std::collections::HashSet::new();
     let mut schemas = Vec::new();
     for source in &config.sources {
-        let schema = schema_for_source(source);
+        let schema = schema_for_source(source, embedding);
         if seen.insert(schema.name.clone()) {
             schemas.push(schema);
         }
@@ -93,15 +126,31 @@ pub async fn setup_indexes(config: &Config, mode: IndexMode) -> Result<Vec<Strin
 }
 
 /// Run a one-shot sync of all configured sources.
-pub async fn run_sync(config: &Config, state_path: &Path, index_mode: IndexMode) -> Result<()> {
+/// If `embed_client` is None, documents are pushed without embeddings (for testing/mock mode).
+pub async fn run_sync(
+    config: &Config,
+    state_path: &Path,
+    embedding: &EmbeddingConfig,
+    index_mode: IndexMode,
+    embed_client: Option<&ailloy::Client>,
+) -> Result<()> {
     // Ensure all indexes exist before syncing
-    setup_indexes(config, index_mode).await?;
+    setup_indexes(config, embedding, index_mode).await?;
 
     let azure = SearchClient::new(&config.azure.endpoint, &config.azure.api_key);
     let mut state = SyncState::load(state_path)?;
 
     for source_config in &config.sources {
-        if let Err(e) = sync_source(&azure, source_config, config, &mut state, state_path).await {
+        if let Err(e) = sync_source(
+            &azure,
+            embed_client,
+            source_config,
+            config,
+            &mut state,
+            state_path,
+        )
+        .await
+        {
             error!(source = source_config.name(), error = %e, "Sync failed for source");
         }
     }
@@ -111,6 +160,7 @@ pub async fn run_sync(config: &Config, state_path: &Path, index_mode: IndexMode)
 
 async fn sync_source(
     azure: &SearchClient,
+    embed_client: Option<&ailloy::Client>,
     source_config: &SourceConfig,
     config: &Config,
     state: &mut SyncState,
@@ -119,17 +169,18 @@ async fn sync_source(
     match source_config {
         SourceConfig::Jira(jira_config) => {
             let connector = JiraConnector::new(jira_config);
-            sync_with_connector(azure, &connector, config, state, state_path).await
+            sync_with_connector(azure, embed_client, &connector, config, state, state_path).await
         }
         SourceConfig::Confluence(conf_config) => {
             let connector = ConfluenceConnector::new(conf_config);
-            sync_with_connector(azure, &connector, config, state, state_path).await
+            sync_with_connector(azure, embed_client, &connector, config, state, state_path).await
         }
     }
 }
 
 async fn sync_with_connector<C: SourceConnector>(
     azure: &SearchClient,
+    embed_client: Option<&ailloy::Client>,
     connector: &C,
     config: &Config,
     state: &mut SyncState,
@@ -158,17 +209,48 @@ async fn sync_with_connector<C: SourceConnector>(
             break;
         }
 
-        // Convert SourceDocuments to JSON values for Azure
+        // Generate embeddings if client is available
+        let embeddings: Option<Vec<Vec<f32>>> = if let Some(client) = embed_client {
+            let content_texts: Vec<&str> = result
+                .documents
+                .iter()
+                .map(|doc| {
+                    doc.fields
+                        .get("content")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                })
+                .collect();
+
+            debug!(
+                source = source_name,
+                count = content_texts.len(),
+                "Generating embeddings"
+            );
+            let embed_response = client
+                .embed(&content_texts)
+                .await
+                .context("failed to generate embeddings")?;
+            Some(embed_response.embeddings)
+        } else {
+            None
+        };
+
+        // Convert SourceDocuments to JSON values, with embeddings if available
         let azure_docs: Vec<serde_json::Value> = result
             .documents
             .iter()
-            .map(|doc| {
-                serde_json::Value::Object(
-                    doc.fields
-                        .iter()
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect(),
-                )
+            .enumerate()
+            .map(|(i, doc)| {
+                let mut obj: serde_json::Map<String, serde_json::Value> = doc
+                    .fields
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                if let Some(embedding) = embeddings.as_ref().and_then(|vecs| vecs.get(i)) {
+                    obj.insert("content_vector".to_string(), serde_json::json!(embedding));
+                }
+                serde_json::Value::Object(obj)
             })
             .collect();
 
@@ -190,7 +272,7 @@ async fn sync_with_connector<C: SourceConnector>(
             source = source_name,
             batch = doc_count,
             total = total_synced,
-            "Pushed batch to Azure AI Search"
+            "Pushed batch with embeddings to Azure AI Search"
         );
 
         if !result.has_more {

@@ -1,3 +1,4 @@
+pub mod ai;
 pub mod azure;
 pub mod config;
 pub mod mock;

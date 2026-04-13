@@ -1,4 +1,5 @@
 use clap::Parser;
+use quelch::ai::AiCommands;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -64,5 +65,10 @@ pub enum Commands {
         /// Port to listen on
         #[arg(short, long, default_value = "9999")]
         port: u16,
+    },
+    /// Manage AI embedding configuration
+    Ai {
+        #[command(subcommand)]
+        command: Option<AiCommands>,
     },
 }

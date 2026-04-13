@@ -60,3 +60,6 @@ trait-variant = "0.1"
 
 # Mock server
 axum = "0.8"
+
+# AI integration
+ailloy = { version = "0.7", default-features = false, features = ["config-tui"] }

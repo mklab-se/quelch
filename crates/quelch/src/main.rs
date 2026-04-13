@@ -1,8 +1,8 @@
 mod cli;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
-use quelch::{config, sync};
+use quelch::{ai, config, sync};
 use std::path::Path;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -42,6 +42,7 @@ async fn main() -> Result<()> {
         Commands::Validate => cmd_validate(&cli.config),
         Commands::Init => cmd_init(),
         Commands::Mock { port } => quelch::mock::run_mock_server(port).await,
+        Commands::Ai { command } => ai::run(command).await,
     }
 }
 
@@ -53,9 +54,12 @@ async fn cmd_sync(config_path: &Path, auto_create: bool) -> Result<()> {
     } else {
         IndexMode::Interactive
     };
+    let embedding = sync::load_embedding_config()?;
+    let embed_client = ailloy::Client::for_capability("embedding")
+        .context("failed to create embedding client — run 'quelch ai config' to set up")?;
 
     info!("Starting one-shot sync");
-    sync::run_sync(&config, &state_path, mode).await?;
+    sync::run_sync(&config, &state_path, &embedding, mode, Some(&embed_client)).await?;
     info!("Sync complete");
     Ok(())
 }
@@ -65,12 +69,14 @@ async fn cmd_watch(config_path: &Path, auto_create: bool) -> Result<()> {
     let state_path = Path::new(&config.sync.state_file).to_path_buf();
     let interval = std::time::Duration::from_secs(config.sync.poll_interval);
 
-    // First run: interactive or auto-create. Subsequent runs: require existing.
     let first_mode = if auto_create {
         IndexMode::AutoCreate
     } else {
         IndexMode::Interactive
     };
+    let embedding = sync::load_embedding_config()?;
+    let embed_client = ailloy::Client::for_capability("embedding")
+        .context("failed to create embedding client — run 'quelch ai config' to set up")?;
 
     info!(
         poll_interval = config.sync.poll_interval,
@@ -84,7 +90,9 @@ async fn cmd_watch(config_path: &Path, auto_create: bool) -> Result<()> {
         } else {
             IndexMode::RequireExisting
         };
-        if let Err(e) = sync::run_sync(&config, &state_path, mode).await {
+        if let Err(e) =
+            sync::run_sync(&config, &state_path, &embedding, mode, Some(&embed_client)).await
+        {
             tracing::error!(error = %e, "Sync cycle failed");
         }
         first = false;
@@ -101,9 +109,10 @@ async fn cmd_setup(config_path: &Path, auto_yes: bool) -> Result<()> {
     } else {
         IndexMode::Interactive
     };
+    let embedding = sync::load_embedding_config()?;
 
     println!("Checking indexes for {} source(s)...", config.sources.len());
-    let created = sync::setup_indexes(&config, mode).await?;
+    let created = sync::setup_indexes(&config, &embedding, mode).await?;
 
     if created.is_empty() {
         println!("\nAll indexes are ready.");
