@@ -36,6 +36,9 @@ pub enum Commands {
         /// Auto-create missing indexes without prompting
         #[arg(long)]
         create_indexes: bool,
+        /// Also purge orphaned documents from indexes
+        #[arg(long)]
+        purge: bool,
     },
     /// Run continuous sync (polls at configured interval)
     Watch {

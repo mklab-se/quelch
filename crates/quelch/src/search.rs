@@ -87,8 +87,8 @@ fn print_results(index_name: &str, query: &str, result: &serde_json::Value) {
             let text = answer.get("text").and_then(|v| v.as_str()).unwrap_or("");
 
             // Truncate text for display
-            let preview = if text.len() > 200 {
-                format!("{}...", &text[..200])
+            let preview = if text.len() > 600 {
+                format!("{}...", &text[..600])
             } else {
                 text.to_string()
             };
@@ -169,8 +169,8 @@ fn print_results(index_name: &str, query: &str, result: &serde_json::Value) {
                 .and_then(|t| t.as_str())
                 .unwrap_or("");
 
-            let snippet = if caption.len() > 300 {
-                format!("{}...", &caption[..300])
+            let snippet = if caption.len() > 800 {
+                format!("{}...", &caption[..800])
             } else {
                 caption.to_string()
             };

@@ -130,6 +130,8 @@ pub struct SyncConfig {
     pub max_concurrent_per_credential: usize,
     #[serde(default = "default_state_file")]
     pub state_file: String,
+    #[serde(default = "default_purge_every")]
+    pub purge_every: u64,
 }
 
 impl Default for SyncConfig {
@@ -139,12 +141,16 @@ impl Default for SyncConfig {
             batch_size: default_batch_size(),
             max_concurrent_per_credential: default_max_concurrent(),
             state_file: default_state_file(),
+            purge_every: default_purge_every(),
         }
     }
 }
 
 fn default_poll_interval() -> u64 {
     300
+}
+fn default_purge_every() -> u64 {
+    12 // Every 12th cycle. At 300s poll = every ~60 minutes
 }
 fn default_batch_size() -> usize {
     100

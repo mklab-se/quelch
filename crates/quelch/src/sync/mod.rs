@@ -195,6 +195,90 @@ pub async fn run_sync(
     Ok(())
 }
 
+/// Purge orphaned documents from all configured indexes.
+/// Compares source IDs with indexed IDs and removes any that no longer exist in the source.
+pub async fn run_purge(config: &Config) -> Result<()> {
+    let azure = SearchClient::new(&config.azure.endpoint, &config.azure.api_key);
+
+    for source_config in &config.sources {
+        if let Err(e) = purge_source(&azure, source_config).await {
+            error!(source = source_config.name(), error = %e, "Purge failed for source");
+        }
+    }
+
+    Ok(())
+}
+
+async fn purge_source(azure: &SearchClient, source_config: &SourceConfig) -> Result<()> {
+    match source_config {
+        SourceConfig::Jira(jira_config) => {
+            let connector = JiraConnector::new(jira_config);
+            purge_with_connector(azure, &connector).await
+        }
+        SourceConfig::Confluence(conf_config) => {
+            let connector = ConfluenceConnector::new(conf_config);
+            purge_with_connector(azure, &connector).await
+        }
+    }
+}
+
+async fn purge_with_connector<C: SourceConnector>(
+    azure: &SearchClient,
+    connector: &C,
+) -> Result<()> {
+    let source_name = connector.source_name();
+    let index_name = connector.index_name();
+
+    info!(source = source_name, "Starting orphan detection");
+
+    // Fetch all IDs from the source
+    let source_ids: std::collections::HashSet<String> = connector
+        .fetch_all_ids()
+        .await
+        .context("failed to fetch IDs from source")?
+        .into_iter()
+        .collect();
+
+    // Fetch all IDs from the Azure index
+    let index_ids = azure
+        .fetch_all_ids(index_name)
+        .await
+        .context("failed to fetch IDs from Azure index")?;
+
+    // Find orphans: IDs in index but not in source
+    let orphans: Vec<String> = index_ids
+        .into_iter()
+        .filter(|id| !source_ids.contains(id))
+        .collect();
+
+    if orphans.is_empty() {
+        info!(source = source_name, "No orphaned documents found");
+        return Ok(());
+    }
+
+    info!(
+        source = source_name,
+        orphans = orphans.len(),
+        "Removing orphaned documents"
+    );
+
+    // Delete in batches of 1000 (Azure limit)
+    for chunk in orphans.chunks(1000) {
+        azure
+            .delete_documents(index_name, chunk)
+            .await
+            .context("failed to delete orphaned documents")?;
+    }
+
+    info!(
+        source = source_name,
+        removed = orphans.len(),
+        "Purge complete"
+    );
+
+    Ok(())
+}
+
 async fn sync_source(
     azure: &SearchClient,
     embed_client: Option<&ailloy::Client>,

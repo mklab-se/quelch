@@ -34,7 +34,10 @@ async fn main() -> Result<()> {
     setup_logging(cli.verbose, cli.quiet, cli.json);
 
     match cli.command {
-        Commands::Sync { create_indexes } => cmd_sync(&cli.config, create_indexes).await,
+        Commands::Sync {
+            create_indexes,
+            purge,
+        } => cmd_sync(&cli.config, create_indexes, purge).await,
         Commands::Watch { create_indexes } => cmd_watch(&cli.config, create_indexes).await,
         Commands::Setup { yes } => cmd_setup(&cli.config, yes).await,
         Commands::Status => cmd_status(&cli.config),
@@ -56,7 +59,7 @@ async fn main() -> Result<()> {
     }
 }
 
-async fn cmd_sync(config_path: &Path, auto_create: bool) -> Result<()> {
+async fn cmd_sync(config_path: &Path, auto_create: bool, purge: bool) -> Result<()> {
     let config = config::load_config(config_path)?;
     let state_path = Path::new(&config.sync.state_file).to_path_buf();
     let mode = if auto_create {
@@ -70,6 +73,12 @@ async fn cmd_sync(config_path: &Path, auto_create: bool) -> Result<()> {
 
     info!("Starting one-shot sync");
     sync::run_sync(&config, &state_path, &embedding, mode, Some(&embed_client)).await?;
+
+    if purge {
+        info!("Running orphan purge");
+        sync::run_purge(&config).await?;
+    }
+
     info!("Sync complete");
     Ok(())
 }
@@ -88,24 +97,37 @@ async fn cmd_watch(config_path: &Path, auto_create: bool) -> Result<()> {
     let embed_client = ailloy::Client::for_capability("embedding")
         .context("failed to create embedding client — run 'quelch ai config' to set up")?;
 
+    let purge_every = config.sync.purge_every;
+
     info!(
         poll_interval = config.sync.poll_interval,
-        "Starting continuous sync"
+        purge_every = purge_every,
+        "Starting continuous sync (purge every {} cycles)",
+        purge_every
     );
 
-    let mut first = true;
+    let mut cycle: u64 = 0;
     loop {
-        let mode = if first {
+        cycle += 1;
+        let mode = if cycle == 1 {
             first_mode
         } else {
             IndexMode::RequireExisting
         };
+
         if let Err(e) =
             sync::run_sync(&config, &state_path, &embedding, mode, Some(&embed_client)).await
         {
             tracing::error!(error = %e, "Sync cycle failed");
         }
-        first = false;
+
+        // Run purge every Nth cycle
+        if purge_every > 0 && cycle.is_multiple_of(purge_every) {
+            info!("Running scheduled orphan purge (cycle {})", cycle);
+            if let Err(e) = sync::run_purge(&config).await {
+                tracing::error!(error = %e, "Purge failed");
+            }
+        }
 
         info!("Next sync in {} seconds", config.sync.poll_interval);
         tokio::time::sleep(interval).await;
