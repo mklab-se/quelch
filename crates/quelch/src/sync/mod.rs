@@ -246,6 +246,28 @@ async fn sync_with_connector<C: SourceConnector>(
             break;
         }
 
+        // Log document content at debug level (-v)
+        for doc in &result.documents {
+            let id = doc.fields.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+            let content = doc
+                .fields
+                .get("content")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let preview = if content.len() > 200 {
+                format!("{}...", &content[..200])
+            } else {
+                content.to_string()
+            };
+            debug!(
+                source = source_name,
+                id = id,
+                content_len = content.len(),
+                "Content: {}",
+                preview
+            );
+        }
+
         // Generate embeddings if client is available
         let embeddings: Option<Vec<Vec<f32>>> = if let Some(client) = embed_client {
             let content_texts: Vec<&str> = result

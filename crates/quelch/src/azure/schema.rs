@@ -42,19 +42,24 @@ pub struct EmbeddingConfig {
     pub vectorizer_json: serde_json::Value,
 }
 
+/// Semantic field configuration for an index.
+struct SemanticFields {
+    title_field: &'static str,
+    keyword_fields: &'static [&'static str],
+}
+
 /// Build the vector search, semantic, and similarity sections for an index.
 fn vector_search_config(
     index_name: &str,
     embedding: &EmbeddingConfig,
+    semantic_fields: &SemanticFields,
 ) -> (serde_json::Value, serde_json::Value, serde_json::Value) {
     let alg_name = format!("{index_name}-hnsw-algorithm");
     let profile_name = format!("{index_name}-vector-profile");
     let compression_name = format!("{index_name}-scalar-quantization");
     let semantic_name = format!("{index_name}-semantic-config");
 
-    // Inject the profile reference into the vectorizer
     let vectorizer = embedding.vectorizer_json.clone();
-    // The vectorizer name comes from the JSON itself
 
     let vector_search = serde_json::json!({
         "algorithms": [{
@@ -83,13 +88,20 @@ fn vector_search_config(
         }]
     });
 
+    let keyword_fields: Vec<serde_json::Value> = semantic_fields
+        .keyword_fields
+        .iter()
+        .map(|f| serde_json::json!({ "fieldName": f }))
+        .collect();
+
     let semantic = serde_json::json!({
         "defaultConfiguration": semantic_name,
         "configurations": [{
             "name": semantic_name,
             "prioritizedFields": {
+                "titleFields": [{ "fieldName": semantic_fields.title_field }],
                 "prioritizedContentFields": [{ "fieldName": "content" }],
-                "prioritizedKeywordsFields": []
+                "prioritizedKeywordsFields": keyword_fields
             }
         }]
     });
@@ -141,7 +153,12 @@ fn field(
 
 /// Default index schema for Jira issues with vector search.
 pub fn jira_index_schema(index_name: &str, embedding: &EmbeddingConfig) -> IndexSchema {
-    let (vector_search, semantic, similarity) = vector_search_config(index_name, embedding);
+    let semantic_fields = SemanticFields {
+        title_field: "summary",
+        keyword_fields: &["assignee", "labels", "status", "project"],
+    };
+    let (vector_search, semantic, similarity) =
+        vector_search_config(index_name, embedding, &semantic_fields);
 
     let mut fields = vec![
         field("id", "Edm.String", true, false, true, false, false),
@@ -229,7 +246,12 @@ pub fn jira_index_schema(index_name: &str, embedding: &EmbeddingConfig) -> Index
 
 /// Default index schema for Confluence pages (chunked by heading) with vector search.
 pub fn confluence_index_schema(index_name: &str, embedding: &EmbeddingConfig) -> IndexSchema {
-    let (vector_search, semantic, similarity) = vector_search_config(index_name, embedding);
+    let semantic_fields = SemanticFields {
+        title_field: "page_title",
+        keyword_fields: &["author", "labels", "space_key"],
+    };
+    let (vector_search, semantic, similarity) =
+        vector_search_config(index_name, embedding, &semantic_fields);
 
     let mut fields = vec![
         field("id", "Edm.String", true, false, true, false, false),
