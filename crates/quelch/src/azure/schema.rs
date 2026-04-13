@@ -99,7 +99,7 @@ fn vector_search_config(
         "configurations": [{
             "name": semantic_name,
             "prioritizedFields": {
-                "titleFields": [{ "fieldName": semantic_fields.title_field }],
+                "prioritizedTitleFields": [{ "fieldName": semantic_fields.title_field }],
                 "prioritizedContentFields": [{ "fieldName": "content" }],
                 "prioritizedKeywordsFields": keyword_fields
             }
