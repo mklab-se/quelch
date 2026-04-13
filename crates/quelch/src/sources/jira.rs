@@ -218,12 +218,76 @@ impl JiraConnector {
             })
             .unwrap_or_default();
 
-        let content = format!("{summary}\n\n{description}\n\n{comments_text}");
         let project_key = fields
             .project
             .as_ref()
             .and_then(|p| p.key.clone())
             .unwrap_or_default();
+
+        let status = fields
+            .status
+            .as_ref()
+            .and_then(|s| s.name.as_ref())
+            .cloned()
+            .unwrap_or_default();
+
+        let status_category = fields
+            .status
+            .as_ref()
+            .and_then(|s| s.status_category.as_ref())
+            .and_then(|sc| sc.name.as_ref())
+            .cloned()
+            .unwrap_or_default();
+
+        let priority = fields
+            .priority
+            .as_ref()
+            .and_then(|p| p.name.as_ref())
+            .cloned()
+            .unwrap_or_default();
+
+        let issue_type = fields
+            .issuetype
+            .as_ref()
+            .and_then(|t| t.name.as_ref())
+            .cloned()
+            .unwrap_or_default();
+
+        let assignee = fields
+            .assignee
+            .as_ref()
+            .and_then(|a| a.display_name.as_ref())
+            .cloned()
+            .unwrap_or_default();
+
+        let reporter = fields
+            .reporter
+            .as_ref()
+            .and_then(|r| r.display_name.as_ref())
+            .cloned()
+            .unwrap_or_default();
+
+        let labels = fields.labels.clone().unwrap_or_default();
+
+        // Build labeled content for embedding — provides context for semantic search
+        let mut content_parts = Vec::new();
+        content_parts.push(format!("[{issue_key}] {summary}", issue_key = issue.key));
+        content_parts.push(format!("Type: {issue_type}"));
+        content_parts.push(format!("Project: {project_key}"));
+        content_parts.push(format!("Status: {status} ({status_category})"));
+        content_parts.push(format!("Priority: {priority}"));
+        content_parts.push(format!("Assignee: {assignee}"));
+        content_parts.push(format!("Reporter: {reporter}"));
+        if !labels.is_empty() {
+            content_parts.push(format!("Labels: {}", labels.join(", ")));
+        }
+        if !description.is_empty() {
+            content_parts.push(format!("\nDescription:\n{description}"));
+        }
+        if !comments_text.is_empty() {
+            content_parts.push(format!("\nComments:\n{comments_text}"));
+        }
+        let content = content_parts.join("\n");
 
         let updated_at = fields
             .updated
@@ -252,73 +316,18 @@ impl JiraConnector {
         map.insert("source_type".to_string(), serde_json::json!("jira"));
         map.insert("project".to_string(), serde_json::json!(project_key));
         map.insert("issue_key".to_string(), serde_json::json!(issue.key));
-        map.insert(
-            "issue_type".to_string(),
-            serde_json::json!(
-                fields
-                    .issuetype
-                    .as_ref()
-                    .and_then(|t| t.name.as_ref())
-                    .unwrap_or(&String::new())
-            ),
-        );
+        map.insert("issue_type".to_string(), serde_json::json!(issue_type));
         map.insert("summary".to_string(), serde_json::json!(summary));
         map.insert("description".to_string(), serde_json::json!(description));
-        map.insert(
-            "status".to_string(),
-            serde_json::json!(
-                fields
-                    .status
-                    .as_ref()
-                    .and_then(|s| s.name.as_ref())
-                    .unwrap_or(&String::new())
-            ),
-        );
+        map.insert("status".to_string(), serde_json::json!(status));
         map.insert(
             "status_category".to_string(),
-            serde_json::json!(
-                fields
-                    .status
-                    .as_ref()
-                    .and_then(|s| s.status_category.as_ref())
-                    .and_then(|sc| sc.name.as_ref())
-                    .unwrap_or(&String::new())
-            ),
+            serde_json::json!(status_category),
         );
-        map.insert(
-            "priority".to_string(),
-            serde_json::json!(
-                fields
-                    .priority
-                    .as_ref()
-                    .and_then(|p| p.name.as_ref())
-                    .unwrap_or(&String::new())
-            ),
-        );
-        map.insert(
-            "assignee".to_string(),
-            serde_json::json!(
-                fields
-                    .assignee
-                    .as_ref()
-                    .and_then(|a| a.display_name.as_ref())
-                    .unwrap_or(&String::new())
-            ),
-        );
-        map.insert(
-            "reporter".to_string(),
-            serde_json::json!(
-                fields
-                    .reporter
-                    .as_ref()
-                    .and_then(|r| r.display_name.as_ref())
-                    .unwrap_or(&String::new())
-            ),
-        );
-        map.insert(
-            "labels".to_string(),
-            serde_json::json!(fields.labels.clone().unwrap_or_default()),
-        );
+        map.insert("priority".to_string(), serde_json::json!(priority));
+        map.insert("assignee".to_string(), serde_json::json!(assignee));
+        map.insert("reporter".to_string(), serde_json::json!(reporter));
+        map.insert("labels".to_string(), serde_json::json!(labels));
         map.insert("comments".to_string(), serde_json::json!(comments_text));
         map.insert("content".to_string(), serde_json::json!(content));
         map.insert(

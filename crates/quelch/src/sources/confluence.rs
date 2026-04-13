@@ -554,11 +554,17 @@ impl ConfluenceConnector {
         chunks
             .into_iter()
             .map(|chunk| {
-                let content = if chunk.heading.is_empty() {
-                    format!("{title}\n\n{}", chunk.body)
+                // Build labeled content for embedding
+                let heading_label = if chunk.heading.is_empty() {
+                    String::new()
                 } else {
-                    format!("{title} - {}\n\n{}", chunk.heading, chunk.body)
+                    format!("\nSection: {}", chunk.heading)
                 };
+                let content = format!(
+                    "Page: {title}{heading_label}\nSpace: {space_key}\nAuthor: {author}\nLabels: {label_str}\n\n{body}",
+                    label_str = labels.join(", "),
+                    body = chunk.body,
+                );
 
                 let doc_id = format!("{}-{}-{}", self.config.name, page_id, chunk.index);
 
@@ -1193,9 +1199,10 @@ mod tests {
                 .contains("This is the intro")
         );
 
-        // Content field should combine title + heading + body
+        // Content field should have labeled format
         let content = doc1.fields["content"].as_str().unwrap();
-        assert!(content.contains("Architecture Overview - Introduction"));
+        assert!(content.contains("Page: Architecture Overview"));
+        assert!(content.contains("Section: Introduction"));
         assert!(content.contains("This is the intro"));
 
         // Chunk 2
@@ -1239,7 +1246,7 @@ mod tests {
         assert_eq!(docs[0].fields["chunk_heading"], "");
 
         let content = docs[0].fields["content"].as_str().unwrap();
-        assert!(content.starts_with("Simple Page"));
+        assert!(content.contains("Page: Simple Page"));
         assert!(content.contains("Just a simple paragraph"));
     }
 
