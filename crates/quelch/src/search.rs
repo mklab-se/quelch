@@ -214,18 +214,11 @@ fn terminal_hyperlink(url: &str, text: &str) -> String {
     format!("\x1b]8;;{url}\x1b\\{text}\x1b]8;;\x1b\\")
 }
 
-/// Render a simple relevance bar using unicode blocks.
+/// Render a relevance bar using unicode blocks with a green gradient.
 fn format_relevance_bar(score: f64) -> String {
     // Normalize score to 0-10 range (reranker scores typically 0-4)
     let normalized = (score / 4.0 * 10.0).clamp(0.0, 10.0) as usize;
     let filled = "\u{2588}".repeat(normalized);
     let empty = "\u{2591}".repeat(10 - normalized);
-
-    if normalized >= 7 {
-        format!("{}{}", filled.green(), empty.dimmed())
-    } else if normalized >= 4 {
-        format!("{}{}", filled.yellow(), empty.dimmed())
-    } else {
-        format!("{}{}", filled.red(), empty.dimmed())
-    }
+    format!("{}{}", filled.green(), empty.dimmed())
 }
