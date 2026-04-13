@@ -3,6 +3,7 @@
 mod azure;
 mod config;
 mod sources;
+mod sync;
 
 use clap::Parser;
 
