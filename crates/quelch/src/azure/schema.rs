@@ -79,11 +79,6 @@ fn vector_search_config(
             "kind": "scalarQuantization",
             "scalarQuantizationParameters": {
                 "quantizedDataType": "int8"
-            },
-            "rescoringOptions": {
-                "enableRescoring": true,
-                "defaultOversampling": 4,
-                "rescoreStorageMethod": "preserveOriginals"
             }
         }]
     });
