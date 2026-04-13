@@ -56,7 +56,7 @@ struct JiraFields {
     /// In Cloud (v3): ADF JSON object.
     /// We deserialize as Value to handle both.
     description: Option<serde_json::Value>,
-    status: Option<JiraNamedField>,
+    status: Option<JiraStatus>,
     priority: Option<JiraNamedField>,
     assignee: Option<JiraUser>,
     reporter: Option<JiraUser>,
@@ -66,6 +66,18 @@ struct JiraFields {
     updated: Option<String>,
     comment: Option<JiraCommentContainer>,
     project: Option<JiraProject>,
+}
+
+#[derive(Debug, Deserialize)]
+struct JiraStatus {
+    name: Option<String>,
+    #[serde(rename = "statusCategory")]
+    status_category: Option<JiraStatusCategory>,
+}
+
+#[derive(Debug, Deserialize)]
+struct JiraStatusCategory {
+    name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -259,6 +271,17 @@ impl JiraConnector {
                     .status
                     .as_ref()
                     .and_then(|s| s.name.as_ref())
+                    .unwrap_or(&String::new())
+            ),
+        );
+        map.insert(
+            "status_category".to_string(),
+            serde_json::json!(
+                fields
+                    .status
+                    .as_ref()
+                    .and_then(|s| s.status_category.as_ref())
+                    .and_then(|sc| sc.name.as_ref())
                     .unwrap_or(&String::new())
             ),
         );
@@ -777,8 +800,11 @@ mod tests {
             fields: JiraFields {
                 summary: Some("Fix the bug".to_string()),
                 description: Some(serde_json::json!("It's broken")),
-                status: Some(JiraNamedField {
+                status: Some(JiraStatus {
                     name: Some("Open".to_string()),
+                    status_category: Some(JiraStatusCategory {
+                        name: Some("To Do".to_string()),
+                    }),
                 }),
                 priority: Some(JiraNamedField {
                     name: Some("High".to_string()),
@@ -812,6 +838,7 @@ mod tests {
         assert_eq!(doc.fields["source_type"], "jira");
         assert_eq!(doc.fields["issue_key"], "DO-42");
         assert_eq!(doc.fields["status"], "Open");
+        assert_eq!(doc.fields["status_category"], "To Do");
         assert_eq!(doc.fields["assignee"], "Alice");
         assert!(
             doc.fields["content"]
@@ -842,8 +869,11 @@ mod tests {
                         "content": [{ "type": "text", "text": "ADF description text" }]
                     }]
                 })),
-                status: Some(JiraNamedField {
+                status: Some(JiraStatus {
                     name: Some("Done".to_string()),
+                    status_category: Some(JiraStatusCategory {
+                        name: Some("Done".to_string()),
+                    }),
                 }),
                 priority: None,
                 assignee: None,
