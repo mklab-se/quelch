@@ -1,0 +1,28 @@
+[package]
+name = "quelch"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Ingest data from Jira, Confluence, and more directly into Azure AI Search"
+readme = "../../README.md"
+keywords = ["azure", "search", "jira", "confluence", "ingest"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "quelch"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+anyhow.workspace = true
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/quelch-v{ version }-{ target }.{ archive-format }"
+bin-dir = "quelch{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
