@@ -1,3 +1,9 @@
+#![allow(dead_code)]
+
+mod azure;
+mod config;
+mod sources;
+
 use clap::Parser;
 
 #[derive(Parser)]
