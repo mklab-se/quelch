@@ -13,9 +13,9 @@ dependencies = [
 
 [[package]]
 name = "ailloy"
-version = "0.7.2"
+version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3b8b7d1a7bc26a4764ecc2d013642f935fe85d13f0e5b8c0c0b062d1e2c2f35a"
+checksum = "49fb7b9f172077a71967ca5de9ccb55789d65baf68de9162eb42d50f7648e325"
 dependencies = [
  "anyhow",
  "async-trait",
