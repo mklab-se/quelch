@@ -1,3 +1,4 @@
+pub mod confluence;
 pub mod jira;
 
 use chrono::{DateTime, Utc};
