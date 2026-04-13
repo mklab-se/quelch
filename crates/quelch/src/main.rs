@@ -41,6 +41,7 @@ async fn main() -> Result<()> {
         Commands::Reset { source } => cmd_reset(&cli.config, source.as_deref()),
         Commands::Validate => cmd_validate(&cli.config),
         Commands::Init => cmd_init(),
+        Commands::Mock { port } => quelch::mock::run_mock_server(port).await,
     }
 }
 

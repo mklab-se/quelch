@@ -57,3 +57,6 @@ base64 = "0.22"
 
 # Async traits
 trait-variant = "0.1"
+
+# Mock server
+axum = "0.8"

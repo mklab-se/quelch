@@ -59,4 +59,10 @@ pub enum Commands {
     Validate,
     /// Generate a starter quelch.yaml config
     Init,
+    /// Start a local mock Jira and Confluence server for testing
+    Mock {
+        /// Port to listen on
+        #[arg(short, long, default_value = "9999")]
+        port: u16,
+    },
 }
