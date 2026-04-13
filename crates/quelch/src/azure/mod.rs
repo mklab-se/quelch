@@ -106,6 +106,33 @@ impl SearchClient {
         }
     }
 
+    /// Delete an index. Returns Ok even if the index doesn't exist.
+    pub async fn delete_index(&self, index_name: &str) -> Result<(), AzureError> {
+        let url = format!(
+            "{}/indexes/{}?api-version={}",
+            self.endpoint, index_name, API_VERSION
+        );
+
+        let resp = self
+            .client
+            .delete(&url)
+            .header("api-key", &self.api_key)
+            .send()
+            .await?;
+
+        if resp.status().is_success() || resp.status().as_u16() == 404 {
+            debug!("Deleted index '{}'", index_name);
+            Ok(())
+        } else {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            Err(AzureError::Api {
+                status,
+                message: body,
+            })
+        }
+    }
+
     /// Check if index exists, create if missing. Auto-creates without prompting.
     pub async fn ensure_index(&self, schema: &IndexSchema) -> Result<(), AzureError> {
         if self.index_exists(&schema.name).await? {

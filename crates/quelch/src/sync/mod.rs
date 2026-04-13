@@ -62,6 +62,43 @@ fn schema_for_source(
     }
 }
 
+/// Delete all indexes configured in the config, then clear sync state.
+pub async fn reset_indexes(config: &Config, state_path: &Path) -> Result<Vec<String>> {
+    let azure = SearchClient::new(&config.azure.endpoint, &config.azure.api_key);
+    let mut deleted = Vec::new();
+
+    // Collect unique index names
+    let mut seen = std::collections::HashSet::new();
+    for source in &config.sources {
+        let index = source.index().to_string();
+        if seen.insert(index.clone()) {
+            let exists = azure
+                .index_exists(&index)
+                .await
+                .with_context(|| format!("failed to check index '{}'", index))?;
+
+            if exists {
+                azure
+                    .delete_index(&index)
+                    .await
+                    .with_context(|| format!("failed to delete index '{}'", index))?;
+                println!("  [deleted] {}", index);
+                deleted.push(index);
+            } else {
+                println!("  [absent]  {}", index);
+            }
+        }
+    }
+
+    // Clear sync state
+    let mut state = SyncState::load(state_path)?;
+    state.reset_all();
+    state.save(state_path)?;
+    println!("  [cleared] sync state");
+
+    Ok(deleted)
+}
+
 /// Check and optionally create all indexes required by the config.
 /// Returns the list of indexes that were created.
 pub async fn setup_indexes(

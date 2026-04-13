@@ -39,6 +39,7 @@ async fn main() -> Result<()> {
         Commands::Setup { yes } => cmd_setup(&cli.config, yes).await,
         Commands::Status => cmd_status(&cli.config),
         Commands::Reset { source } => cmd_reset(&cli.config, source.as_deref()),
+        Commands::ResetIndexes => cmd_reset_indexes(&cli.config).await,
         Commands::Validate => cmd_validate(&cli.config),
         Commands::Init => cmd_init(),
         Commands::Mock { port } => quelch::mock::run_mock_server(port).await,
@@ -148,6 +149,25 @@ fn cmd_status(config_path: &Path) -> Result<()> {
         println!("    Docs synced: {}", source_state.documents_synced);
         println!("    Sync count:  {}", source_state.sync_count);
         println!();
+    }
+
+    Ok(())
+}
+
+async fn cmd_reset_indexes(config_path: &Path) -> Result<()> {
+    let config = config::load_config(config_path)?;
+    let state_path = Path::new(&config.sync.state_file).to_path_buf();
+
+    println!("Deleting indexes and clearing sync state...");
+    let deleted = sync::reset_indexes(&config, &state_path).await?;
+
+    if deleted.is_empty() {
+        println!("\nNo indexes to delete.");
+    } else {
+        println!(
+            "\nDeleted {} index(es). Run 'quelch setup' to recreate.",
+            deleted.len()
+        );
     }
 
     Ok(())

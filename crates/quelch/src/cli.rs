@@ -56,6 +56,8 @@ pub enum Commands {
         /// Source name to reset (omit to reset all)
         source: Option<String>,
     },
+    /// Delete all configured indexes from Azure AI Search and clear sync state
+    ResetIndexes,
     /// Validate config file without running
     Validate,
     /// Generate a starter quelch.yaml config
