@@ -68,6 +68,20 @@ pub enum Commands {
         #[arg(short, long, default_value = "9999")]
         port: u16,
     },
+    /// Search indexed data in Azure AI Search
+    Search {
+        /// The search query
+        query: String,
+        /// Search a specific index (default: search all configured indexes)
+        #[arg(short, long)]
+        index: Option<String>,
+        /// Maximum results per index
+        #[arg(short, long, default_value = "5")]
+        top: usize,
+        /// Output raw JSON instead of formatted results
+        #[arg(long)]
+        json: bool,
+    },
     /// Manage AI embedding configuration
     Ai {
         #[command(subcommand)]

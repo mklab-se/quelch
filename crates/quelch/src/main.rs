@@ -2,7 +2,7 @@ mod cli;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use quelch::{ai, config, sync};
+use quelch::{ai, config, search, sync};
 use std::path::Path;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -42,6 +42,15 @@ async fn main() -> Result<()> {
         Commands::ResetIndexes => cmd_reset_indexes(&cli.config).await,
         Commands::Validate => cmd_validate(&cli.config),
         Commands::Init => cmd_init(),
+        Commands::Search {
+            query,
+            index,
+            top,
+            json,
+        } => {
+            let config = config::load_config(&cli.config)?;
+            search::run_search(&config, &query, index.as_deref(), top, json).await
+        }
         Commands::Mock { port } => quelch::mock::run_mock_server(port).await,
         Commands::Ai { command } => ai::run(command).await,
     }

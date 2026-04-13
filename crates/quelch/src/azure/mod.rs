@@ -133,6 +133,51 @@ impl SearchClient {
         }
     }
 
+    /// Perform a semantic search query against an index.
+    pub async fn search(
+        &self,
+        index_name: &str,
+        query: &str,
+        semantic_config: &str,
+        top: usize,
+    ) -> Result<serde_json::Value, AzureError> {
+        let url = format!(
+            "{}/indexes/{}/docs/search?api-version={}",
+            self.endpoint, index_name, API_VERSION
+        );
+
+        let body = serde_json::json!({
+            "search": query,
+            "queryType": "semantic",
+            "semanticConfiguration": semantic_config,
+            "top": top,
+            "count": true,
+            "answers": "extractive|count-3",
+            "captions": "extractive|highlight-true"
+        });
+
+        let resp = self
+            .client
+            .post(&url)
+            .header("api-key", &self.api_key)
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await?;
+
+        if resp.status().is_success() {
+            let result: serde_json::Value = resp.json().await?;
+            Ok(result)
+        } else {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            Err(AzureError::Api {
+                status,
+                message: body,
+            })
+        }
+    }
+
     /// Check if index exists, create if missing. Auto-creates without prompting.
     pub async fn ensure_index(&self, schema: &IndexSchema) -> Result<(), AzureError> {
         if self.index_exists(&schema.name).await? {
