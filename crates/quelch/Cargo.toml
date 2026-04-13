@@ -11,6 +11,10 @@ readme = "../../README.md"
 keywords = ["azure", "search", "jira", "confluence", "ingest"]
 categories = ["command-line-utilities"]
 
+[lib]
+name = "quelch"
+path = "src/lib.rs"
+
 [[bin]]
 name = "quelch"
 path = "src/main.rs"

@@ -113,7 +113,7 @@ pub(crate) struct ConfluenceLabel {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
-pub(crate) struct Chunk {
+pub struct Chunk {
     pub index: usize,
     pub heading: String,
     pub body: String,

@@ -1,19 +1,102 @@
 pub mod state;
 
 use anyhow::{Context, Result};
+use std::io::Write;
 use std::path::Path;
 use tracing::{error, info};
 
 use crate::azure::SearchClient;
-use crate::azure::schema::jira_index_schema;
+use crate::azure::schema::{IndexSchema, confluence_index_schema, jira_index_schema};
 use crate::config::{Config, SourceConfig};
+use crate::sources::confluence::ConfluenceConnector;
 use crate::sources::jira::JiraConnector;
 use crate::sources::{SourceConnector, SyncCursor};
 
 use self::state::SyncState;
 
+/// Controls how missing indexes are handled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexMode {
+    /// Prompt the user interactively before creating.
+    Interactive,
+    /// Auto-create missing indexes without prompting.
+    AutoCreate,
+    /// Fail if any index is missing (for CI/scripts).
+    RequireExisting,
+}
+
+/// Get the appropriate schema for a source config.
+fn schema_for_source(source_config: &SourceConfig) -> IndexSchema {
+    match source_config {
+        SourceConfig::Jira(j) => jira_index_schema(&j.index),
+        SourceConfig::Confluence(c) => confluence_index_schema(&c.index),
+    }
+}
+
+/// Check and optionally create all indexes required by the config.
+/// Returns the list of indexes that were created.
+pub async fn setup_indexes(config: &Config, mode: IndexMode) -> Result<Vec<String>> {
+    let azure = SearchClient::new(&config.azure.endpoint, &config.azure.api_key);
+    let mut created = Vec::new();
+
+    // Collect unique indexes with their schemas
+    let mut seen = std::collections::HashSet::new();
+    let mut schemas = Vec::new();
+    for source in &config.sources {
+        let schema = schema_for_source(source);
+        if seen.insert(schema.name.clone()) {
+            schemas.push(schema);
+        }
+    }
+
+    for schema in &schemas {
+        let exists = azure
+            .index_exists(&schema.name)
+            .await
+            .with_context(|| format!("failed to check index '{}'", schema.name))?;
+
+        if exists {
+            println!("  [exists]  {}", schema.name);
+            continue;
+        }
+
+        let should_create = match mode {
+            IndexMode::AutoCreate => true,
+            IndexMode::RequireExisting => {
+                anyhow::bail!(
+                    "Index '{}' does not exist. Run 'quelch setup' to create it.",
+                    schema.name
+                );
+            }
+            IndexMode::Interactive => {
+                print!("  [missing] {} — Create it? [y/N] ", schema.name);
+                std::io::stdout().flush()?;
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input)?;
+                input.trim().eq_ignore_ascii_case("y")
+            }
+        };
+
+        if should_create {
+            azure
+                .create_index(schema)
+                .await
+                .with_context(|| format!("failed to create index '{}'", schema.name))?;
+            println!("  [created] {}", schema.name);
+            created.push(schema.name.clone());
+        } else {
+            println!("  [skipped] {}", schema.name);
+        }
+    }
+
+    Ok(created)
+}
+
 /// Run a one-shot sync of all configured sources.
-pub async fn run_sync(config: &Config, state_path: &Path) -> Result<()> {
+pub async fn run_sync(config: &Config, state_path: &Path, index_mode: IndexMode) -> Result<()> {
+    // Ensure all indexes exist before syncing
+    setup_indexes(config, index_mode).await?;
+
     let azure = SearchClient::new(&config.azure.endpoint, &config.azure.api_key);
     let mut state = SyncState::load(state_path)?;
 
@@ -36,10 +119,11 @@ async fn sync_source(
     match source_config {
         SourceConfig::Jira(jira_config) => {
             let connector = JiraConnector::new(jira_config);
-            sync_with_connector(azure, &connector, source_config, config, state, state_path).await
+            sync_with_connector(azure, &connector, config, state, state_path).await
         }
-        SourceConfig::Confluence(_) => {
-            anyhow::bail!("Confluence connector not yet implemented");
+        SourceConfig::Confluence(conf_config) => {
+            let connector = ConfluenceConnector::new(conf_config);
+            sync_with_connector(azure, &connector, config, state, state_path).await
         }
     }
 }
@@ -47,23 +131,12 @@ async fn sync_source(
 async fn sync_with_connector<C: SourceConnector>(
     azure: &SearchClient,
     connector: &C,
-    source_config: &SourceConfig,
     config: &Config,
     state: &mut SyncState,
     state_path: &Path,
 ) -> Result<()> {
     let index_name = connector.index_name();
     let source_name = connector.source_name();
-
-    // Ensure index exists with correct schema
-    let schema = match source_config {
-        SourceConfig::Jira(_) => jira_index_schema(index_name),
-        SourceConfig::Confluence(_) => unreachable!(),
-    };
-    azure
-        .ensure_index(&schema)
-        .await
-        .context("failed to ensure index exists")?;
 
     // Get cursor from persisted state
     let source_state = state.get_source(source_name);

@@ -52,12 +52,11 @@ impl SearchClient {
         }
     }
 
-    /// Create an index if it doesn't already exist.
-    pub async fn ensure_index(&self, schema: &IndexSchema) -> Result<(), AzureError> {
-        // Check if index exists (GET returns 200 or 404)
+    /// Check if an index exists. Returns true if it does.
+    pub async fn index_exists(&self, index_name: &str) -> Result<bool, AzureError> {
         let url = format!(
             "{}/indexes/{}?api-version={}",
-            self.endpoint, schema.name, API_VERSION
+            self.endpoint, index_name, API_VERSION
         );
 
         let resp = self
@@ -68,16 +67,26 @@ impl SearchClient {
             .await?;
 
         if resp.status().is_success() {
-            debug!("Index '{}' already exists", schema.name);
-            return Ok(());
+            Ok(true)
+        } else if resp.status().as_u16() == 404 {
+            Ok(false)
+        } else {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            Err(AzureError::Api {
+                status,
+                message: body,
+            })
         }
+    }
 
-        // Create index (POST returns 201)
-        let create_url = format!("{}/indexes?api-version={}", self.endpoint, API_VERSION);
+    /// Create an index with the given schema. Fails if index already exists (409).
+    pub async fn create_index(&self, schema: &IndexSchema) -> Result<(), AzureError> {
+        let url = format!("{}/indexes?api-version={}", self.endpoint, API_VERSION);
 
         let resp = self
             .client
-            .post(&create_url)
+            .post(&url)
             .header("api-key", &self.api_key)
             .header("Content-Type", "application/json")
             .json(schema)
@@ -95,6 +104,15 @@ impl SearchClient {
                 message: body,
             })
         }
+    }
+
+    /// Check if index exists, create if missing. Auto-creates without prompting.
+    pub async fn ensure_index(&self, schema: &IndexSchema) -> Result<(), AzureError> {
+        if self.index_exists(&schema.name).await? {
+            debug!("Index '{}' already exists", schema.name);
+            return Ok(());
+        }
+        self.create_index(schema).await
     }
 
     /// Push documents to an index using merge-or-upload action.
