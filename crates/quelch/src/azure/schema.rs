@@ -92,8 +92,6 @@ fn vector_search_config(
         "defaultConfiguration": semantic_name,
         "configurations": [{
             "name": semantic_name,
-            "flightingOptIn": false,
-            "rankingOrder": "BoostedRerankerScore",
             "prioritizedFields": {
                 "prioritizedContentFields": [{ "fieldName": "content" }],
                 "prioritizedKeywordsFields": []
