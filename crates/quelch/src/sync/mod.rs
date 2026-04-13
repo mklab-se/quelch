@@ -240,14 +240,31 @@ async fn sync_with_connector<C: SourceConnector>(
             .await
             .context("failed to fetch changes from source")?;
 
-        let doc_count = result.documents.len() as u64;
+        // Destructure result before filtering (documents is consumed by into_iter)
+        let result_cursor = result.cursor;
+        let result_has_more = result.has_more;
+
+        // Filter out documents we've already synced (JQL uses >= which is inclusive,
+        // so the last synced document always comes back). Skip docs whose updated_at
+        // exactly matches the cursor — we already have those.
+        let new_docs: Vec<_> = if let Some(ref c) = cursor {
+            result
+                .documents
+                .into_iter()
+                .filter(|doc| doc.updated_at > c.last_updated)
+                .collect()
+        } else {
+            result.documents
+        };
+
+        let doc_count = new_docs.len() as u64;
         if doc_count == 0 {
             info!(source = source_name, "No changes since last sync");
             break;
         }
 
         // Log document content at debug level (-v)
-        for doc in &result.documents {
+        for doc in &new_docs {
             let id = doc.fields.get("id").and_then(|v| v.as_str()).unwrap_or("?");
             let content = doc
                 .fields
@@ -270,8 +287,7 @@ async fn sync_with_connector<C: SourceConnector>(
 
         // Generate embeddings if client is available
         let embeddings: Option<Vec<Vec<f32>>> = if let Some(client) = embed_client {
-            let content_texts: Vec<&str> = result
-                .documents
+            let content_texts: Vec<&str> = new_docs
                 .iter()
                 .map(|doc| {
                     doc.fields
@@ -296,8 +312,7 @@ async fn sync_with_connector<C: SourceConnector>(
         };
 
         // Convert SourceDocuments to JSON values, with embeddings if available
-        let azure_docs: Vec<serde_json::Value> = result
-            .documents
+        let azure_docs: Vec<serde_json::Value> = new_docs
             .iter()
             .enumerate()
             .map(|(i, doc)| {
@@ -322,7 +337,7 @@ async fn sync_with_connector<C: SourceConnector>(
         total_synced += doc_count;
 
         // Persist state immediately after each batch (crash safety)
-        state.update_source(source_name, result.cursor.last_updated, doc_count);
+        state.update_source(source_name, result_cursor.last_updated, doc_count);
         state
             .save(state_path)
             .context("failed to save sync state")?;
@@ -334,7 +349,7 @@ async fn sync_with_connector<C: SourceConnector>(
             "Pushed batch with embeddings to Azure AI Search"
         );
 
-        if !result.has_more {
+        if !result_has_more {
             break;
         }
     }

@@ -474,6 +474,99 @@ async fn incremental_sync_uses_cursor() {
 }
 
 // ---------------------------------------------------------------------------
+// Test 3b: repeated_sync_does_not_re_push_same_docs
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn repeated_sync_does_not_re_push_same_docs() {
+    let jira_server = MockServer::start().await;
+    let azure_server = MockServer::start().await;
+
+    // Jira returns 2 issues with specific timestamps
+    let issues = vec![
+        jira_dc_issue("TEST-1", "First issue", "2025-01-15T10:30:00.000+0000"),
+        jira_dc_issue("TEST-2", "Second issue", "2025-01-16T11:00:00.000+0000"),
+    ];
+
+    // Mount Jira mock — will be called multiple times
+    Mock::given(method("GET"))
+        .and(path("/rest/api/2/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(jira_dc_search_response(issues)))
+        .mount(&jira_server)
+        .await;
+
+    // Azure: index exists
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/indexes/jira-issues"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "name": "jira-issues"
+        })))
+        .mount(&azure_server)
+        .await;
+
+    // Azure: docs/index — track how many times it's called
+    Mock::given(method("POST"))
+        .and(path_regex(r"^/indexes/jira-issues/docs/index"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(azure_index_response(&[
+                "test-jira-TEST-1",
+                "test-jira-TEST-2",
+            ])),
+        )
+        .mount(&azure_server)
+        .await;
+
+    let (config_file, state_dir) = write_dc_config(&jira_server.uri(), &azure_server.uri());
+    let config = load_config(config_file.path()).expect("load config");
+    let state_path = state_dir.path().join("state.json");
+
+    // First sync — should push 2 docs
+    run_sync(
+        &config,
+        &state_path,
+        &test_embedding(),
+        IndexMode::AutoCreate,
+        None,
+    )
+    .await
+    .expect("first sync failed");
+
+    let state = SyncState::load(&state_path).expect("load state");
+    assert_eq!(state.get_source("test-jira").documents_synced, 2);
+
+    // Second sync — Jira returns same issues (updated >= cursor is inclusive),
+    // but sync should filter them out and NOT push anything
+    run_sync(
+        &config,
+        &state_path,
+        &test_embedding(),
+        IndexMode::AutoCreate,
+        None,
+    )
+    .await
+    .expect("second sync failed");
+
+    // Doc count should still be 2, not 4
+    let state = SyncState::load(&state_path).expect("load state");
+    assert_eq!(
+        state.get_source("test-jira").documents_synced,
+        2,
+        "should not re-count already synced docs"
+    );
+
+    // Azure docs/index should have been called only ONCE (first sync only)
+    let calls = azure_server.received_requests().await.unwrap();
+    let push_calls = calls
+        .iter()
+        .filter(|req| req.url.path().contains("docs/index"))
+        .count();
+    assert_eq!(
+        push_calls, 1,
+        "should only push docs once, not on repeated syncs"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Test 4: setup_indexes_creates_missing
 // ---------------------------------------------------------------------------
 
