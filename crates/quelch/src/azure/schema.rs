@@ -30,6 +30,7 @@ pub fn jira_index_schema(index_name: &str) -> IndexSchema {
         name: index_name.to_string(),
         fields: vec![
             field("id", "Edm.String", true, false, true, false, false),
+            field("url", "Edm.String", false, false, true, false, false),
             field(
                 "source_name",
                 "Edm.String",
@@ -39,6 +40,7 @@ pub fn jira_index_schema(index_name: &str) -> IndexSchema {
                 false,
                 false,
             ),
+            field("source_type", "Edm.String", false, false, true, false, true),
             field("project", "Edm.String", false, false, true, false, true),
             field("issue_key", "Edm.String", false, false, true, false, false),
             field("issue_type", "Edm.String", false, false, true, false, true),

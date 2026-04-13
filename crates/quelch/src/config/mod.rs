@@ -113,6 +113,11 @@ impl AuthConfig {
             }
         }
     }
+
+    /// Returns true if this is a Cloud auth config.
+    pub fn is_cloud(&self) -> bool {
+        matches!(self, AuthConfig::Cloud { .. })
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
