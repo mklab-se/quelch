@@ -3,6 +3,7 @@ use colored::Colorize;
 
 use crate::azure::SearchClient;
 use crate::config::Config;
+use crate::text::truncate_for_display;
 
 /// Run a semantic search across configured indexes.
 pub async fn run_search(
@@ -87,11 +88,7 @@ fn print_results(index_name: &str, query: &str, result: &serde_json::Value) {
             let text = answer.get("text").and_then(|v| v.as_str()).unwrap_or("");
 
             // Truncate text for display
-            let preview = if text.len() > 600 {
-                format!("{}...", &text[..600])
-            } else {
-                text.to_string()
-            };
+            let preview = truncate_for_display(text, 600);
 
             println!();
             println!(
@@ -169,11 +166,7 @@ fn print_results(index_name: &str, query: &str, result: &serde_json::Value) {
                 .and_then(|t| t.as_str())
                 .unwrap_or("");
 
-            let snippet = if caption.len() > 800 {
-                format!("{}...", &caption[..800])
-            } else {
-                caption.to_string()
-            };
+            let snippet = truncate_for_display(caption, 800);
 
             println!();
             println!(

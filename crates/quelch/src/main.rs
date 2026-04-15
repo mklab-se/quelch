@@ -37,8 +37,12 @@ async fn main() -> Result<()> {
         Commands::Sync {
             create_indexes,
             purge,
-        } => cmd_sync(&cli.config, create_indexes, purge).await,
-        Commands::Watch { create_indexes } => cmd_watch(&cli.config, create_indexes).await,
+            max_docs,
+        } => cmd_sync(&cli.config, create_indexes, purge, max_docs).await,
+        Commands::Watch {
+            create_indexes,
+            max_docs,
+        } => cmd_watch(&cli.config, create_indexes, max_docs).await,
         Commands::Setup { yes } => cmd_setup(&cli.config, yes).await,
         Commands::Status => cmd_status(&cli.config),
         Commands::Reset { source } => cmd_reset(&cli.config, source.as_deref()),
@@ -59,7 +63,12 @@ async fn main() -> Result<()> {
     }
 }
 
-async fn cmd_sync(config_path: &Path, auto_create: bool, purge: bool) -> Result<()> {
+async fn cmd_sync(
+    config_path: &Path,
+    auto_create: bool,
+    purge: bool,
+    max_docs: Option<u64>,
+) -> Result<()> {
     let config = config::load_config(config_path)?;
     let state_path = Path::new(&config.sync.state_file).to_path_buf();
     let mode = if auto_create {
@@ -71,8 +80,20 @@ async fn cmd_sync(config_path: &Path, auto_create: bool, purge: bool) -> Result<
     let embed_client = ailloy::Client::for_capability("embedding")
         .context("failed to create embedding client — run 'quelch ai config' to set up")?;
 
-    info!("Starting one-shot sync");
-    sync::run_sync(&config, &state_path, &embedding, mode, Some(&embed_client)).await?;
+    if let Some(limit) = max_docs {
+        info!(max_docs = limit, "Starting one-shot sync (limited)");
+    } else {
+        info!("Starting one-shot sync");
+    }
+    sync::run_sync(
+        &config,
+        &state_path,
+        &embedding,
+        mode,
+        Some(&embed_client),
+        max_docs,
+    )
+    .await?;
 
     if purge {
         info!("Running orphan purge");
@@ -83,7 +104,7 @@ async fn cmd_sync(config_path: &Path, auto_create: bool, purge: bool) -> Result<
     Ok(())
 }
 
-async fn cmd_watch(config_path: &Path, auto_create: bool) -> Result<()> {
+async fn cmd_watch(config_path: &Path, auto_create: bool, max_docs: Option<u64>) -> Result<()> {
     let config = config::load_config(config_path)?;
     let state_path = Path::new(&config.sync.state_file).to_path_buf();
     let interval = std::time::Duration::from_secs(config.sync.poll_interval);
@@ -115,8 +136,15 @@ async fn cmd_watch(config_path: &Path, auto_create: bool) -> Result<()> {
             IndexMode::RequireExisting
         };
 
-        if let Err(e) =
-            sync::run_sync(&config, &state_path, &embedding, mode, Some(&embed_client)).await
+        if let Err(e) = sync::run_sync(
+            &config,
+            &state_path,
+            &embedding,
+            mode,
+            Some(&embed_client),
+            max_docs,
+        )
+        .await
         {
             tracing::error!(error = %e, "Sync cycle failed");
         }

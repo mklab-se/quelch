@@ -1,9 +1,10 @@
 pub mod state;
 
 use anyhow::{Context, Result};
+use chrono::Timelike;
 use std::io::Write;
 use std::path::Path;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::azure::SearchClient;
 use crate::azure::schema::{EmbeddingConfig, confluence_index_schema, jira_index_schema};
@@ -11,8 +12,17 @@ use crate::config::{Config, SourceConfig};
 use crate::sources::confluence::ConfluenceConnector;
 use crate::sources::jira::JiraConnector;
 use crate::sources::{SourceConnector, SyncCursor};
+use crate::text::truncate_for_display;
 
 use self::state::SyncState;
+
+fn format_error_chain(error: &anyhow::Error) -> String {
+    error
+        .chain()
+        .map(|cause| cause.to_string())
+        .collect::<Vec<_>>()
+        .join(": ")
+}
 
 /// Controls how missing indexes are handled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,18 +174,21 @@ pub async fn setup_indexes(
 
 /// Run a one-shot sync of all configured sources.
 /// If `embed_client` is None, documents are pushed without embeddings (for testing/mock mode).
+/// If `max_docs` is Some, stop after syncing that many documents per source.
 pub async fn run_sync(
     config: &Config,
     state_path: &Path,
     embedding: &EmbeddingConfig,
     index_mode: IndexMode,
     embed_client: Option<&ailloy::Client>,
+    max_docs: Option<u64>,
 ) -> Result<()> {
     // Ensure all indexes exist before syncing
     setup_indexes(config, embedding, index_mode).await?;
 
     let azure = SearchClient::new(&config.azure.endpoint, &config.azure.api_key);
     let mut state = SyncState::load(state_path)?;
+    let mut failures = Vec::new();
 
     for source_config in &config.sources {
         if let Err(e) = sync_source(
@@ -185,11 +198,26 @@ pub async fn run_sync(
             config,
             &mut state,
             state_path,
+            max_docs,
         )
         .await
         {
-            error!(source = source_config.name(), error = %e, "Sync failed for source");
+            let error_chain = format_error_chain(&e);
+            error!(
+                source = source_config.name(),
+                error = %error_chain,
+                "Sync failed for source"
+            );
+            failures.push(format!("{}: {}", source_config.name(), error_chain));
         }
+    }
+
+    if !failures.is_empty() {
+        anyhow::bail!(
+            "sync failed for {} source(s): {}",
+            failures.len(),
+            failures.join(" | ")
+        );
     }
 
     Ok(())
@@ -286,15 +314,34 @@ async fn sync_source(
     config: &Config,
     state: &mut SyncState,
     state_path: &Path,
+    max_docs: Option<u64>,
 ) -> Result<()> {
     match source_config {
         SourceConfig::Jira(jira_config) => {
             let connector = JiraConnector::new(jira_config);
-            sync_with_connector(azure, embed_client, &connector, config, state, state_path).await
+            sync_with_connector(
+                azure,
+                embed_client,
+                &connector,
+                config,
+                state,
+                state_path,
+                max_docs,
+            )
+            .await
         }
         SourceConfig::Confluence(conf_config) => {
             let connector = ConfluenceConnector::new(conf_config);
-            sync_with_connector(azure, embed_client, &connector, config, state, state_path).await
+            sync_with_connector(
+                azure,
+                embed_client,
+                &connector,
+                config,
+                state,
+                state_path,
+                max_docs,
+            )
+            .await
         }
     }
 }
@@ -306,19 +353,49 @@ async fn sync_with_connector<C: SourceConnector>(
     config: &Config,
     state: &mut SyncState,
     state_path: &Path,
+    max_docs: Option<u64>,
 ) -> Result<()> {
     let index_name = connector.index_name();
     let source_name = connector.source_name();
 
     // Get cursor from persisted state
     let source_state = state.get_source(source_name);
-    let cursor = source_state
+    let mut cursor = source_state
         .last_cursor
         .map(|ts| SyncCursor { last_updated: ts });
 
+    if let Some(ref c) = cursor {
+        info!(
+            source = source_name,
+            last_cursor = %c.last_updated,
+            "Resuming sync from saved cursor"
+        );
+    } else {
+        info!(
+            source = source_name,
+            "Starting full sync (no previous cursor)"
+        );
+    }
+
     let mut total_synced: u64 = 0;
+    let mut batch_num: u64 = 0;
+    let mut soft_limit_reached = false;
 
     loop {
+        // --max-docs is a soft limit: once we've synced ≥ N docs, we stop
+        // fetching new batches but we never truncate mid-batch so we always
+        // finish the current minute and avoid leaving a half-synced gap.
+        if soft_limit_reached {
+            info!(
+                source = source_name,
+                total = total_synced,
+                limit = max_docs.unwrap_or(0),
+                "Reached --max-docs soft limit, stopping sync"
+            );
+            break;
+        }
+
+        batch_num += 1;
         let result = connector
             .fetch_changes(cursor.as_ref(), config.sync.batch_size)
             .await
@@ -328,14 +405,21 @@ async fn sync_with_connector<C: SourceConnector>(
         let result_cursor = result.cursor;
         let result_has_more = result.has_more;
 
-        // Filter out documents we've already synced (JQL uses >= which is inclusive,
-        // so the last synced document always comes back). Skip docs whose updated_at
-        // exactly matches the cursor — we already have those.
+        // Filter out documents from before the cursor's minute. JQL uses minute
+        // precision ("updated >= 2026-01-12 13:56"), so the filter must also use
+        // minute precision. We truncate the cursor to its minute start and keep
+        // all docs after that. This re-syncs a few docs from the cursor's minute,
+        // which is fine since Azure AI Search push is an upsert.
         let new_docs: Vec<_> = if let Some(ref c) = cursor {
+            let cursor_minute = c
+                .last_updated
+                .with_second(0)
+                .and_then(|t| t.with_nanosecond(0))
+                .unwrap_or(c.last_updated);
             result
                 .documents
                 .into_iter()
-                .filter(|doc| doc.updated_at > c.last_updated)
+                .filter(|doc| doc.updated_at > cursor_minute)
                 .collect()
         } else {
             result.documents
@@ -343,8 +427,47 @@ async fn sync_with_connector<C: SourceConnector>(
 
         let doc_count = new_docs.len() as u64;
         if doc_count == 0 {
-            info!(source = source_name, "No changes since last sync");
+            if batch_num == 1 {
+                info!(source = source_name, "No changes since last sync");
+            } else {
+                info!(
+                    source = source_name,
+                    batches = batch_num,
+                    total = total_synced,
+                    "No more changes to sync"
+                );
+            }
             break;
+        }
+
+        // Log each document at info level for visibility
+        for doc in &new_docs {
+            let issue_key = doc
+                .fields
+                .get("issue_key")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let summary = doc
+                .fields
+                .get("summary")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let updated = doc
+                .fields
+                .get("updated_at")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let summary_preview = truncate_for_display(summary, 80);
+            info!(
+                source = source_name,
+                key = issue_key,
+                updated = updated,
+                "[{}/{}] {} — {}",
+                total_synced + 1,
+                max_docs.map_or("∞".to_string(), |l| l.to_string()),
+                issue_key,
+                summary_preview
+            );
         }
 
         // Log document content at debug level (-v)
@@ -355,11 +478,7 @@ async fn sync_with_connector<C: SourceConnector>(
                 .get("content")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            let preview = if content.len() > 200 {
-                format!("{}...", &content[..200])
-            } else {
-                content.to_string()
-            };
+            let preview = truncate_for_display(content, 200);
             debug!(
                 source = source_name,
                 id = id,
@@ -369,28 +488,29 @@ async fn sync_with_connector<C: SourceConnector>(
             );
         }
 
-        // Generate embeddings if client is available
+        // Generate embeddings if client is available.
+        // If the content exceeds the model's token limit, we progressively truncate
+        // and retry per-document rather than failing the whole batch.
         let embeddings: Option<Vec<Vec<f32>>> = if let Some(client) = embed_client {
-            let content_texts: Vec<&str> = new_docs
-                .iter()
-                .map(|doc| {
-                    doc.fields
-                        .get("content")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                })
-                .collect();
-
             debug!(
                 source = source_name,
-                count = content_texts.len(),
+                count = new_docs.len(),
                 "Generating embeddings"
             );
-            let embed_response = client
-                .embed(&content_texts)
-                .await
-                .context("failed to generate embeddings")?;
-            Some(embed_response.embeddings)
+            let mut vecs = Vec::with_capacity(new_docs.len());
+            for doc in &new_docs {
+                let content = doc
+                    .fields
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let id = doc.fields.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+                let embedding = embed_with_retry(client, id, content, source_name)
+                    .await
+                    .context("failed to generate embedding")?;
+                vecs.push(embedding);
+            }
+            Some(vecs)
         } else {
             None
         };
@@ -428,10 +548,24 @@ async fn sync_with_connector<C: SourceConnector>(
 
         info!(
             source = source_name,
-            batch = doc_count,
+            batch = batch_num,
+            batch_docs = doc_count,
             total = total_synced,
-            "Pushed batch with embeddings to Azure AI Search"
+            cursor = %result_cursor.last_updated,
+            "Batch pushed to Azure AI Search"
         );
+
+        // Advance cursor for next iteration — THIS IS CRITICAL.
+        // Without this, the next fetch_changes call would use the same JQL
+        // timestamp and return the same results, causing an infinite loop.
+        cursor = Some(result_cursor);
+
+        // Check soft limit after processing and cursor update
+        if let Some(limit) = max_docs
+            && total_synced >= limit
+        {
+            soft_limit_reached = true;
+        }
 
         if !result_has_more {
             break;
@@ -443,4 +577,103 @@ async fn sync_with_connector<C: SourceConnector>(
     }
 
     Ok(())
+}
+
+/// Embed a single document's content, retrying with progressively truncated text
+/// if the embedding model rejects it for exceeding the token limit.
+///
+/// Strategy: on a token-limit error, calculate the reduction ratio from the error
+/// message if possible, otherwise halve the content. Retry up to 5 times.
+async fn embed_with_retry(
+    client: &ailloy::Client,
+    doc_id: &str,
+    content: &str,
+    source_name: &str,
+) -> Result<Vec<f32>> {
+    const MAX_RETRIES: usize = 5;
+
+    let mut text = content.to_string();
+
+    for attempt in 0..=MAX_RETRIES {
+        match client.embed_one(&text).await {
+            Ok(embedding) => return Ok(embedding),
+            Err(e) => {
+                if attempt == MAX_RETRIES {
+                    anyhow::bail!(
+                        "document {} still exceeds token limit after {} truncations: {}",
+                        doc_id,
+                        MAX_RETRIES,
+                        e
+                    );
+                }
+
+                // Check if this is a token limit error we can retry.
+                // Match on the error string since the ClientError may be wrapped
+                // in context layers that prevent downcast_ref from finding it.
+                let error_msg = format!("{}", e);
+                let is_token_error = error_msg.contains("maximum context length");
+
+                if !is_token_error {
+                    return Err(e);
+                }
+
+                // Try to parse the actual/max tokens from the error to calculate
+                // the optimal reduction. Error format:
+                // "...maximum context length is 8192 tokens, however you requested 11371 tokens..."
+                let shrink_ratio = parse_token_ratio(&error_msg).unwrap_or(0.5);
+
+                let new_len = ((text.len() as f64) * shrink_ratio * 0.9) as usize; // 10% extra margin
+                let new_len = new_len.max(100); // never go below 100 chars
+
+                // Truncate on a char boundary
+                let byte_end = text
+                    .char_indices()
+                    .take_while(|(i, _)| *i < new_len)
+                    .last()
+                    .map(|(i, c)| i + c.len_utf8())
+                    .unwrap_or(new_len.min(text.len()));
+                text.truncate(byte_end);
+
+                warn!(
+                    source = source_name,
+                    id = doc_id,
+                    attempt = attempt + 1,
+                    new_chars = text.len(),
+                    shrink_ratio = format!("{:.0}%", shrink_ratio * 100.0),
+                    "Truncating content for embedding (token limit exceeded)"
+                );
+            }
+        }
+    }
+
+    unreachable!()
+}
+
+/// Parse the max/requested token counts from an embedding error message and return
+/// the ratio (max_tokens / requested_tokens) to scale the content down.
+fn parse_token_ratio(error_msg: &str) -> Option<f64> {
+    // "maximum context length is 8192 tokens, however you requested 11371 tokens"
+    let max_pos = error_msg.find("maximum context length is ")?;
+    let after_max = &error_msg[max_pos + 25..];
+    let max_tokens: f64 = after_max
+        .split_whitespace()
+        .next()?
+        .trim_end_matches(|c: char| !c.is_ascii_digit())
+        .parse()
+        .ok()?;
+
+    let req_pos = error_msg.find("you requested ")?;
+    let after_req = &error_msg[req_pos + 14..];
+    let req_tokens: f64 = after_req
+        .split_whitespace()
+        .next()?
+        .trim_end_matches(|c: char| !c.is_ascii_digit())
+        .parse()
+        .ok()?;
+
+    if req_tokens > 0.0 {
+        Some(max_tokens / req_tokens)
+    } else {
+        None
+    }
 }

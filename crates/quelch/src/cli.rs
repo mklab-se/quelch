@@ -39,12 +39,18 @@ pub enum Commands {
         /// Also purge orphaned documents from indexes
         #[arg(long)]
         purge: bool,
+        /// Maximum number of documents to sync (useful for debugging)
+        #[arg(long)]
+        max_docs: Option<u64>,
     },
     /// Run continuous sync (polls at configured interval)
     Watch {
         /// Auto-create missing indexes without prompting
         #[arg(long)]
         create_indexes: bool,
+        /// Maximum number of documents to sync per cycle (useful for debugging)
+        #[arg(long)]
+        max_docs: Option<u64>,
     },
     /// Check and create Azure AI Search indexes needed by the config
     Setup {

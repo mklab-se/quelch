@@ -328,6 +328,7 @@ async fn full_sync_jira_dc_to_azure() {
         &test_embedding(),
         IndexMode::AutoCreate,
         None,
+        None,
     )
     .await
     .expect("run_sync failed");
@@ -397,6 +398,7 @@ async fn full_sync_jira_cloud_to_azure() {
         &test_embedding(),
         IndexMode::AutoCreate,
         None,
+        None,
     )
     .await
     .expect("run_sync failed");
@@ -451,6 +453,7 @@ async fn incremental_sync_uses_cursor() {
         &state_path,
         &test_embedding(),
         IndexMode::AutoCreate,
+        None,
         None,
     )
     .await
@@ -527,6 +530,7 @@ async fn repeated_sync_does_not_re_push_same_docs() {
         &test_embedding(),
         IndexMode::AutoCreate,
         None,
+        None,
     )
     .await
     .expect("first sync failed");
@@ -541,6 +545,7 @@ async fn repeated_sync_does_not_re_push_same_docs() {
         &state_path,
         &test_embedding(),
         IndexMode::AutoCreate,
+        None,
         None,
     )
     .await
@@ -713,6 +718,7 @@ async fn sync_with_confluence_chunking() {
         &state_path,
         &test_embedding(),
         IndexMode::AutoCreate,
+        None,
         None,
     )
     .await

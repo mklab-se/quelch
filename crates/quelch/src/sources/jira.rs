@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use reqwest::Client;
 use serde::Deserialize;
 use std::collections::HashMap;
-use tracing::debug;
+use tracing::info;
 
 use super::{FetchResult, SourceConnector, SourceDocument, SyncCursor};
 use crate::config::JiraSourceConfig;
@@ -120,19 +120,7 @@ impl JiraConnector {
     }
 
     fn build_jql(&self, cursor: Option<&SyncCursor>) -> String {
-        let project_clause = self
-            .config
-            .projects
-            .iter()
-            .map(|p| format!("project = {p}"))
-            .collect::<Vec<_>>()
-            .join(" OR ");
-
-        let project_jql = if self.config.projects.len() > 1 {
-            format!("({project_clause})")
-        } else {
-            project_clause
-        };
+        let project_jql = self.projects_jql();
 
         match cursor {
             Some(c) => {
@@ -141,6 +129,10 @@ impl JiraConnector {
             }
             None => format!("{project_jql} ORDER BY updated ASC"),
         }
+    }
+
+    fn quote_jql_string(value: &str) -> String {
+        format!("\"{}\"", value.replace('"', "\\\""))
     }
 
     /// Build the browse URL for an issue: `{base_url}/browse/{key}`
@@ -362,9 +354,10 @@ impl JiraConnector {
         );
         let auth_header = self.config.auth.authorization_header();
 
-        debug!(
+        info!(
             source = self.config.name,
             jql = jql,
+            batch_size = batch_size,
             "Fetching Jira issues (DC v2)"
         );
 
@@ -412,7 +405,7 @@ impl JiraConnector {
         let fetched = search_resp.start_at + search_resp.issues.len() as u64;
         let has_more = fetched < search_resp.total;
 
-        debug!(
+        info!(
             source = self.config.name,
             count = documents.len(),
             total = search_resp.total,
@@ -443,9 +436,10 @@ impl JiraConnector {
         );
         let auth_header = self.config.auth.authorization_header();
 
-        debug!(
+        info!(
             source = self.config.name,
             jql = jql,
+            batch_size = batch_size,
             "Fetching Jira issues (Cloud v3)"
         );
 
@@ -491,7 +485,7 @@ impl JiraConnector {
 
         let has_more = !search_resp.is_last && search_resp.next_page_token.is_some();
 
-        debug!(
+        info!(
             source = self.config.name,
             count = documents.len(),
             has_more = has_more,
@@ -618,7 +612,7 @@ impl JiraConnector {
             .config
             .projects
             .iter()
-            .map(|p| format!("project = {p}"))
+            .map(|p| format!("project = {}", Self::quote_jql_string(p)))
             .collect::<Vec<_>>()
             .join(" OR ");
 
@@ -707,7 +701,7 @@ mod tests {
     fn builds_jql_without_cursor() {
         let connector = JiraConnector::new(&dc_config());
         let jql = connector.build_jql(None);
-        assert_eq!(jql, "project = DO ORDER BY updated ASC");
+        assert_eq!(jql, "project = \"DO\" ORDER BY updated ASC");
     }
 
     #[test]
@@ -720,7 +714,7 @@ mod tests {
         };
         let jql = connector.build_jql(Some(&cursor));
         assert!(jql.contains("updated >= \"2025-01-15 10:30\""));
-        assert!(jql.contains("project = DO"));
+        assert!(jql.contains("project = \"DO\""));
     }
 
     #[test]
@@ -729,7 +723,19 @@ mod tests {
         config.projects = vec!["DO".to_string(), "HR".to_string()];
         let connector = JiraConnector::new(&config);
         let jql = connector.build_jql(None);
-        assert_eq!(jql, "(project = DO OR project = HR) ORDER BY updated ASC");
+        assert_eq!(
+            jql,
+            "(project = \"DO\" OR project = \"HR\") ORDER BY updated ASC"
+        );
+    }
+
+    #[test]
+    fn escapes_quotes_in_project_keys() {
+        let mut config = dc_config();
+        config.projects = vec!["Team \"A\"".to_string()];
+        let connector = JiraConnector::new(&config);
+        let jql = connector.build_jql(None);
+        assert_eq!(jql, "project = \"Team \\\"A\\\"\" ORDER BY updated ASC");
     }
 
     #[test]
