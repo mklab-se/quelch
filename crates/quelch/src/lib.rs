@@ -1,6 +1,7 @@
 pub mod ai;
 pub mod azure;
 pub mod config;
+pub mod copilot;
 pub mod mock;
 pub mod search;
 pub mod sources;

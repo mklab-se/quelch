@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-04-16
+
+### Added
+- **`generate-agent` command** — Generates Copilot Studio agent configuration (OnKnowledgeRequested topics, agent instructions, setup guide) tailored to your quelch.yaml config
+- **Copilot Studio documentation** — `docs/copilot-studio-onknowledgerequested.md` explaining the OnKnowledgeRequested trigger for custom knowledge sources
+
+### Changed
+- Updated dependencies (axum, clap, tokio, hyper-rustls, rustls-webpki, bitflags)
+
 ## [0.3.0] - 2026-04-14
 
 ### Added

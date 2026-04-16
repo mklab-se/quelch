@@ -2,7 +2,7 @@ mod cli;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use quelch::{ai, config, search, sync};
+use quelch::{ai, config, copilot, search, sync};
 use std::path::Path;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -60,7 +60,43 @@ async fn main() -> Result<()> {
         }
         Commands::Mock { port } => quelch::mock::run_mock_server(port).await,
         Commands::Ai { command } => ai::run(command).await,
+        Commands::GenerateAgent { output } => cmd_generate_agent(&cli.config, &output),
     }
+}
+
+fn cmd_generate_agent(config_path: &Path, output_dir: &Path) -> Result<()> {
+    let config = config::load_config(config_path)?;
+    let output = copilot::generate(&config);
+
+    std::fs::create_dir_all(output_dir).with_context(|| {
+        format!(
+            "failed to create output directory: {}",
+            output_dir.display()
+        )
+    })?;
+
+    let instructions_path = output_dir.join("agent-instructions.md");
+    std::fs::write(&instructions_path, &output.instructions)?;
+    println!("  Wrote {}", instructions_path.display());
+
+    for topic in &output.topics {
+        let topic_path = output_dir.join(&topic.filename);
+        std::fs::write(&topic_path, &topic.yaml)?;
+        println!("  Wrote {}", topic_path.display());
+    }
+
+    let guide_path = output_dir.join("guide.md");
+    std::fs::write(&guide_path, &output.guide)?;
+    println!("  Wrote {}", guide_path.display());
+
+    println!(
+        "\nGenerated {} file(s) in {}",
+        output.topics.len() + 2,
+        output_dir.display()
+    );
+    println!("Read {} to get started.", guide_path.display());
+
+    Ok(())
 }
 
 async fn cmd_sync(

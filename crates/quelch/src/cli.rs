@@ -96,4 +96,10 @@ pub enum Commands {
         #[command(subcommand)]
         command: Option<AiCommands>,
     },
+    /// Generate Copilot Studio agent topics and instructions
+    GenerateAgent {
+        /// Output directory for generated files
+        #[arg(short, long, default_value = "copilot-studio")]
+        output: PathBuf,
+    },
 }
