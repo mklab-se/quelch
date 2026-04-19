@@ -1,3 +1,4 @@
+pub mod embedder;
 pub mod state;
 
 use anyhow::{Context, Result};
@@ -173,14 +174,14 @@ pub async fn setup_indexes(
 }
 
 /// Run a one-shot sync of all configured sources.
-/// If `embed_client` is None, documents are pushed without embeddings (for testing/mock mode).
+/// If `embedder` is None, documents are pushed without embeddings (for testing/mock mode).
 /// If `max_docs` is Some, stop after syncing that many documents per source.
 pub async fn run_sync(
     config: &Config,
     state_path: &Path,
     embedding: &EmbeddingConfig,
     index_mode: IndexMode,
-    embed_client: Option<&ailloy::Client>,
+    embedder: Option<&dyn embedder::Embedder>,
     max_docs: Option<u64>,
 ) -> Result<()> {
     // Ensure all indexes exist before syncing
@@ -193,7 +194,7 @@ pub async fn run_sync(
     for source_config in &config.sources {
         if let Err(e) = sync_source(
             &azure,
-            embed_client,
+            embedder,
             source_config,
             config,
             &mut state,
@@ -309,7 +310,7 @@ async fn purge_with_connector<C: SourceConnector>(
 
 async fn sync_source(
     azure: &SearchClient,
-    embed_client: Option<&ailloy::Client>,
+    embedder: Option<&dyn embedder::Embedder>,
     source_config: &SourceConfig,
     config: &Config,
     state: &mut SyncState,
@@ -320,26 +321,14 @@ async fn sync_source(
         SourceConfig::Jira(jira_config) => {
             let connector = JiraConnector::new(jira_config);
             sync_with_connector(
-                azure,
-                embed_client,
-                &connector,
-                config,
-                state,
-                state_path,
-                max_docs,
+                azure, embedder, &connector, config, state, state_path, max_docs,
             )
             .await
         }
         SourceConfig::Confluence(conf_config) => {
             let connector = ConfluenceConnector::new(conf_config);
             sync_with_connector(
-                azure,
-                embed_client,
-                &connector,
-                config,
-                state,
-                state_path,
-                max_docs,
+                azure, embedder, &connector, config, state, state_path, max_docs,
             )
             .await
         }
@@ -348,7 +337,7 @@ async fn sync_source(
 
 async fn sync_with_connector<C: SourceConnector>(
     azure: &SearchClient,
-    embed_client: Option<&ailloy::Client>,
+    embedder: Option<&dyn embedder::Embedder>,
     connector: &C,
     config: &Config,
     state: &mut SyncState,
@@ -488,10 +477,10 @@ async fn sync_with_connector<C: SourceConnector>(
             );
         }
 
-        // Generate embeddings if client is available.
+        // Generate embeddings if an embedder is available.
         // If the content exceeds the model's token limit, we progressively truncate
         // and retry per-document rather than failing the whole batch.
-        let embeddings: Option<Vec<Vec<f32>>> = if let Some(client) = embed_client {
+        let embeddings: Option<Vec<Vec<f32>>> = if let Some(emb) = embedder {
             debug!(
                 source = source_name,
                 count = new_docs.len(),
@@ -505,7 +494,7 @@ async fn sync_with_connector<C: SourceConnector>(
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 let id = doc.fields.get("id").and_then(|v| v.as_str()).unwrap_or("?");
-                let embedding = embed_with_retry(client, id, content, source_name)
+                let embedding = embed_with_retry(emb, id, content, source_name)
                     .await
                     .context("failed to generate embedding")?;
                 vecs.push(embedding);
@@ -585,7 +574,7 @@ async fn sync_with_connector<C: SourceConnector>(
 /// Strategy: on a token-limit error, calculate the reduction ratio from the error
 /// message if possible, otherwise halve the content. Retry up to 5 times.
 async fn embed_with_retry(
-    client: &ailloy::Client,
+    embedder: &dyn embedder::Embedder,
     doc_id: &str,
     content: &str,
     source_name: &str,
@@ -595,7 +584,7 @@ async fn embed_with_retry(
     let mut text = content.to_string();
 
     for attempt in 0..=MAX_RETRIES {
-        match client.embed_one(&text).await {
+        match embedder.embed_one(&text).await {
             Ok(embedding) => return Ok(embedding),
             Err(e) => {
                 if attempt == MAX_RETRIES {

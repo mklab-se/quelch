@@ -126,7 +126,7 @@ async fn cmd_sync(
         &state_path,
         &embedding,
         mode,
-        Some(&embed_client),
+        Some(&embed_client as &dyn sync::embedder::Embedder),
         max_docs,
     )
     .await?;
@@ -177,7 +177,7 @@ async fn cmd_watch(config_path: &Path, auto_create: bool, max_docs: Option<u64>)
             &state_path,
             &embedding,
             mode,
-            Some(&embed_client),
+            Some(&embed_client as &dyn sync::embedder::Embedder),
             max_docs,
         )
         .await
