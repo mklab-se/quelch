@@ -14,6 +14,8 @@ use std::pin::Pin;
 /// Boxed future returned by [`Embedder::embed_one`].
 pub type EmbedFuture<'a> = Pin<Box<dyn Future<Output = Result<Vec<f32>>> + Send + 'a>>;
 
+/// Abstraction over an embedding model; implemented by `ailloy::Client` in
+/// production and `DeterministicEmbedder` in tests.
 pub trait Embedder: Send + Sync {
     /// Embed a single piece of text into a dense vector.
     fn embed_one<'a>(&'a self, text: &'a str) -> EmbedFuture<'a>;
@@ -28,10 +30,12 @@ impl Embedder for ailloy::Client {
 /// Deterministic test embedder: hashes text to a fixed-size vector.
 /// Same input always produces the same vector — good for assertions.
 pub struct DeterministicEmbedder {
+    /// Dimensionality of the output vectors produced by [`Embedder::embed_one`].
     pub dims: usize,
 }
 
 impl DeterministicEmbedder {
+    /// Construct a new [`DeterministicEmbedder`] producing vectors of `dims` floats.
     pub fn new(dims: usize) -> Self {
         Self { dims }
     }
