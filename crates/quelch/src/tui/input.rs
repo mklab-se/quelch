@@ -51,8 +51,14 @@ impl InputState {
                 app.prefs.log_view_on = !app.prefs.log_view_on;
             }
             KeyCode::Char('p') => match app.status {
-                EngineStatus::Paused => return InputOutcome::Command(UiCommand::Resume),
-                _ => return InputOutcome::Command(UiCommand::Pause),
+                EngineStatus::Paused => {
+                    app.status = EngineStatus::Idle;
+                    return InputOutcome::Command(UiCommand::Resume);
+                }
+                _ => {
+                    app.status = EngineStatus::Paused;
+                    return InputOutcome::Command(UiCommand::Pause);
+                }
             },
             KeyCode::Char('r') if !is_shift => {
                 return InputOutcome::Command(UiCommand::SyncNow);

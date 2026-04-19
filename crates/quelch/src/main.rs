@@ -546,6 +546,12 @@ async fn cmd_watch_tui(
             Some(cmd) = cmd_rx.recv() => match cmd {
                 sync::UiCommand::Shutdown => break,
                 sync::UiCommand::SyncNow => continue,
+                sync::UiCommand::PurgeNow { source } => {
+                    if let Err(e) = sync::run_purge(&config).await {
+                        tracing::error!(source = source, error = %e, "purge failed");
+                    }
+                    continue;
+                }
                 _ => continue,
             }
         }
