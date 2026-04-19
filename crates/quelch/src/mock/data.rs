@@ -1,11 +1,12 @@
 use serde_json::{Value, json};
 
-/// Return all 17 Jira issues in Jira DC REST API v2 format.
+/// Return all Jira issues (QUELCH + DEMO projects) in Jira DC REST API v2 format.
 pub fn jira_issues() -> Vec<Value> {
-    let issues = vec![
+    let mut issues = vec![
         issue(
             "QUELCH-1",
             "10001",
+            "QUELCH",
             "As a user, I want to configure data sources in YAML so I can easily set up sync targets",
             "The configuration system should support YAML files with environment variable substitution. \
              Users define Azure AI Search connection details and one or more source blocks (Jira, Confluence). \
@@ -36,6 +37,7 @@ pub fn jira_issues() -> Vec<Value> {
         issue(
             "QUELCH-2",
             "10002",
+            "QUELCH",
             "As a user, I want to sync Jira issues to Azure AI Search so they become searchable",
             "Implement the Jira DC connector that fetches issues via REST API v2 /rest/api/2/search endpoint. \
              Use JQL with project filter and updated >= cursor for incremental fetching. \
@@ -66,6 +68,7 @@ pub fn jira_issues() -> Vec<Value> {
         issue(
             "QUELCH-3",
             "10003",
+            "QUELCH",
             "As a user, I want incremental sync so only changed issues are fetched",
             "Implement cursor-based incremental sync using the updated timestamp of the last synced document. \
              On each sync cycle, build JQL with updated >= cursor to only fetch issues modified since last run. \
@@ -101,6 +104,7 @@ pub fn jira_issues() -> Vec<Value> {
         issue(
             "QUELCH-4",
             "10004",
+            "QUELCH",
             "As a user, I want to sync Confluence pages to Azure AI Search",
             "Implement the Confluence connector supporting both Cloud and Data Center. \
              Use the content search API with CQL filters for space and lastmodified date. \
@@ -131,6 +135,7 @@ pub fn jira_issues() -> Vec<Value> {
         issue(
             "QUELCH-5",
             "10005",
+            "QUELCH",
             "Long Confluence pages should be chunked by heading for better search relevance",
             "Pages over 4000 characters should be split into smaller chunks for better search relevance. \
              Primary strategy: split on h1/h2/h3 headings, keeping each section as a separate document. \
@@ -161,6 +166,7 @@ pub fn jira_issues() -> Vec<Value> {
         issue(
             "QUELCH-6",
             "10006",
+            "QUELCH",
             "As an admin, I want a setup command that creates Azure AI Search indexes",
             "Add a `quelch setup` command that reads the config, determines required indexes, \
              and creates them in Azure AI Search if they do not exist. Support --yes flag for \
@@ -191,6 +197,7 @@ pub fn jira_issues() -> Vec<Value> {
         issue(
             "QUELCH-7",
             "10007",
+            "QUELCH",
             "Support both Jira Cloud and Data Center authentication methods",
             "Cloud uses email + API token with Basic auth. Data Center uses Personal Access Token with Bearer auth. \
              The auth config should auto-detect based on which fields are provided. \
@@ -214,6 +221,7 @@ pub fn jira_issues() -> Vec<Value> {
         issue(
             "QUELCH-8",
             "10008",
+            "QUELCH",
             "As a user, I want continuous sync with configurable poll interval",
             "Implement `quelch watch` command that runs sync in a loop with configurable poll_interval \
              (default 300 seconds). First cycle should auto-create indexes if --create-indexes is set. \
@@ -244,6 +252,7 @@ pub fn jira_issues() -> Vec<Value> {
         issue(
             "QUELCH-9",
             "10009",
+            "QUELCH",
             "Build a TUI dashboard for watch mode showing sync status",
             "Create a terminal UI using ratatui that displays: current sync source, progress bar, \
              documents synced count, last sync timestamp, errors. The TUI should update in real time \
@@ -266,6 +275,7 @@ pub fn jira_issues() -> Vec<Value> {
         issue(
             "QUELCH-10",
             "10010",
+            "QUELCH",
             "Add parallel sync with credential-based concurrency control",
             "When multiple sources share the same credentials, limit concurrency to avoid rate limiting. \
              The config should have max_concurrent_per_credential setting. Sources with different \
@@ -288,6 +298,7 @@ pub fn jira_issues() -> Vec<Value> {
         issue(
             "QUELCH-11",
             "10011",
+            "QUELCH",
             "Handle API rate limiting with exponential backoff retry",
             "When Jira or Confluence returns 429 Too Many Requests, retry with exponential backoff. \
              Start with 1 second delay, double on each retry, cap at 60 seconds. \
@@ -318,6 +329,7 @@ pub fn jira_issues() -> Vec<Value> {
         issue(
             "QUELCH-12",
             "10012",
+            "QUELCH",
             "Crash-safe state persistence after every batch",
             "The sync state must be saved to disk after every batch completes, not just at the end of a full sync. \
              This ensures that if quelch crashes or is interrupted, it resumes from the last completed batch \
@@ -347,6 +359,7 @@ pub fn jira_issues() -> Vec<Value> {
         issue(
             "QUELCH-13",
             "10013",
+            "QUELCH",
             "Bug: Status category field not populated in Azure index",
             "The status_category field in the Azure AI Search index is always empty. \
              Root cause: the Jira DC v2 response nests statusCategory inside the status object, \
@@ -377,6 +390,7 @@ pub fn jira_issues() -> Vec<Value> {
         issue(
             "QUELCH-14",
             "10014",
+            "QUELCH",
             "Add URL field linking back to original Jira issue",
             "Each indexed document should include a url field that links back to the original Jira issue \
              in the format {base_url}/browse/{issue_key}. This allows search results to link directly \
@@ -399,6 +413,7 @@ pub fn jira_issues() -> Vec<Value> {
         issue(
             "QUELCH-15",
             "10015",
+            "QUELCH",
             "Support environment variable substitution in config file",
             "Config values like api_key and pat should support ${ENV_VAR} syntax so secrets are not \
              stored in the YAML file. Use shellexpand crate to resolve environment variables at config load time. \
@@ -428,6 +443,7 @@ pub fn jira_issues() -> Vec<Value> {
         issue(
             "QUELCH-16",
             "10016",
+            "QUELCH",
             "Detect and remove orphaned documents from Azure index",
             "When issues are deleted in Jira or pages removed in Confluence, the corresponding documents \
              in Azure AI Search become orphaned. Implement orphan detection by fetching all source IDs \
@@ -451,6 +467,7 @@ pub fn jira_issues() -> Vec<Value> {
         issue(
             "QUELCH-17",
             "10017",
+            "QUELCH",
             "As a user, I want a validate command to check my config without syncing",
             "Add `quelch validate` command that loads and validates the config file without performing any sync. \
              Check: YAML syntax, required fields present, URL formats valid, auth fields present. \
@@ -479,14 +496,48 @@ pub fn jira_issues() -> Vec<Value> {
         ),
     ];
 
+    issues.push(issue(
+        "DEMO-1",
+        "20001",
+        "DEMO",
+        "Sample demo ticket",
+        "Just a demo issue to exercise multi-project sync.",
+        "Task",
+        "Done",
+        "Done",
+        "Low",
+        "Demo User",
+        "Demo User",
+        &["demo"],
+        "2026-04-01T09:00:00.000+0000",
+        "2026-04-02T10:00:00.000+0000",
+        &[],
+    ));
+    issues.push(issue(
+        "DEMO-2",
+        "20002",
+        "DEMO",
+        "Second demo ticket",
+        "Second entry so the per-subsource UI has at least two rows.",
+        "Story",
+        "To Do",
+        "To Do",
+        "Medium",
+        "Demo User",
+        "Kristofer Liljeblad",
+        &["demo"],
+        "2026-04-03T09:00:00.000+0000",
+        "2026-04-04T10:00:00.000+0000",
+        &[],
+    ));
     issues
 }
 
-/// Return all 8 Confluence pages in Confluence DC v1 search response format.
+/// Return all Confluence pages (QUELCH + INFRA spaces) in Confluence DC v1 search response format.
 pub fn confluence_pages() -> Vec<Value> {
     let base_url = "http://localhost:9999/confluence";
 
-    vec![
+    let mut pages = vec![
         page(
             "100001",
             "Quelch Overview",
@@ -527,6 +578,7 @@ pub fn confluence_pages() -> Vec<Value> {
             &[], // no ancestors (top-level)
             &["overview", "architecture"],
             base_url,
+            "QUELCH",
         ),
         page(
             "100002",
@@ -586,6 +638,7 @@ quelch sync]]></ac:plain-text-body></ac:structured-macro>
             &[("100001", "Quelch Overview")],
             &["getting-started", "installation", "tutorial"],
             base_url,
+            "QUELCH",
         ),
         page(
             "100003",
@@ -654,6 +707,7 @@ sync:                        # Optional: Sync behavior overrides
             &[("100001", "Quelch Overview")],
             &["configuration", "reference", "yaml"],
             base_url,
+            "QUELCH",
         ),
         page(
             "100004",
@@ -710,6 +764,7 @@ sync:                        # Optional: Sync behavior overrides
             &[("100001", "Quelch Overview")],
             &["jira", "connector", "api"],
             base_url,
+            "QUELCH",
         ),
         page(
             "100005",
@@ -759,6 +814,7 @@ sync:                        # Optional: Sync behavior overrides
             &[("100001", "Quelch Overview")],
             &["confluence", "connector", "chunking"],
             base_url,
+            "QUELCH",
         ),
         page(
             "100006",
@@ -815,6 +871,7 @@ api-key: {admin-key}
             &[("100001", "Quelch Overview")],
             &["azure", "search", "index", "schema"],
             base_url,
+            "QUELCH",
         ),
         page(
             "100007",
@@ -862,6 +919,7 @@ api-key: {admin-key}
             &[("100001", "Quelch Overview")],
             &["troubleshooting", "errors", "faq"],
             base_url,
+            "QUELCH",
         ),
         page(
             "100008",
@@ -915,8 +973,37 @@ api-key: {admin-key}
             &[("100001", "Quelch Overview")],
             &["architecture", "design", "adr"],
             base_url,
+            "QUELCH",
         ),
-    ]
+    ];
+
+    pages.push(page(
+        "200001",
+        "Infra Runbook",
+        "<h1>Infra runbook</h1><p>Steps to reboot the build cluster.</p>",
+        1,
+        "Kristofer Liljeblad",
+        "2026-04-01T09:00:00.000+0000",
+        "2026-04-01T09:00:00.000+0000",
+        &[],
+        &["runbook", "infra"],
+        base_url,
+        "INFRA",
+    ));
+    pages.push(page(
+        "200002",
+        "On-call rotation",
+        "<h1>On-call</h1><p>Primary + secondary schedule.</p>",
+        1,
+        "Emma Andersson",
+        "2026-04-02T09:00:00.000+0000",
+        "2026-04-02T09:00:00.000+0000",
+        &[],
+        &["oncall"],
+        base_url,
+        "INFRA",
+    ));
+    pages
 }
 
 // ---------------------------------------------------------------------------
@@ -927,6 +1014,7 @@ api-key: {admin-key}
 fn issue(
     key: &str,
     id: &str,
+    project_key: &str,
     summary: &str,
     description: &str,
     issue_type: &str,
@@ -1009,10 +1097,10 @@ fn issue(
                 "active": true
             },
             "project": {
-                "self": "http://localhost:9999/jira/rest/api/2/project/10000",
-                "id": "10000",
-                "key": "QUELCH",
-                "name": "Quelch"
+                "self": format!("http://localhost:9999/jira/rest/api/2/project/{project_key}"),
+                "id": project_key,
+                "key": project_key,
+                "name": project_key
             },
             "labels": labels,
             "created": created,
@@ -1043,6 +1131,7 @@ fn page(
     ancestors: &[(&str, &str)], // (id, title)
     labels: &[&str],
     base_url: &str,
+    space_key: &str,
 ) -> Value {
     let ancestor_values: Vec<Value> = ancestors
         .iter()
@@ -1080,11 +1169,11 @@ fn page(
         "title": title,
         "space": {
             "id": 1,
-            "key": "QUELCH",
-            "name": "Quelch Documentation",
+            "key": space_key,
+            "name": format!("{space_key} Documentation"),
             "type": "global",
             "_links": {
-                "self": format!("{}/rest/api/space/QUELCH", base_url)
+                "self": format!("{}/rest/api/space/{}", base_url, space_key)
             }
         },
         "body": {

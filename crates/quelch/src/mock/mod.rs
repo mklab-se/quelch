@@ -531,8 +531,8 @@ pub async fn run_mock_server(port: u16) -> anyhow::Result<()> {
     println!("Mock Confluence DC server running at http://localhost:{port}/confluence");
     println!();
     println!("Auth token: {MOCK_TOKEN}");
-    println!("Jira project: QUELCH (17 issues)");
-    println!("Confluence space: QUELCH (8 pages)");
+    println!("Jira projects: QUELCH (17 issues), DEMO (2 issues)");
+    println!("Confluence spaces: QUELCH (8 pages), INFRA (2 pages)");
     println!();
     println!("Example quelch.yaml config:");
     println!();
@@ -548,6 +548,7 @@ pub async fn run_mock_server(port: u16) -> anyhow::Result<()> {
     println!("        pat: \"{MOCK_TOKEN}\"");
     println!("      projects:");
     println!("        - \"QUELCH\"");
+    println!("        - \"DEMO\"");
     println!("      index: \"jira-issues\"");
     println!();
     println!("    - type: confluence");
@@ -557,6 +558,7 @@ pub async fn run_mock_server(port: u16) -> anyhow::Result<()> {
     println!("        pat: \"{MOCK_TOKEN}\"");
     println!("      spaces:");
     println!("        - \"QUELCH\"");
+    println!("        - \"INFRA\"");
     println!("      index: \"confluence-pages\"");
     println!();
     println!("Press Ctrl+C to stop.");
@@ -734,5 +736,63 @@ mod tests {
             .await
             .unwrap();
         assert!(get.status().is_success());
+    }
+
+    #[tokio::test]
+    async fn jira_data_has_two_projects() {
+        let base = spawn_test_server().await;
+        let client = reqwest::Client::new();
+
+        let quelch_resp = client
+            .get(format!("{}/jira/rest/api/2/search", base))
+            .header("authorization", format!("Bearer {}", MOCK_TOKEN))
+            .query(&[("jql", "project = QUELCH"), ("maxResults", "100")])
+            .send()
+            .await
+            .unwrap();
+        let q: serde_json::Value = quelch_resp.json().await.unwrap();
+        assert!(q.get("total").unwrap().as_u64().unwrap() > 0);
+
+        let demo_resp = client
+            .get(format!("{}/jira/rest/api/2/search", base))
+            .header("authorization", format!("Bearer {}", MOCK_TOKEN))
+            .query(&[("jql", "project = DEMO"), ("maxResults", "100")])
+            .send()
+            .await
+            .unwrap();
+        let d: serde_json::Value = demo_resp.json().await.unwrap();
+        assert!(
+            d.get("total").unwrap().as_u64().unwrap() > 0,
+            "DEMO project should exist"
+        );
+    }
+
+    #[tokio::test]
+    async fn confluence_data_has_two_spaces() {
+        let base = spawn_test_server().await;
+        let client = reqwest::Client::new();
+
+        let quelch = client
+            .get(format!("{}/confluence/rest/api/content/search", base))
+            .header("authorization", format!("Bearer {}", MOCK_TOKEN))
+            .query(&[("cql", "space = QUELCH")])
+            .send()
+            .await
+            .unwrap();
+        let q: serde_json::Value = quelch.json().await.unwrap();
+        assert!(q.get("size").unwrap().as_u64().unwrap() > 0);
+
+        let infra = client
+            .get(format!("{}/confluence/rest/api/content/search", base))
+            .header("authorization", format!("Bearer {}", MOCK_TOKEN))
+            .query(&[("cql", "space = INFRA")])
+            .send()
+            .await
+            .unwrap();
+        let i: serde_json::Value = infra.json().await.unwrap();
+        assert!(
+            i.get("size").unwrap().as_u64().unwrap() > 0,
+            "INFRA space should exist"
+        );
     }
 }
