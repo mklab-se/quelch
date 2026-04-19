@@ -471,6 +471,7 @@ async fn cmd_sync_tui(
         Some(&embed_client as &dyn sync::embedder::Embedder),
         max_docs,
         &mut cmd_rx,
+        1,
     )
     .await;
 
@@ -526,6 +527,7 @@ async fn cmd_watch_tui(
             Some(&embed_client as &dyn sync::embedder::Embedder),
             max_docs,
             &mut cmd_rx,
+            cycle,
         )
         .await
         {

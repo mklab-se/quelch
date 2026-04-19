@@ -2,6 +2,7 @@ pub mod schema;
 
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::time::Instant;
 use thiserror::Error;
 use tracing::{debug, warn};
 
@@ -9,6 +10,36 @@ use self::schema::IndexSchema;
 
 const API_VERSION: &str = "2024-07-01";
 const MAX_RETRY_ATTEMPTS: u32 = 3;
+
+/// Emit a structured tracing event with Azure response metrics for the TUI.
+fn emit_response_event(status_u16: u16, elapsed: std::time::Duration) {
+    tracing::info!(
+        phase = "azure_response",
+        status = status_u16 as u64,
+        latency_ms = elapsed.as_millis() as u64,
+        throttled = (status_u16 == 429) as u64,
+        "Azure response"
+    );
+}
+
+/// Unwrap a `reqwest` send result while emitting a tracing event on both
+/// success and transport failure. On transport error, `status = 0`.
+fn emit_azure_response(
+    send_result: Result<reqwest::Response, reqwest::Error>,
+    start: Instant,
+) -> Result<reqwest::Response, AzureError> {
+    let elapsed = start.elapsed();
+    match send_result {
+        Ok(resp) => {
+            emit_response_event(resp.status().as_u16(), elapsed);
+            Ok(resp)
+        }
+        Err(e) => {
+            emit_response_event(0, elapsed);
+            Err(AzureError::Http(e))
+        }
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum AzureError {
@@ -59,12 +90,14 @@ impl SearchClient {
             self.endpoint, index_name, API_VERSION
         );
 
-        let resp = self
+        let start = Instant::now();
+        let send_result = self
             .client
             .get(&url)
             .header("api-key", &self.api_key)
             .send()
-            .await?;
+            .await;
+        let resp = emit_azure_response(send_result, start)?;
 
         if resp.status().is_success() {
             Ok(true)
@@ -115,12 +148,14 @@ impl SearchClient {
             self.endpoint, index_name, API_VERSION
         );
 
-        let resp = self
+        let start = Instant::now();
+        let send_result = self
             .client
             .delete(&url)
             .header("api-key", &self.api_key)
             .send()
-            .await?;
+            .await;
+        let resp = emit_azure_response(send_result, start)?;
 
         if resp.status().is_success() || resp.status().as_u16() == 404 {
             debug!("Deleted index '{}'", index_name);
@@ -158,14 +193,16 @@ impl SearchClient {
             "captions": "extractive|highlight-true"
         });
 
-        let resp = self
+        let start = Instant::now();
+        let send_result = self
             .client
             .post(&url)
             .header("api-key", &self.api_key)
             .header("Content-Type", "application/json")
             .json(&body)
             .send()
-            .await?;
+            .await;
+        let resp = emit_azure_response(send_result, start)?;
 
         if resp.status().is_success() {
             let result: serde_json::Value = resp.json().await?;
@@ -257,12 +294,14 @@ impl SearchClient {
                 self.endpoint, index_name, API_VERSION, top, skip
             );
 
-            let resp = self
+            let start = Instant::now();
+            let send_result = self
                 .client
                 .get(&url)
                 .header("api-key", &self.api_key)
                 .send()
-                .await?;
+                .await;
+            let resp = emit_azure_response(send_result, start)?;
 
             if !resp.status().is_success() {
                 let status = resp.status().as_u16();
@@ -358,9 +397,13 @@ impl SearchClient {
                 tokio::time::sleep(delay).await;
             }
 
-            match build_request().send().await {
+            let start = Instant::now();
+            let send_result = build_request().send().await;
+            let elapsed = start.elapsed();
+            match send_result {
                 Ok(resp) if resp.status() == 429 || resp.status().is_server_error() => {
                     let status = resp.status();
+                    emit_response_event(status.as_u16(), elapsed);
                     let body = resp.text().await.unwrap_or_default();
                     warn!("Request failed with {}: {}", status, body);
                     last_err = Some(AzureError::Api {
@@ -368,8 +411,12 @@ impl SearchClient {
                         message: body,
                     });
                 }
-                Ok(resp) => return Ok(resp),
+                Ok(resp) => {
+                    emit_response_event(resp.status().as_u16(), elapsed);
+                    return Ok(resp);
+                }
                 Err(e) => {
+                    emit_response_event(0, elapsed);
                     warn!("Request error: {}", e);
                     last_err = Some(AzureError::Http(e));
                 }

@@ -1,10 +1,12 @@
 pub mod embedder;
+pub mod phases;
 pub mod state;
 
 use anyhow::{Context, Result};
 use chrono::Timelike;
 use std::io::Write;
 use std::path::Path;
+use std::time::Instant;
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
@@ -234,7 +236,7 @@ pub async fn run_sync(
 ) -> Result<()> {
     let (_tx, mut rx) = never_command_channel();
     run_sync_with(
-        config, state_path, embedding, index_mode, embedder, max_docs, &mut rx,
+        config, state_path, embedding, index_mode, embedder, max_docs, &mut rx, 1,
     )
     .await
 }
@@ -251,6 +253,7 @@ pub async fn run_sync_with(
     embedder: Option<&dyn embedder::Embedder>,
     max_docs: Option<u64>,
     cmd_rx: &mut mpsc::Receiver<UiCommand>,
+    cycle: u64,
 ) -> Result<()> {
     setup_indexes(config, embedding, index_mode).await?;
     let azure = SearchClient::new(&config.azure.endpoint, &config.azure.api_key);
@@ -259,11 +262,21 @@ pub async fn run_sync_with(
     let mut paused = false;
     let mut failures = Vec::new();
 
-    info!(phase = "cycle_started", "Cycle starting");
+    let cycle_start = Instant::now();
+    info!(
+        phase = phases::CYCLE_STARTED,
+        cycle = cycle,
+        "Cycle starting"
+    );
 
     for source_config in &config.sources {
         if let EngineOutcome::Shutdown = poll_commands(cmd_rx, &mut paused).await {
-            tracing::info!(phase = "cycle_finished", "Cycle shutdown");
+            tracing::info!(
+                phase = phases::CYCLE_FINISHED,
+                cycle = cycle,
+                duration_ms = cycle_start.elapsed().as_millis() as u64,
+                "Cycle shutdown"
+            );
             return Ok(());
         }
         if let Err(e) = sync_source(
@@ -281,7 +294,7 @@ pub async fn run_sync_with(
         {
             let error_chain = format_error_chain(&e);
             error!(
-                phase = "source_failed",
+                phase = phases::SOURCE_FAILED,
                 source = source_config.name(),
                 error = %error_chain,
                 "Sync failed for source"
@@ -290,7 +303,12 @@ pub async fn run_sync_with(
         }
     }
 
-    info!(phase = "cycle_finished", "Cycle finished");
+    info!(
+        phase = phases::CYCLE_FINISHED,
+        cycle = cycle,
+        duration_ms = cycle_start.elapsed().as_millis() as u64,
+        "Cycle finished"
+    );
 
     if !failures.is_empty() {
         anyhow::bail!(
@@ -454,7 +472,7 @@ async fn sync_with_connector<C: SourceConnector>(
             _ => {}
         }
 
-        sync_single_subsource(
+        if let Err(e) = sync_single_subsource(
             azure,
             embedder,
             connector,
@@ -466,8 +484,21 @@ async fn sync_with_connector<C: SourceConnector>(
             cmd_rx,
             paused,
         )
-        .await?;
+        .await
+        {
+            error!(
+                phase = phases::SUBSOURCE_FAILED,
+                source = source_name,
+                subsource = subsource_key,
+                error = %e,
+                "Subsource failed"
+            );
+            // fall through to next subsource
+        }
     }
+
+    state.complete_source_cycle(source_name);
+    state.save(state_path).ok();
 
     info!(source = source_name, "Finished source");
     Ok(EngineOutcome::Continue)
@@ -541,7 +572,7 @@ async fn sync_single_subsource<C: SourceConnector>(
         .map(|ts| SyncCursor { last_updated: ts });
 
     info!(
-        phase = "subsource_started",
+        phase = phases::SUBSOURCE_STARTED,
         source = source_name,
         subsource = subsource,
         "Starting subsource"
@@ -560,7 +591,7 @@ async fn sync_single_subsource<C: SourceConnector>(
         match poll_commands(cmd_rx, paused).await {
             EngineOutcome::Shutdown => {
                 tracing::info!(
-                    phase = "subsource_finished",
+                    phase = phases::SUBSOURCE_FINISHED,
                     source = source_name,
                     subsource = subsource,
                     "Shutdown mid-subsource"
@@ -616,7 +647,7 @@ async fn sync_single_subsource<C: SourceConnector>(
         let doc_count = new_docs.len() as u64;
         if doc_count == 0 {
             info!(
-                phase = "subsource_empty",
+                phase = phases::SUBSOURCE_EMPTY,
                 source = source_name,
                 subsource = subsource,
                 batches = batch_num,
@@ -635,7 +666,7 @@ async fn sync_single_subsource<C: SourceConnector>(
                 .and_then(|v| v.as_str())
                 .unwrap_or("?");
             info!(
-                phase = "doc_synced",
+                phase = phases::DOC_SYNCED,
                 source = source_name,
                 subsource = subsource,
                 doc_id = id,
@@ -707,7 +738,7 @@ async fn sync_single_subsource<C: SourceConnector>(
             .context("failed to save sync state")?;
 
         info!(
-            phase = "subsource_batch",
+            phase = phases::SUBSOURCE_BATCH,
             source = source_name,
             subsource = subsource,
             batch = batch_num,
@@ -730,7 +761,7 @@ async fn sync_single_subsource<C: SourceConnector>(
     }
 
     info!(
-        phase = "subsource_finished",
+        phase = phases::SUBSOURCE_FINISHED,
         source = source_name,
         subsource = subsource,
         total = total_synced,

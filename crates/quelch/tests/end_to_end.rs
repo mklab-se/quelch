@@ -73,6 +73,7 @@ async fn sync_fills_azure_index_and_writes_v2_state() {
         Some(&emb as &dyn quelch::sync::embedder::Embedder),
         None,
         &mut rx,
+        1,
     )
     .await
     .unwrap();

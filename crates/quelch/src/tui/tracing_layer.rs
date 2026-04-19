@@ -10,7 +10,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tracing::{Event, Subscriber};
 use tracing_subscriber::Layer;
@@ -18,6 +18,7 @@ use tracing_subscriber::layer::Context;
 use tracing_subscriber::registry::LookupSpan;
 
 use super::events::QuelchEvent;
+use crate::sync::phases;
 
 const EVENT_CHANNEL_CAP: usize = 1024;
 const OVERFLOW_CAP: usize = 1024;
@@ -99,7 +100,12 @@ struct FieldVisitor {
     fetched: Option<u64>,
     sample_id: Option<String>,
     status: Option<u64>,
+    latency_ms: Option<u64>,
+    throttled: Option<u64>,
+    cycle: Option<u64>,
+    duration_ms: Option<u64>,
     message: Option<String>,
+    error: Option<String>,
 }
 
 impl tracing::field::Visit for FieldVisitor {
@@ -114,6 +120,7 @@ impl tracing::field::Visit for FieldVisitor {
             "cursor" => self.cursor = Some(v),
             "sample_id" => self.sample_id = Some(v),
             "message" => self.message = Some(v),
+            "error" => self.error = Some(v),
             _ => {}
         }
     }
@@ -122,6 +129,10 @@ impl tracing::field::Visit for FieldVisitor {
         match field.name() {
             "fetched" => self.fetched = Some(value),
             "status" => self.status = Some(value),
+            "latency_ms" => self.latency_ms = Some(value),
+            "throttled" => self.throttled = Some(value),
+            "cycle" => self.cycle = Some(value),
+            "duration_ms" => self.duration_ms = Some(value),
             _ => {}
         }
     }
@@ -131,6 +142,7 @@ impl tracing::field::Visit for FieldVisitor {
         match field.name() {
             "cursor" => self.cursor = Some(v.trim_matches('"').to_string()),
             "message" => self.message = Some(v),
+            "error" => self.error = Some(v.trim_matches('"').to_string()),
             _ => {}
         }
     }
@@ -145,15 +157,15 @@ where
         event.record(&mut v);
 
         let qe = match v.phase.as_deref() {
-            Some("cycle_started") => Some(QuelchEvent::CycleStarted {
-                cycle: 0,
+            Some(p) if p == phases::CYCLE_STARTED => Some(QuelchEvent::CycleStarted {
+                cycle: v.cycle.unwrap_or(0),
                 at: Utc::now(),
             }),
-            Some("cycle_finished") => Some(QuelchEvent::CycleFinished {
-                cycle: 0,
-                duration: Duration::from_millis(0),
+            Some(p) if p == phases::CYCLE_FINISHED => Some(QuelchEvent::CycleFinished {
+                cycle: v.cycle.unwrap_or(0),
+                duration: Duration::from_millis(v.duration_ms.unwrap_or(0)),
             }),
-            Some("subsource_started") => {
+            Some(p) if p == phases::SUBSOURCE_STARTED => {
                 v.source.clone().zip(v.subsource.clone()).map(|(s, ss)| {
                     QuelchEvent::SubsourceStarted {
                         source: s,
@@ -161,7 +173,7 @@ where
                     }
                 })
             }
-            Some("subsource_finished") => {
+            Some(p) if p == phases::SUBSOURCE_FINISHED => {
                 v.source.clone().zip(v.subsource.clone()).map(|(s, ss)| {
                     QuelchEvent::SubsourceFinished {
                         source: s,
@@ -170,20 +182,41 @@ where
                     }
                 })
             }
-            Some("subsource_batch") => v.source.clone().zip(v.subsource.clone()).map(|(s, ss)| {
-                QuelchEvent::SubsourceBatch {
+            Some(p) if p == phases::SUBSOURCE_BATCH => {
+                v.source.clone().zip(v.subsource.clone()).map(|(s, ss)| {
+                    QuelchEvent::SubsourceBatch {
+                        source: s,
+                        subsource: ss,
+                        fetched: v.fetched.unwrap_or(0),
+                        cursor: Utc::now(),
+                        sample_id: v.sample_id.clone().unwrap_or_default(),
+                    }
+                })
+            }
+            Some(p) if p == phases::SUBSOURCE_FAILED => {
+                v.source.clone().zip(v.subsource.clone()).map(|(s, ss)| {
+                    QuelchEvent::SubsourceFailed {
+                        source: s,
+                        subsource: ss,
+                        error: v
+                            .error
+                            .clone()
+                            .or_else(|| v.message.clone())
+                            .unwrap_or_default(),
+                    }
+                })
+            }
+            Some(p) if p == phases::SOURCE_FAILED => {
+                v.source.clone().map(|s| QuelchEvent::SourceFailed {
                     source: s,
-                    subsource: ss,
-                    fetched: v.fetched.unwrap_or(0),
-                    cursor: Utc::now(),
-                    sample_id: v.sample_id.clone().unwrap_or_default(),
-                }
-            }),
-            Some("source_failed") => v.source.clone().map(|s| QuelchEvent::SourceFailed {
-                source: s,
-                error: v.message.clone().unwrap_or_default(),
-            }),
-            Some("doc_synced") => v
+                    error: v
+                        .error
+                        .clone()
+                        .or_else(|| v.message.clone())
+                        .unwrap_or_default(),
+                })
+            }
+            Some(p) if p == phases::DOC_SYNCED => v
                 .source
                 .clone()
                 .zip(v.subsource.clone())
@@ -194,6 +227,12 @@ where
                     id,
                     updated: Utc::now(),
                 }),
+            Some(p) if p == phases::AZURE_RESPONSE => Some(QuelchEvent::AzureResponse {
+                at: Instant::now(),
+                status: v.status.unwrap_or(0) as u16,
+                latency: Duration::from_millis(v.latency_ms.unwrap_or(0)),
+                throttled: v.throttled.unwrap_or(0) != 0,
+            }),
             _ => None,
         };
 
@@ -252,5 +291,43 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(matches!(ev, QuelchEvent::Log { .. }));
+    }
+
+    #[tokio::test]
+    async fn subsource_batch_event_roundtrips_through_tracing() {
+        use crate::sync::phases;
+
+        let (layer, mut rx, _drops) = layer_and_receiver();
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let _g = tracing::subscriber::set_default(subscriber);
+
+        tracing::info!(
+            phase = phases::SUBSOURCE_BATCH,
+            source = "s",
+            subsource = "ss",
+            fetched = 5u64,
+            sample_id = "id-1",
+            "batch"
+        );
+
+        let ev = tokio::time::timeout(Duration::from_millis(200), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        match ev {
+            QuelchEvent::SubsourceBatch {
+                source,
+                subsource,
+                fetched,
+                sample_id,
+                ..
+            } => {
+                assert_eq!(source, "s");
+                assert_eq!(subsource, "ss");
+                assert_eq!(fetched, 5);
+                assert_eq!(sample_id, "id-1");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
     }
 }
