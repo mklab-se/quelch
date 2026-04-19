@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Full Azure AI Search index definition with vector search support.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct IndexSchema {
     pub name: String,

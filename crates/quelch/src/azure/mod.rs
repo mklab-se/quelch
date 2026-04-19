@@ -81,16 +81,18 @@ impl SearchClient {
     }
 
     /// Create an index with the given schema. Fails if index already exists (409).
+    /// Retries transient 429/5xx responses using exponential backoff.
     pub async fn create_index(&self, schema: &IndexSchema) -> Result<(), AzureError> {
         let url = format!("{}/indexes?api-version={}", self.endpoint, API_VERSION);
 
         let resp = self
-            .client
-            .post(&url)
-            .header("api-key", &self.api_key)
-            .header("Content-Type", "application/json")
-            .json(schema)
-            .send()
+            .request_with_retry(|| {
+                self.client
+                    .post(&url)
+                    .header("api-key", &self.api_key)
+                    .header("Content-Type", "application/json")
+                    .json(schema)
+            })
             .await?;
 
         if resp.status().is_success() {

@@ -7,11 +7,11 @@
 use std::io::Write as _;
 
 use tempfile::{NamedTempFile, TempDir};
-use wiremock::matchers::{method, path, path_regex, query_param};
+use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use quelch::azure::schema::EmbeddingConfig;
-use quelch::config::{Config, load_config};
+use quelch::config::load_config;
 use quelch::sync::state::SyncState;
 use quelch::sync::{IndexMode, run_sync, setup_indexes};
 
