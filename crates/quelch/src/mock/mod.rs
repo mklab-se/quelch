@@ -2,20 +2,51 @@ pub mod data;
 
 use axum::{
     Router,
-    extract::Query,
+    extract::{Path as AxumPath, Query, State},
     http::{HeaderMap, StatusCode},
-    response::Json,
-    routing::get,
+    response::{IntoResponse, Json},
+    routing::{delete, get, post, put},
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
 
 const MOCK_TOKEN: &str = "mock-pat-token";
 
-// ---------------------------------------------------------------------------
+// -----------------------------------------------------------------------
+// Shared server state (for Azure mock)
+// -----------------------------------------------------------------------
+
+/// Per-index storage: map of doc id → full doc object.
+#[derive(Default)]
+struct IndexStore {
+    docs: HashMap<String, Value>,
+}
+
+#[derive(Default)]
+struct AzureMockState {
+    indexes: HashMap<String, IndexStore>,
+    /// Remaining forced faults: each fault applies to the next single request.
+    pending_faults: Vec<u16>,
+}
+
+type SharedState = Arc<Mutex<AzureMockState>>;
+
+/// Returns Some(status) if a fault was consumed; None otherwise.
+fn consume_fault(state: &SharedState) -> Option<u16> {
+    let mut s = state.lock().unwrap();
+    if s.pending_faults.is_empty() {
+        None
+    } else {
+        Some(s.pending_faults.remove(0))
+    }
+}
+
+// -----------------------------------------------------------------------
 // Auth helper
-// ---------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 
 fn check_auth(headers: &HeaderMap) -> Result<(), (StatusCode, Json<Value>)> {
     let expected = format!("Bearer {MOCK_TOKEN}");
@@ -31,9 +62,9 @@ fn check_auth(headers: &HeaderMap) -> Result<(), (StatusCode, Json<Value>)> {
     }
 }
 
-// ---------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // Jira endpoint
-// ---------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -100,9 +131,9 @@ async fn jira_search(
     })))
 }
 
-// ---------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // Confluence endpoint
-// ---------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
 struct ConfluenceSearchParams {
@@ -181,9 +212,178 @@ async fn confluence_search(
     })))
 }
 
-// ---------------------------------------------------------------------------
+// -----------------------------------------------------------------------
+// Azure AI Search mock handlers
+// -----------------------------------------------------------------------
+
+async fn azure_index_get(
+    State(state): State<SharedState>,
+    AxumPath(name): AxumPath<String>,
+) -> impl IntoResponse {
+    if let Some(status) = consume_fault(&state) {
+        return (StatusCode::from_u16(status).unwrap(), Json(json!({}))).into_response();
+    }
+    let s = state.lock().unwrap();
+    if s.indexes.contains_key(&name) {
+        (StatusCode::OK, Json(json!({ "name": name }))).into_response()
+    } else {
+        (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
+    }
+}
+
+async fn azure_index_put(
+    State(state): State<SharedState>,
+    AxumPath(name): AxumPath<String>,
+    Json(_body): Json<Value>,
+) -> impl IntoResponse {
+    if let Some(status) = consume_fault(&state) {
+        return (StatusCode::from_u16(status).unwrap(), Json(json!({}))).into_response();
+    }
+    state
+        .lock()
+        .unwrap()
+        .indexes
+        .entry(name.clone())
+        .or_default();
+    (StatusCode::CREATED, Json(json!({ "name": name }))).into_response()
+}
+
+async fn azure_index_delete(
+    State(state): State<SharedState>,
+    AxumPath(name): AxumPath<String>,
+) -> impl IntoResponse {
+    if let Some(status) = consume_fault(&state) {
+        return (StatusCode::from_u16(status).unwrap(), Json(json!({}))).into_response();
+    }
+    state.lock().unwrap().indexes.remove(&name);
+    StatusCode::NO_CONTENT.into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct AzureBatch {
+    value: Vec<Value>,
+}
+
+async fn azure_index_docs_post(
+    State(state): State<SharedState>,
+    AxumPath(name): AxumPath<String>,
+    Json(batch): Json<AzureBatch>,
+) -> impl IntoResponse {
+    if let Some(status) = consume_fault(&state) {
+        return (StatusCode::from_u16(status).unwrap(), Json(json!({}))).into_response();
+    }
+    let mut s = state.lock().unwrap();
+    let store = s.indexes.entry(name).or_default();
+    let mut results = Vec::new();
+    for mut doc in batch.value {
+        let action = doc
+            .get("@search.action")
+            .and_then(|v| v.as_str())
+            .unwrap_or("mergeOrUpload")
+            .to_string();
+        let id = doc
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        if let Some(obj) = doc.as_object_mut() {
+            obj.remove("@search.action");
+        }
+        match action.as_str() {
+            "delete" => {
+                store.docs.remove(&id);
+            }
+            _ => {
+                store.docs.insert(id.clone(), doc);
+            }
+        }
+        results.push(json!({ "key": id, "status": true, "statusCode": 200 }));
+    }
+    (StatusCode::OK, Json(json!({ "value": results }))).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct AzureSearchBody {
+    search: Option<String>,
+}
+
+async fn azure_index_search_post(
+    State(state): State<SharedState>,
+    AxumPath(name): AxumPath<String>,
+    Json(body): Json<AzureSearchBody>,
+) -> impl IntoResponse {
+    if let Some(status) = consume_fault(&state) {
+        return (StatusCode::from_u16(status).unwrap(), Json(json!({}))).into_response();
+    }
+    let s = state.lock().unwrap();
+    let store = match s.indexes.get(&name) {
+        Some(v) => v,
+        None => {
+            return (StatusCode::NOT_FOUND, Json(json!({ "error": "no index" }))).into_response();
+        }
+    };
+    let q = body.search.unwrap_or_default().to_lowercase();
+    let results: Vec<Value> = store
+        .docs
+        .values()
+        .filter(|doc| {
+            if q.is_empty() || q == "*" {
+                return true;
+            }
+            doc.as_object()
+                .map(|o| {
+                    o.values().any(|v| {
+                        v.as_str()
+                            .map(|s| s.to_lowercase().contains(&q))
+                            .unwrap_or(false)
+                    })
+                })
+                .unwrap_or(false)
+        })
+        .cloned()
+        .collect();
+    (StatusCode::OK, Json(json!({ "value": results }))).into_response()
+}
+
+/// GET /azure/indexes/{name}/docs — ID-listing (used by SearchClient::fetch_all_ids).
+async fn azure_index_docs_list(
+    State(state): State<SharedState>,
+    AxumPath(name): AxumPath<String>,
+) -> impl IntoResponse {
+    if let Some(status) = consume_fault(&state) {
+        return (StatusCode::from_u16(status).unwrap(), Json(json!({}))).into_response();
+    }
+    let s = state.lock().unwrap();
+    let store = match s.indexes.get(&name) {
+        Some(v) => v,
+        None => {
+            return (StatusCode::NOT_FOUND, Json(json!({ "error": "no index" }))).into_response();
+        }
+    };
+    let values: Vec<Value> = store.docs.keys().map(|id| json!({ "id": id })).collect();
+    (StatusCode::OK, Json(json!({ "value": values }))).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct FaultSpec {
+    count: usize,
+    status: u16,
+}
+
+async fn azure_fault_post(
+    State(state): State<SharedState>,
+    Json(spec): Json<FaultSpec>,
+) -> impl IntoResponse {
+    let mut s = state.lock().unwrap();
+    for _ in 0..spec.count {
+        s.pending_faults.push(spec.status);
+    }
+    StatusCode::OK
+}
+
+// -----------------------------------------------------------------------
 // Query parsing helpers
-// ---------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 
 /// Extract project name from JQL like "project = QUELCH ..."
 fn extract_jql_project(jql: &str) -> Option<String> {
@@ -255,19 +455,46 @@ fn extract_cql_lastmodified(cql: &str) -> Option<String> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Server entry point
-// ---------------------------------------------------------------------------
+// -----------------------------------------------------------------------
+// Router builder (testable, used by integration tests)
+// -----------------------------------------------------------------------
 
-/// Start the mock Jira DC + Confluence DC server.
-pub async fn run_mock_server(port: u16) -> anyhow::Result<()> {
-    let app = Router::new()
+/// Build the axum Router used by the mock server. `pub` so integration
+/// tests outside this module can spin up an in-process instance.
+pub fn build_router() -> Router {
+    let state: SharedState = Arc::new(Mutex::new(AzureMockState::default()));
+
+    Router::new()
+        // Jira + Confluence routes:
         .route("/jira/rest/api/2/search", get(jira_search))
         .route(
             "/confluence/rest/api/content/search",
             get(confluence_search),
-        );
+        )
+        // Azure routes (all share the same state):
+        .route("/azure/indexes/{name}", get(azure_index_get))
+        .route("/azure/indexes/{name}", put(azure_index_put))
+        .route("/azure/indexes/{name}", delete(azure_index_delete))
+        .route(
+            "/azure/indexes/{name}/docs/index",
+            post(azure_index_docs_post),
+        )
+        .route(
+            "/azure/indexes/{name}/docs/search",
+            post(azure_index_search_post),
+        )
+        .route("/azure/indexes/{name}/docs", get(azure_index_docs_list))
+        .route("/azure/_fault", post(azure_fault_post))
+        .with_state(state)
+}
 
+// -----------------------------------------------------------------------
+// Server entry point
+// -----------------------------------------------------------------------
+
+/// Start the mock Jira DC + Confluence DC server.
+pub async fn run_mock_server(port: u16) -> anyhow::Result<()> {
+    let app = build_router();
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
 
     println!("Mock Jira DC server running at http://localhost:{port}/jira");
@@ -308,4 +535,150 @@ pub async fn run_mock_server(port: u16) -> anyhow::Result<()> {
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::SocketAddr;
+
+    async fn spawn_test_server() -> String {
+        let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, build_router()).await.unwrap();
+        });
+        format!("http://{}", addr)
+    }
+
+    #[tokio::test]
+    async fn azure_index_create_get_delete_roundtrip() {
+        let base = spawn_test_server().await;
+        let client = reqwest::Client::new();
+
+        let put = client
+            .put(format!(
+                "{}/azure/indexes/test-idx?api-version=2024-07-01",
+                base
+            ))
+            .header("api-key", "ignored-by-mock")
+            .json(&serde_json::json!({ "name": "test-idx", "fields": [] }))
+            .send()
+            .await
+            .unwrap();
+        assert!(put.status().is_success(), "PUT failed: {}", put.status());
+
+        let get = client
+            .get(format!(
+                "{}/azure/indexes/test-idx?api-version=2024-07-01",
+                base
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert!(get.status().is_success());
+
+        let del = client
+            .delete(format!(
+                "{}/azure/indexes/test-idx?api-version=2024-07-01",
+                base
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert!(del.status().is_success());
+
+        let after = client
+            .get(format!(
+                "{}/azure/indexes/test-idx?api-version=2024-07-01",
+                base
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(after.status().as_u16(), 404);
+    }
+
+    #[tokio::test]
+    async fn azure_push_and_search_documents() {
+        let base = spawn_test_server().await;
+        let client = reqwest::Client::new();
+
+        client
+            .put(format!(
+                "{}/azure/indexes/docs?api-version=2024-07-01",
+                base
+            ))
+            .json(&serde_json::json!({ "name": "docs", "fields": [] }))
+            .send()
+            .await
+            .unwrap();
+
+        let body = serde_json::json!({
+            "value": [
+                { "@search.action": "mergeOrUpload", "id": "a", "content": "hello world" },
+                { "@search.action": "mergeOrUpload", "id": "b", "content": "quelch rocks" },
+            ]
+        });
+        let push = client
+            .post(format!(
+                "{}/azure/indexes/docs/docs/index?api-version=2024-07-01",
+                base
+            ))
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert!(push.status().is_success());
+
+        let search = client
+            .post(format!(
+                "{}/azure/indexes/docs/docs/search?api-version=2024-07-01",
+                base
+            ))
+            .json(&serde_json::json!({ "search": "hello" }))
+            .send()
+            .await
+            .unwrap();
+        let body: serde_json::Value = search.json().await.unwrap();
+        let values = body.get("value").and_then(|v| v.as_array()).unwrap();
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0].get("id").unwrap(), "a");
+    }
+
+    #[tokio::test]
+    async fn azure_fault_injection_next_n_calls() {
+        let base = spawn_test_server().await;
+        let client = reqwest::Client::new();
+
+        client
+            .post(format!("{}/azure/_fault", base))
+            .json(&serde_json::json!({ "count": 2, "status": 429 }))
+            .send()
+            .await
+            .unwrap();
+
+        let r1 = client
+            .get(format!("{}/azure/indexes/x?api-version=2024-07-01", base))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r1.status().as_u16(), 429);
+
+        let r2 = client
+            .get(format!("{}/azure/indexes/x?api-version=2024-07-01", base))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r2.status().as_u16(), 429);
+
+        let r3 = client
+            .get(format!("{}/azure/indexes/x?api-version=2024-07-01", base))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r3.status().as_u16(), 404);
+    }
 }
