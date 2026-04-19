@@ -2,6 +2,8 @@
 
 pub mod app;
 pub mod events;
+pub mod input;
+pub mod layout;
 pub mod metrics;
 pub mod prefs;
 pub mod tracing_layer;
