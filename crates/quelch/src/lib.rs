@@ -7,3 +7,4 @@ pub mod search;
 pub mod sources;
 pub mod sync;
 pub mod text;
+pub mod tui;
