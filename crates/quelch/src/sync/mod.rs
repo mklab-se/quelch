@@ -5,7 +5,8 @@ use anyhow::{Context, Result};
 use chrono::Timelike;
 use std::io::Write;
 use std::path::Path;
-use tracing::{debug, error, info, warn};
+use tokio::sync::mpsc;
+use tracing::{error, info, warn};
 
 use crate::azure::SearchClient;
 use crate::azure::schema::{EmbeddingConfig, confluence_index_schema, jira_index_schema};
@@ -13,9 +14,43 @@ use crate::config::{Config, SourceConfig};
 use crate::sources::confluence::ConfluenceConnector;
 use crate::sources::jira::JiraConnector;
 use crate::sources::{SourceConnector, SyncCursor};
-use crate::text::truncate_for_display;
 
 use self::state::SyncState;
+
+/// Commands the TUI sends back to the engine. Plain-log runs get a
+/// never-firing receiver so the same code path serves both modes.
+#[derive(Debug, Clone)]
+pub enum UiCommand {
+    Pause,
+    Resume,
+    SyncNow,
+    ResetCursor {
+        source: String,
+        subsource: Option<String>,
+    },
+    PurgeNow {
+        source: String,
+    },
+    Shutdown,
+}
+
+/// Build a never-firing command channel for plain-log runs where no TUI
+/// layer will push commands. The sender is dropped immediately by the
+/// caller (or held but unused); the receiver is consumed by the engine.
+pub fn never_command_channel() -> (mpsc::Sender<UiCommand>, mpsc::Receiver<UiCommand>) {
+    mpsc::channel(1)
+}
+
+/// Outcome of a command-poll tick or one iteration of the engine loop.
+#[derive(Debug)]
+pub enum EngineOutcome {
+    Continue,
+    Shutdown,
+    ResetCursor {
+        source: String,
+        subsource: Option<String>,
+    },
+}
 
 fn format_error_chain(error: &anyhow::Error) -> String {
     error
@@ -73,6 +108,19 @@ fn schema_for_source(
     }
 }
 
+/// Build the `(source_name, subsources)` mapping for all configured sources.
+/// Used to hydrate state-file migration and for loading per-subsource state.
+fn subsources_by_source(config: &Config) -> Vec<(String, Vec<String>)> {
+    config
+        .sources
+        .iter()
+        .map(|s| match s {
+            SourceConfig::Jira(j) => (j.name.clone(), j.projects.clone()),
+            SourceConfig::Confluence(c) => (c.name.clone(), c.spaces.clone()),
+        })
+        .collect()
+}
+
 /// Delete all indexes configured in the config, then clear sync state.
 pub async fn reset_indexes(config: &Config, state_path: &Path) -> Result<Vec<String>> {
     let azure = SearchClient::new(&config.azure.endpoint, &config.azure.api_key);
@@ -102,7 +150,7 @@ pub async fn reset_indexes(config: &Config, state_path: &Path) -> Result<Vec<Str
     }
 
     // Clear sync state
-    let mut state = SyncState::load(state_path)?;
+    let mut state = SyncState::load(state_path, &subsources_by_source(config))?;
     state.reset_all();
     state.save(state_path)?;
     println!("  [cleared] sync state");
@@ -184,14 +232,39 @@ pub async fn run_sync(
     embedder: Option<&dyn embedder::Embedder>,
     max_docs: Option<u64>,
 ) -> Result<()> {
-    // Ensure all indexes exist before syncing
-    setup_indexes(config, embedding, index_mode).await?;
+    let (_tx, mut rx) = never_command_channel();
+    run_sync_with(
+        config, state_path, embedding, index_mode, embedder, max_docs, &mut rx,
+    )
+    .await
+}
 
+/// Run a sync cycle while observing `cmd_rx` for TUI commands. The engine
+/// polls at source/subsource/batch boundaries and reacts to
+/// `Pause`/`Resume`/`Shutdown`/`ResetCursor` appropriately.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_sync_with(
+    config: &Config,
+    state_path: &Path,
+    embedding: &EmbeddingConfig,
+    index_mode: IndexMode,
+    embedder: Option<&dyn embedder::Embedder>,
+    max_docs: Option<u64>,
+    cmd_rx: &mut mpsc::Receiver<UiCommand>,
+) -> Result<()> {
+    setup_indexes(config, embedding, index_mode).await?;
     let azure = SearchClient::new(&config.azure.endpoint, &config.azure.api_key);
-    let mut state = SyncState::load(state_path)?;
+    let subs = subsources_by_source(config);
+    let mut state = SyncState::load(state_path, &subs)?;
+    let mut paused = false;
     let mut failures = Vec::new();
 
+    info!(phase = "cycle_started", "Cycle starting");
+
     for source_config in &config.sources {
+        if let EngineOutcome::Shutdown = poll_commands(cmd_rx, &mut paused).await {
+            return Ok(());
+        }
         if let Err(e) = sync_source(
             &azure,
             embedder,
@@ -200,11 +273,14 @@ pub async fn run_sync(
             &mut state,
             state_path,
             max_docs,
+            cmd_rx,
+            &mut paused,
         )
         .await
         {
             let error_chain = format_error_chain(&e);
             error!(
+                phase = "source_failed",
                 source = source_config.name(),
                 error = %error_chain,
                 "Sync failed for source"
@@ -213,6 +289,8 @@ pub async fn run_sync(
         }
     }
 
+    info!(phase = "cycle_finished", "Cycle finished");
+
     if !failures.is_empty() {
         anyhow::bail!(
             "sync failed for {} source(s): {}",
@@ -220,7 +298,6 @@ pub async fn run_sync(
             failures.join(" | ")
         );
     }
-
     Ok(())
 }
 
@@ -260,13 +337,17 @@ async fn purge_with_connector<C: SourceConnector>(
 
     info!(source = source_name, "Starting orphan detection");
 
-    // Fetch all IDs from the source
-    let source_ids: std::collections::HashSet<String> = connector
-        .fetch_all_ids()
-        .await
-        .context("failed to fetch IDs from source")?
-        .into_iter()
-        .collect();
+    // Fetch all IDs from the source across all subsources
+    let mut source_ids = std::collections::HashSet::new();
+    for subsource in connector.subsources() {
+        let ids = connector
+            .fetch_all_ids(subsource)
+            .await
+            .context("failed to fetch IDs from source")?;
+        for id in ids {
+            source_ids.insert(id);
+        }
+    }
 
     // Fetch all IDs from the Azure index
     let index_ids = azure
@@ -308,6 +389,7 @@ async fn purge_with_connector<C: SourceConnector>(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn sync_source(
     azure: &SearchClient,
     embedder: Option<&dyn embedder::Embedder>,
@@ -316,25 +398,30 @@ async fn sync_source(
     state: &mut SyncState,
     state_path: &Path,
     max_docs: Option<u64>,
+    cmd_rx: &mut mpsc::Receiver<UiCommand>,
+    paused: &mut bool,
 ) -> Result<()> {
     match source_config {
         SourceConfig::Jira(jira_config) => {
             let connector = JiraConnector::new(jira_config);
             sync_with_connector(
-                azure, embedder, &connector, config, state, state_path, max_docs,
+                azure, embedder, &connector, config, state, state_path, max_docs, cmd_rx, paused,
             )
             .await
+            .map(|_| ())
         }
         SourceConfig::Confluence(conf_config) => {
             let connector = ConfluenceConnector::new(conf_config);
             sync_with_connector(
-                azure, embedder, &connector, config, state, state_path, max_docs,
+                azure, embedder, &connector, config, state, state_path, max_docs, cmd_rx, paused,
             )
             .await
+            .map(|_| ())
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn sync_with_connector<C: SourceConnector>(
     azure: &SearchClient,
     embedder: Option<&dyn embedder::Embedder>,
@@ -343,62 +430,165 @@ async fn sync_with_connector<C: SourceConnector>(
     state: &mut SyncState,
     state_path: &Path,
     max_docs: Option<u64>,
-) -> Result<()> {
-    let index_name = connector.index_name();
+    cmd_rx: &mut mpsc::Receiver<UiCommand>,
+    paused: &mut bool,
+) -> Result<EngineOutcome> {
     let source_name = connector.source_name();
+    info!(source = source_name, "Starting source");
 
-    // Get cursor from persisted state
-    let source_state = state.get_source(source_name);
-    let mut cursor = source_state
-        .last_cursor
+    for subsource_key in connector.subsources() {
+        // Command poll at subsource boundary
+        match poll_commands(cmd_rx, paused).await {
+            EngineOutcome::Shutdown => return Ok(EngineOutcome::Shutdown),
+            EngineOutcome::ResetCursor {
+                source: s,
+                subsource,
+            } if s == source_name => {
+                state.reset_source(source_name, subsource.as_deref());
+                state
+                    .save(state_path)
+                    .context("failed to save sync state")?;
+                continue;
+            }
+            _ => {}
+        }
+
+        sync_single_subsource(
+            azure,
+            embedder,
+            connector,
+            subsource_key,
+            config,
+            state,
+            state_path,
+            max_docs,
+            cmd_rx,
+            paused,
+        )
+        .await?;
+    }
+
+    info!(source = source_name, "Finished source");
+    Ok(EngineOutcome::Continue)
+}
+
+/// Non-blocking drain of command channel. Applies `Pause`/`Resume` in place
+/// (updates `paused`) and returns the first actionable outcome for the caller.
+async fn poll_commands(cmd_rx: &mut mpsc::Receiver<UiCommand>, paused: &mut bool) -> EngineOutcome {
+    loop {
+        match cmd_rx.try_recv() {
+            Ok(UiCommand::Pause) => {
+                *paused = true;
+            }
+            Ok(UiCommand::Resume) => {
+                *paused = false;
+            }
+            Ok(UiCommand::Shutdown) => return EngineOutcome::Shutdown,
+            Ok(UiCommand::ResetCursor { source, subsource }) => {
+                return EngineOutcome::ResetCursor { source, subsource };
+            }
+            Ok(UiCommand::SyncNow) | Ok(UiCommand::PurgeNow { .. }) => {
+                // SyncNow is only meaningful during the watch sleep.
+                // PurgeNow is handled by the caller in run_sync_with.
+            }
+            Err(_) => break,
+        }
+    }
+    // Block while paused — but still handle Resume/Shutdown.
+    while *paused {
+        match cmd_rx.recv().await {
+            Some(UiCommand::Resume) => {
+                *paused = false;
+                break;
+            }
+            Some(UiCommand::Shutdown) => return EngineOutcome::Shutdown,
+            Some(UiCommand::Pause) => { /* already paused */ }
+            Some(UiCommand::ResetCursor { source, subsource }) => {
+                return EngineOutcome::ResetCursor { source, subsource };
+            }
+            Some(_) => { /* ignore while paused */ }
+            None => {
+                *paused = false;
+                break;
+            }
+        }
+    }
+    EngineOutcome::Continue
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn sync_single_subsource<C: SourceConnector>(
+    azure: &SearchClient,
+    embedder: Option<&dyn embedder::Embedder>,
+    connector: &C,
+    subsource: &str,
+    config: &Config,
+    state: &mut SyncState,
+    state_path: &Path,
+    max_docs: Option<u64>,
+    cmd_rx: &mut mpsc::Receiver<UiCommand>,
+    paused: &mut bool,
+) -> Result<()> {
+    let source_name = connector.source_name();
+    let index_name = connector.index_name();
+
+    let src_state = state.get_source(source_name);
+    let mut cursor = src_state
+        .subsources
+        .get(subsource)
+        .and_then(|s| s.last_cursor)
         .map(|ts| SyncCursor { last_updated: ts });
 
-    if let Some(ref c) = cursor {
-        info!(
-            source = source_name,
-            last_cursor = %c.last_updated,
-            "Resuming sync from saved cursor"
-        );
-    } else {
-        info!(
-            source = source_name,
-            "Starting full sync (no previous cursor)"
-        );
-    }
+    info!(
+        phase = "subsource_started",
+        source = source_name,
+        subsource = subsource,
+        "Starting subsource"
+    );
 
     let mut total_synced: u64 = 0;
     let mut batch_num: u64 = 0;
     let mut soft_limit_reached = false;
 
     loop {
-        // --max-docs is a soft limit: once we've synced ≥ N docs, we stop
-        // fetching new batches but we never truncate mid-batch so we always
-        // finish the current minute and avoid leaving a half-synced gap.
         if soft_limit_reached {
-            info!(
-                source = source_name,
-                total = total_synced,
-                limit = max_docs.unwrap_or(0),
-                "Reached --max-docs soft limit, stopping sync"
-            );
             break;
+        }
+
+        // Command poll at batch boundary
+        match poll_commands(cmd_rx, paused).await {
+            EngineOutcome::Shutdown => {
+                info!(
+                    source = source_name,
+                    subsource = subsource,
+                    "Shutdown requested"
+                );
+                return Ok(());
+            }
+            EngineOutcome::ResetCursor {
+                source: s,
+                subsource: Some(sub),
+            } if s == source_name && sub == subsource => {
+                state.reset_source(source_name, Some(subsource));
+                state.save(state_path).ok();
+                cursor = None;
+            }
+            _ => {}
         }
 
         batch_num += 1;
         let result = connector
-            .fetch_changes(cursor.as_ref(), config.sync.batch_size)
+            .fetch_changes(subsource, cursor.as_ref(), config.sync.batch_size)
             .await
             .context("failed to fetch changes from source")?;
 
-        // Destructure result before filtering (documents is consumed by into_iter)
         let result_cursor = result.cursor;
         let result_has_more = result.has_more;
 
         // Filter out documents from before the cursor's minute. JQL uses minute
         // precision ("updated >= 2026-01-12 13:56"), so the filter must also use
         // minute precision. We truncate the cursor to its minute start and keep
-        // all docs after that. This re-syncs a few docs from the cursor's minute,
-        // which is fine since Azure AI Search push is an upsert.
+        // all docs after that.
         let new_docs: Vec<_> = if let Some(ref c) = cursor {
             let cursor_minute = c
                 .last_updated
@@ -416,76 +606,37 @@ async fn sync_with_connector<C: SourceConnector>(
 
         let doc_count = new_docs.len() as u64;
         if doc_count == 0 {
-            if batch_num == 1 {
-                info!(source = source_name, "No changes since last sync");
-            } else {
-                info!(
-                    source = source_name,
-                    batches = batch_num,
-                    total = total_synced,
-                    "No more changes to sync"
-                );
-            }
+            info!(
+                phase = "subsource_empty",
+                source = source_name,
+                subsource = subsource,
+                batches = batch_num,
+                total = total_synced,
+                "No changes to sync"
+            );
             break;
         }
 
-        // Log each document at info level for visibility
+        // Emit per-doc tracing events — tracing layer will surface as DocSynced.
         for doc in &new_docs {
-            let issue_key = doc
-                .fields
-                .get("issue_key")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
-            let summary = doc
-                .fields
-                .get("summary")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let id = doc.fields.get("id").and_then(|v| v.as_str()).unwrap_or("?");
             let updated = doc
                 .fields
                 .get("updated_at")
                 .and_then(|v| v.as_str())
                 .unwrap_or("?");
-            let summary_preview = truncate_for_display(summary, 80);
             info!(
+                phase = "doc_synced",
                 source = source_name,
-                key = issue_key,
+                subsource = subsource,
+                doc_id = id,
                 updated = updated,
-                "[{}/{}] {} — {}",
-                total_synced + 1,
-                max_docs.map_or("∞".to_string(), |l| l.to_string()),
-                issue_key,
-                summary_preview
-            );
-        }
-
-        // Log document content at debug level (-v)
-        for doc in &new_docs {
-            let id = doc.fields.get("id").and_then(|v| v.as_str()).unwrap_or("?");
-            let content = doc
-                .fields
-                .get("content")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let preview = truncate_for_display(content, 200);
-            debug!(
-                source = source_name,
-                id = id,
-                content_len = content.len(),
-                "Content: {}",
-                preview
+                "doc"
             );
         }
 
         // Generate embeddings if an embedder is available.
-        // If the content exceeds the model's token limit, we progressively truncate
-        // and retry per-document rather than failing the whole batch.
         let embeddings: Option<Vec<Vec<f32>>> = if let Some(emb) = embedder {
-            debug!(
-                source = source_name,
-                count = new_docs.len(),
-                "Generating embeddings"
-            );
             let mut vecs = Vec::with_capacity(new_docs.len());
             for doc in &new_docs {
                 let content = doc
@@ -529,41 +680,53 @@ async fn sync_with_connector<C: SourceConnector>(
 
         total_synced += doc_count;
 
-        // Persist state immediately after each batch (crash safety)
-        state.update_source(source_name, result_cursor.last_updated, doc_count);
+        let sample_id = new_docs
+            .last()
+            .and_then(|d| d.fields.get("id"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        state.update_subsource(
+            source_name,
+            subsource,
+            result_cursor.last_updated,
+            doc_count,
+            sample_id.clone(),
+        );
         state
             .save(state_path)
             .context("failed to save sync state")?;
 
         info!(
+            phase = "subsource_batch",
             source = source_name,
+            subsource = subsource,
             batch = batch_num,
-            batch_docs = doc_count,
-            total = total_synced,
+            fetched = doc_count,
             cursor = %result_cursor.last_updated,
-            "Batch pushed to Azure AI Search"
+            sample_id = sample_id.as_deref().unwrap_or(""),
+            "Batch pushed"
         );
 
-        // Advance cursor for next iteration — THIS IS CRITICAL.
-        // Without this, the next fetch_changes call would use the same JQL
-        // timestamp and return the same results, causing an infinite loop.
         cursor = Some(result_cursor);
 
-        // Check soft limit after processing and cursor update
         if let Some(limit) = max_docs
             && total_synced >= limit
         {
             soft_limit_reached = true;
         }
-
         if !result_has_more {
             break;
         }
     }
 
-    if total_synced > 0 {
-        info!(source = source_name, total = total_synced, "Sync complete");
-    }
+    info!(
+        phase = "subsource_finished",
+        source = source_name,
+        subsource = subsource,
+        total = total_synced,
+        "Subsource complete"
+    );
 
     Ok(())
 }

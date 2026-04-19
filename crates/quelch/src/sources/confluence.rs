@@ -410,14 +410,9 @@ impl ConfluenceConnector {
         }
     }
 
-    /// Build the CQL query string.
-    pub(crate) fn build_cql(&self, cursor: Option<&SyncCursor>) -> String {
-        let space_clause = if self.config.spaces.len() == 1 {
-            format!("space = {}", self.config.spaces[0])
-        } else {
-            let spaces = self.config.spaces.join(", ");
-            format!("space IN ({spaces})")
-        };
+    /// Build the CQL query string for a specific subsource (space key).
+    pub(crate) fn build_cql_for(&self, subsource: &str, cursor: Option<&SyncCursor>) -> String {
+        let space_clause = format!("space = {subsource}");
 
         match cursor {
             Some(c) => {
@@ -625,10 +620,11 @@ impl ConfluenceConnector {
 
     async fn fetch_changes_impl(
         &self,
+        subsource: &str,
         cursor: Option<&SyncCursor>,
         batch_size: usize,
     ) -> Result<FetchResult> {
-        let cql = self.build_cql(cursor);
+        let cql = self.build_cql_for(subsource, cursor);
         let base = self.config.url.trim_end_matches('/');
         let url = format!("{base}{}", self.search_path());
         let auth_header = self.config.auth.authorization_header();
@@ -705,12 +701,12 @@ impl ConfluenceConnector {
     // Fetch all IDs
     // -----------------------------------------------------------------------
 
-    async fn fetch_all_ids_impl(&self) -> Result<Vec<String>> {
+    async fn fetch_all_ids_impl(&self, subsource: &str) -> Result<Vec<String>> {
         let mut all_ids = Vec::new();
         let mut start: usize = 0;
         let page_size: usize = 25;
         let auth_header = self.config.auth.authorization_header();
-        let cql = self.build_cql(None);
+        let cql = self.build_cql_for(subsource, None);
         let base = self.config.url.trim_end_matches('/');
 
         loop {
@@ -767,16 +763,21 @@ impl SourceConnector for ConfluenceConnector {
         &self.config.index
     }
 
+    fn subsources(&self) -> &[String] {
+        &self.config.spaces
+    }
+
     async fn fetch_changes(
         &self,
+        subsource: &str,
         cursor: Option<&SyncCursor>,
         batch_size: usize,
     ) -> Result<FetchResult> {
-        self.fetch_changes_impl(cursor, batch_size).await
+        self.fetch_changes_impl(subsource, cursor, batch_size).await
     }
 
-    async fn fetch_all_ids(&self) -> Result<Vec<String>> {
-        self.fetch_all_ids_impl().await
+    async fn fetch_all_ids(&self, subsource: &str) -> Result<Vec<String>> {
+        self.fetch_all_ids_impl(subsource).await
     }
 }
 
@@ -990,7 +991,7 @@ mod tests {
     #[test]
     fn builds_cql_without_cursor() {
         let connector = ConfluenceConnector::new(&dc_config());
-        let cql = connector.build_cql(None);
+        let cql = connector.build_cql_for("ENG", None);
         assert_eq!(cql, "space = ENG AND type = page ORDER BY lastmodified ASC");
     }
 
@@ -1002,22 +1003,30 @@ mod tests {
                 .unwrap()
                 .with_timezone(&Utc),
         };
-        let cql = connector.build_cql(Some(&cursor));
+        let cql = connector.build_cql_for("ENG", Some(&cursor));
         assert!(cql.contains("lastmodified >= \"2025-01-15\""));
         assert!(cql.contains("space = ENG"));
         assert!(cql.contains("type = page"));
     }
 
     #[test]
-    fn builds_cql_multiple_spaces() {
+    fn subsources_returns_space_keys() {
         let mut config = dc_config();
-        config.spaces = vec!["ENG".to_string(), "DEV".to_string()];
+        config.spaces = vec!["ENG".to_string(), "OPS".to_string()];
         let connector = ConfluenceConnector::new(&config);
-        let cql = connector.build_cql(None);
         assert_eq!(
-            cql,
-            "space IN (ENG, DEV) AND type = page ORDER BY lastmodified ASC"
+            connector.subsources(),
+            &["ENG".to_string(), "OPS".to_string()]
         );
+    }
+
+    #[test]
+    fn builds_cql_for_single_subsource() {
+        let mut config = dc_config();
+        config.spaces = vec!["ENG".to_string(), "OPS".to_string()];
+        let connector = ConfluenceConnector::new(&config);
+        let cql = connector.build_cql_for("OPS", None);
+        assert_eq!(cql, "space = OPS AND type = page ORDER BY lastmodified ASC");
     }
 
     // -----------------------------------------------------------------------

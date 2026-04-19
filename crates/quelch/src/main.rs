@@ -45,7 +45,9 @@ async fn main() -> Result<()> {
         } => cmd_watch(&cli.config, create_indexes, max_docs).await,
         Commands::Setup { yes } => cmd_setup(&cli.config, yes).await,
         Commands::Status => cmd_status(&cli.config),
-        Commands::Reset { source } => cmd_reset(&cli.config, source.as_deref()),
+        Commands::Reset { source, subsource } => {
+            cmd_reset(&cli.config, source.as_deref(), subsource.as_deref())
+        }
         Commands::ResetIndexes => cmd_reset_indexes(&cli.config).await,
         Commands::Validate => cmd_validate(&cli.config),
         Commands::Init => cmd_init(),
@@ -222,7 +224,15 @@ async fn cmd_setup(config_path: &Path, auto_yes: bool) -> Result<()> {
 fn cmd_status(config_path: &Path) -> Result<()> {
     let config = config::load_config(config_path)?;
     let state_path = Path::new(&config.sync.state_file);
-    let state = sync::state::SyncState::load(state_path)?;
+    let subsources_by_source: Vec<(String, Vec<String>)> = config
+        .sources
+        .iter()
+        .map(|s| match s {
+            quelch::config::SourceConfig::Jira(j) => (j.name.clone(), j.projects.clone()),
+            quelch::config::SourceConfig::Confluence(c) => (c.name.clone(), c.spaces.clone()),
+        })
+        .collect();
+    let state = sync::state::SyncState::load(state_path, &subsources_by_source)?;
 
     println!("Quelch Status");
     println!("{}", "\u{2500}".repeat(50));
@@ -233,16 +243,25 @@ fn cmd_status(config_path: &Path) -> Result<()> {
     for source_config in &config.sources {
         let name = source_config.name();
         let source_state = state.get_source(name);
-
-        let last_sync = source_state
-            .last_sync_at
-            .map(|t| t.format("%Y-%m-%d %H:%M:%S UTC").to_string())
-            .unwrap_or_else(|| "never".to_string());
-
         println!("  {} ({})", name, source_config.index());
-        println!("    Last sync:   {}", last_sync);
-        println!("    Docs synced: {}", source_state.documents_synced);
+        println!(
+            "    Last sync:   {}",
+            source_state
+                .last_sync_at
+                .map(|t| t.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+                .unwrap_or_else(|| "never".to_string())
+        );
         println!("    Sync count:  {}", source_state.sync_count);
+        for (sub_key, sub) in &source_state.subsources {
+            println!(
+                "    • {:12} docs={} last={}",
+                sub_key,
+                sub.documents_synced,
+                sub.last_cursor
+                    .map(|t| t.to_rfc3339())
+                    .unwrap_or_else(|| "never".into())
+            );
+        }
         println!();
     }
 
@@ -268,22 +287,31 @@ async fn cmd_reset_indexes(config_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn cmd_reset(config_path: &Path, source: Option<&str>) -> Result<()> {
+fn cmd_reset(config_path: &Path, source: Option<&str>, subsource: Option<&str>) -> Result<()> {
     let config = config::load_config(config_path)?;
     let state_path = Path::new(&config.sync.state_file);
-    let mut state = sync::state::SyncState::load(state_path)?;
-
+    let subsources_by_source: Vec<(String, Vec<String>)> = config
+        .sources
+        .iter()
+        .map(|s| match s {
+            quelch::config::SourceConfig::Jira(j) => (j.name.clone(), j.projects.clone()),
+            quelch::config::SourceConfig::Confluence(c) => (c.name.clone(), c.spaces.clone()),
+        })
+        .collect();
+    let mut state = sync::state::SyncState::load(state_path, &subsources_by_source)?;
     match source {
         Some(name) => {
-            state.reset_source(name);
-            println!("Reset sync state for source '{}'", name);
+            state.reset_source(name, subsource);
+            match subsource {
+                Some(sub) => println!("Reset state for {}:{}", name, sub),
+                None => println!("Reset state for source '{}'", name),
+            }
         }
         None => {
             state.reset_all();
-            println!("Reset sync state for all sources");
+            println!("Reset state for all sources");
         }
     }
-
     state.save(state_path)?;
     Ok(())
 }

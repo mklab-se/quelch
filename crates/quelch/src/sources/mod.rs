@@ -43,15 +43,19 @@ pub trait SourceConnector: Sync {
     /// The target Azure AI Search index name.
     fn index_name(&self) -> &str;
 
-    /// Fetch documents changed since the given cursor.
+    /// Subsource identifiers — Jira project keys or Confluence space keys.
+    fn subsources(&self) -> &[String];
+
+    /// Fetch documents for a specific subsource since `cursor`.
     /// If cursor is None, fetch everything (initial full sync).
     async fn fetch_changes(
         &self,
+        subsource: &str,
         cursor: Option<&SyncCursor>,
         batch_size: usize,
     ) -> anyhow::Result<FetchResult>;
 
-    /// Fetch IDs of all documents currently in the source.
+    /// Fetch all document IDs currently in the source for a specific subsource.
     /// Used for detecting deletions.
-    async fn fetch_all_ids(&self) -> anyhow::Result<Vec<String>>;
+    async fn fetch_all_ids(&self, subsource: &str) -> anyhow::Result<Vec<String>>;
 }

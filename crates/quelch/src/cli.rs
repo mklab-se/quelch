@@ -64,6 +64,9 @@ pub enum Commands {
     Reset {
         /// Source name to reset (omit to reset all)
         source: Option<String>,
+        /// Only reset a single subsource (project or space key) within the source
+        #[arg(long)]
+        subsource: Option<String>,
     },
     /// Delete all configured indexes from Azure AI Search and clear sync state
     ResetIndexes,

@@ -119,15 +119,14 @@ impl JiraConnector {
         }
     }
 
-    fn build_jql(&self, cursor: Option<&SyncCursor>) -> String {
-        let project_jql = self.projects_jql();
-
+    fn build_jql_for(&self, subsource: &str, cursor: Option<&SyncCursor>) -> String {
+        let project_clause = format!("project = {}", Self::quote_jql_string(subsource));
         match cursor {
             Some(c) => {
                 let ts = c.last_updated.format("%Y-%m-%d %H:%M");
-                format!("{project_jql} AND updated >= \"{ts}\" ORDER BY updated ASC")
+                format!("{project_clause} AND updated >= \"{ts}\" ORDER BY updated ASC")
             }
-            None => format!("{project_jql} ORDER BY updated ASC"),
+            None => format!("{project_clause} ORDER BY updated ASC"),
         }
     }
 
@@ -344,10 +343,11 @@ impl JiraConnector {
 
     async fn fetch_changes_dc(
         &self,
+        subsource: &str,
         cursor: Option<&SyncCursor>,
         batch_size: usize,
     ) -> Result<FetchResult> {
-        let jql = self.build_jql(cursor);
+        let jql = self.build_jql_for(subsource, cursor);
         let url = format!(
             "{}/rest/api/2/search",
             self.config.url.trim_end_matches('/')
@@ -426,10 +426,11 @@ impl JiraConnector {
 
     async fn fetch_changes_cloud(
         &self,
+        subsource: &str,
         cursor: Option<&SyncCursor>,
         batch_size: usize,
     ) -> Result<FetchResult> {
-        let jql = self.build_jql(cursor);
+        let jql = self.build_jql_for(subsource, cursor);
         let url = format!(
             "{}/rest/api/3/search/jql",
             self.config.url.trim_end_matches('/')
@@ -503,12 +504,12 @@ impl JiraConnector {
     // fetch_all_ids
     // -----------------------------------------------------------------------
 
-    async fn fetch_all_ids_dc(&self) -> Result<Vec<String>> {
+    async fn fetch_all_ids_dc(&self, subsource: &str) -> Result<Vec<String>> {
         let mut all_ids = Vec::new();
         let mut start_at: u64 = 0;
         let page_size: usize = 1000;
         let auth_header = self.config.auth.authorization_header();
-        let jql = self.projects_jql();
+        let jql = self.build_jql_for(subsource, None);
 
         loop {
             let url = format!(
@@ -552,10 +553,10 @@ impl JiraConnector {
         Ok(all_ids)
     }
 
-    async fn fetch_all_ids_cloud(&self) -> Result<Vec<String>> {
+    async fn fetch_all_ids_cloud(&self, subsource: &str) -> Result<Vec<String>> {
         let mut all_ids = Vec::new();
         let auth_header = self.config.auth.authorization_header();
-        let jql = self.projects_jql();
+        let jql = self.build_jql_for(subsource, None);
         let mut next_page_token: Option<String> = None;
 
         loop {
@@ -606,22 +607,6 @@ impl JiraConnector {
 
         Ok(all_ids)
     }
-
-    fn projects_jql(&self) -> String {
-        let project_clause = self
-            .config
-            .projects
-            .iter()
-            .map(|p| format!("project = {}", Self::quote_jql_string(p)))
-            .collect::<Vec<_>>()
-            .join(" OR ");
-
-        if self.config.projects.len() > 1 {
-            format!("({project_clause})")
-        } else {
-            project_clause
-        }
-    }
 }
 
 impl SourceConnector for JiraConnector {
@@ -637,23 +622,29 @@ impl SourceConnector for JiraConnector {
         &self.config.index
     }
 
+    fn subsources(&self) -> &[String] {
+        &self.config.projects
+    }
+
     async fn fetch_changes(
         &self,
+        subsource: &str,
         cursor: Option<&SyncCursor>,
         batch_size: usize,
     ) -> Result<FetchResult> {
         if self.is_cloud {
-            self.fetch_changes_cloud(cursor, batch_size).await
+            self.fetch_changes_cloud(subsource, cursor, batch_size)
+                .await
         } else {
-            self.fetch_changes_dc(cursor, batch_size).await
+            self.fetch_changes_dc(subsource, cursor, batch_size).await
         }
     }
 
-    async fn fetch_all_ids(&self) -> Result<Vec<String>> {
+    async fn fetch_all_ids(&self, subsource: &str) -> Result<Vec<String>> {
         if self.is_cloud {
-            self.fetch_all_ids_cloud().await
+            self.fetch_all_ids_cloud(subsource).await
         } else {
-            self.fetch_all_ids_dc().await
+            self.fetch_all_ids_dc(subsource).await
         }
     }
 }
@@ -700,7 +691,7 @@ mod tests {
     #[test]
     fn builds_jql_without_cursor() {
         let connector = JiraConnector::new(&dc_config());
-        let jql = connector.build_jql(None);
+        let jql = connector.build_jql_for("DO", None);
         assert_eq!(jql, "project = \"DO\" ORDER BY updated ASC");
     }
 
@@ -712,30 +703,49 @@ mod tests {
                 .unwrap()
                 .with_timezone(&Utc),
         };
-        let jql = connector.build_jql(Some(&cursor));
+        let jql = connector.build_jql_for("DO", Some(&cursor));
         assert!(jql.contains("updated >= \"2025-01-15 10:30\""));
         assert!(jql.contains("project = \"DO\""));
     }
 
     #[test]
-    fn builds_jql_multiple_projects() {
+    fn escapes_quotes_in_project_keys() {
+        let connector = JiraConnector::new(&dc_config());
+        let jql = connector.build_jql_for("Team \"A\"", None);
+        assert_eq!(jql, "project = \"Team \\\"A\\\"\" ORDER BY updated ASC");
+    }
+
+    #[test]
+    fn subsources_returns_project_keys() {
         let mut config = dc_config();
         config.projects = vec!["DO".to_string(), "HR".to_string()];
         let connector = JiraConnector::new(&config);
-        let jql = connector.build_jql(None);
         assert_eq!(
-            jql,
-            "(project = \"DO\" OR project = \"HR\") ORDER BY updated ASC"
+            connector.subsources(),
+            &["DO".to_string(), "HR".to_string()]
         );
     }
 
     #[test]
-    fn escapes_quotes_in_project_keys() {
+    fn builds_jql_with_single_subsource() {
         let mut config = dc_config();
-        config.projects = vec!["Team \"A\"".to_string()];
+        config.projects = vec!["DO".to_string(), "HR".to_string()];
         let connector = JiraConnector::new(&config);
-        let jql = connector.build_jql(None);
-        assert_eq!(jql, "project = \"Team \\\"A\\\"\" ORDER BY updated ASC");
+        let jql = connector.build_jql_for("DO", None);
+        assert_eq!(jql, "project = \"DO\" ORDER BY updated ASC");
+    }
+
+    #[test]
+    fn builds_jql_with_subsource_and_cursor() {
+        let connector = JiraConnector::new(&dc_config());
+        let cursor = SyncCursor {
+            last_updated: DateTime::parse_from_rfc3339("2025-01-15T10:30:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        };
+        let jql = connector.build_jql_for("DO", Some(&cursor));
+        assert!(jql.contains("project = \"DO\""));
+        assert!(jql.contains("updated >= \"2025-01-15 10:30\""));
     }
 
     #[test]

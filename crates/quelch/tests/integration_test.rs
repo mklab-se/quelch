@@ -334,16 +334,14 @@ async fn full_sync_jira_dc_to_azure() {
     .expect("run_sync failed");
 
     // Verify state was persisted with cursor and doc count
-    let state = SyncState::load(&state_path).expect("load state");
+    let state = SyncState::load(&state_path, &[]).expect("load state");
     let source_state = state.get_source("test-jira");
-    assert!(
-        source_state.last_cursor.is_some(),
-        "cursor should be persisted"
-    );
-    assert_eq!(
-        source_state.documents_synced, 2,
-        "should have synced 2 documents"
-    );
+    let sub = source_state
+        .subsources
+        .get("TEST")
+        .expect("TEST subsource state");
+    assert!(sub.last_cursor.is_some(), "cursor should be persisted");
+    assert_eq!(sub.documents_synced, 2, "should have synced 2 documents");
     assert_eq!(source_state.sync_count, 1, "should have run one sync batch");
 }
 
@@ -403,10 +401,14 @@ async fn full_sync_jira_cloud_to_azure() {
     .await
     .expect("run_sync failed");
 
-    let state = SyncState::load(&state_path).expect("load state");
+    let state = SyncState::load(&state_path, &[]).expect("load state");
     let source_state = state.get_source("test-jira-cloud");
+    let sub = source_state
+        .subsources
+        .get("TEST")
+        .expect("TEST subsource state");
     assert_eq!(
-        source_state.documents_synced, 2,
+        sub.documents_synced, 2,
         "should have synced 2 cloud documents"
     );
 }
@@ -445,7 +447,7 @@ async fn incremental_sync_uses_cursor() {
     let prior_cursor = chrono::DateTime::parse_from_rfc3339("2025-01-10T00:00:00Z")
         .unwrap()
         .with_timezone(&chrono::Utc);
-    pre_state.update_source("test-jira", prior_cursor, 5);
+    pre_state.update_subsource("test-jira", "TEST", prior_cursor, 5, None);
     pre_state.save(&state_path).expect("save pre-state");
 
     run_sync(
@@ -460,10 +462,14 @@ async fn incremental_sync_uses_cursor() {
     .expect("run_sync failed");
 
     // Verify: no docs were pushed, count unchanged
-    let state = SyncState::load(&state_path).expect("load state");
+    let state = SyncState::load(&state_path, &[]).expect("load state");
     let source_state = state.get_source("test-jira");
+    let sub = source_state
+        .subsources
+        .get("TEST")
+        .expect("TEST subsource state");
     assert_eq!(
-        source_state.documents_synced, 5,
+        sub.documents_synced, 5,
         "doc count should be unchanged when no new results"
     );
 
@@ -535,8 +541,16 @@ async fn repeated_sync_does_not_re_push_same_docs() {
     .await
     .expect("first sync failed");
 
-    let state = SyncState::load(&state_path).expect("load state");
-    assert_eq!(state.get_source("test-jira").documents_synced, 2);
+    let state = SyncState::load(&state_path, &[]).expect("load state");
+    assert_eq!(
+        state
+            .get_source("test-jira")
+            .subsources
+            .get("TEST")
+            .map(|s| s.documents_synced)
+            .unwrap_or(0),
+        2
+    );
 
     // Second sync — Jira returns same issues (updated >= cursor is inclusive),
     // but sync should filter them out and NOT push anything
@@ -552,9 +566,14 @@ async fn repeated_sync_does_not_re_push_same_docs() {
     .expect("second sync failed");
 
     // Doc count should still be 2, not 4
-    let state = SyncState::load(&state_path).expect("load state");
+    let state = SyncState::load(&state_path, &[]).expect("load state");
     assert_eq!(
-        state.get_source("test-jira").documents_synced,
+        state
+            .get_source("test-jira")
+            .subsources
+            .get("TEST")
+            .map(|s| s.documents_synced)
+            .unwrap_or(0),
         2,
         "should not re-count already synced docs"
     );
@@ -725,14 +744,18 @@ async fn sync_with_confluence_chunking() {
     .expect("run_sync failed");
 
     // Verify state: docs pushed (should be multiple chunks from heading-based split)
-    let state = SyncState::load(&state_path).expect("load state");
+    let state = SyncState::load(&state_path, &[]).expect("load state");
     let source_state = state.get_source("test-confluence");
+    let sub = source_state
+        .subsources
+        .get("DOCS")
+        .expect("DOCS subsource state");
     assert!(
-        source_state.documents_synced > 1,
+        sub.documents_synced > 1,
         "heading-based chunking should produce multiple chunks; got {}",
-        source_state.documents_synced
+        sub.documents_synced
     );
-    assert!(source_state.last_cursor.is_some(), "cursor should be set");
+    assert!(sub.last_cursor.is_some(), "cursor should be set");
 
     // Verify Azure push was called
     let calls = azure_server.received_requests().await.unwrap();
