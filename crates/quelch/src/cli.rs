@@ -27,6 +27,10 @@ pub struct Cli {
     /// Output logs as JSON
     #[arg(long, global = true)]
     pub json: bool,
+
+    /// Disable TUI and fall back to plain structured logs
+    #[arg(long, global = true)]
+    pub no_tui: bool,
 }
 
 #[derive(clap::Subcommand)]

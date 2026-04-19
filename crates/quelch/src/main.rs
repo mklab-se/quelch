@@ -3,14 +3,32 @@ mod cli;
 use anyhow::{Context, Result};
 use clap::Parser;
 use quelch::{ai, config, copilot, search, sync};
+use std::io::IsTerminal;
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::prelude::*;
 
 use cli::{Cli, Commands};
 use sync::IndexMode;
 
-fn setup_logging(verbose: u8, quiet: bool, json: bool) {
+enum LogMode {
+    Plain,
+    Tui,
+}
+
+fn decide_mode(cli: &Cli, sub: &Commands) -> LogMode {
+    let watchable = matches!(sub, Commands::Sync { .. } | Commands::Watch { .. });
+    if cli.no_tui || cli.json || cli.quiet || !std::io::stdout().is_terminal() || !watchable {
+        LogMode::Plain
+    } else {
+        LogMode::Tui
+    }
+}
+
+fn install_plain(verbose: u8, quiet: bool, json: bool) {
     let filter = match (quiet, verbose) {
         (true, _) => "error",
         (_, 0) => "quelch=info",
@@ -18,9 +36,7 @@ fn setup_logging(verbose: u8, quiet: bool, json: bool) {
         (_, 2) => "quelch=debug,reqwest=debug",
         _ => "trace",
     };
-
     let builder = tracing_subscriber::fmt().with_env_filter(EnvFilter::new(filter));
-
     if json {
         builder.json().init();
     } else {
@@ -28,21 +44,55 @@ fn setup_logging(verbose: u8, quiet: bool, json: bool) {
     }
 }
 
+fn install_tui() -> (
+    tokio::sync::mpsc::Receiver<quelch::tui::events::QuelchEvent>,
+    Arc<AtomicU64>,
+) {
+    let (layer, rx, drops) = quelch::tui::tracing_layer::layer_and_receiver();
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::EnvFilter::new("quelch=info"))
+        .with(layer)
+        .init();
+    (rx, drops)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    setup_logging(cli.verbose, cli.quiet, cli.json);
+    let mode = decide_mode(&cli, &cli.command);
+    let tui_inputs = match mode {
+        LogMode::Plain => {
+            install_plain(cli.verbose, cli.quiet, cli.json);
+            None
+        }
+        LogMode::Tui => {
+            let (rx, drops) = install_tui();
+            Some((rx, drops))
+        }
+    };
 
     match cli.command {
         Commands::Sync {
             create_indexes,
             purge,
             max_docs,
-        } => cmd_sync(&cli.config, create_indexes, purge, max_docs).await,
+        } => {
+            if let Some((rx, drops)) = tui_inputs {
+                cmd_sync_tui(&cli.config, create_indexes, purge, max_docs, rx, drops).await
+            } else {
+                cmd_sync(&cli.config, create_indexes, purge, max_docs).await
+            }
+        }
         Commands::Watch {
             create_indexes,
             max_docs,
-        } => cmd_watch(&cli.config, create_indexes, max_docs).await,
+        } => {
+            if let Some((rx, drops)) = tui_inputs {
+                cmd_watch_tui(&cli.config, create_indexes, max_docs, rx, drops).await
+            } else {
+                cmd_watch(&cli.config, create_indexes, max_docs).await
+            }
+        }
         Commands::Setup { yes } => cmd_setup(&cli.config, yes).await,
         Commands::Status => cmd_status(&cli.config),
         Commands::Reset { source, subsource } => {
@@ -382,5 +432,123 @@ sources:
 
     std::fs::write(path, template)?;
     println!("Created quelch.yaml — edit it with your Azure and source credentials");
+    Ok(())
+}
+
+async fn cmd_sync_tui(
+    config_path: &Path,
+    auto_create: bool,
+    purge: bool,
+    max_docs: Option<u64>,
+    events_rx: tokio::sync::mpsc::Receiver<quelch::tui::events::QuelchEvent>,
+    drops: Arc<AtomicU64>,
+) -> Result<()> {
+    let config = quelch::config::load_config(config_path)?;
+    let state_path = Path::new(&config.sync.state_file).to_path_buf();
+    let prefs_path = std::path::PathBuf::from(".quelch-tui-state.json");
+    let mode = if auto_create {
+        IndexMode::AutoCreate
+    } else {
+        IndexMode::Interactive
+    };
+    let embedding = sync::load_embedding_config()?;
+    let embed_client = ailloy::Client::for_capability("embedding")
+        .context("failed to create embedding client — run 'quelch ai config' to set up")?;
+
+    let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::channel::<sync::UiCommand>(16);
+    let tui_handle = {
+        let config = config.clone();
+        tokio::spawn(
+            async move { quelch::tui::run(config, prefs_path, events_rx, cmd_tx, drops).await },
+        )
+    };
+
+    let res = sync::run_sync_with(
+        &config,
+        &state_path,
+        &embedding,
+        mode,
+        Some(&embed_client as &dyn sync::embedder::Embedder),
+        max_docs,
+        &mut cmd_rx,
+    )
+    .await;
+
+    if purge {
+        sync::run_purge(&config).await.ok();
+    }
+
+    drop(cmd_rx);
+    let _ = tui_handle.await;
+    res
+}
+
+async fn cmd_watch_tui(
+    config_path: &Path,
+    auto_create: bool,
+    max_docs: Option<u64>,
+    events_rx: tokio::sync::mpsc::Receiver<quelch::tui::events::QuelchEvent>,
+    drops: Arc<AtomicU64>,
+) -> Result<()> {
+    let config = quelch::config::load_config(config_path)?;
+    let state_path = Path::new(&config.sync.state_file).to_path_buf();
+    let prefs_path = std::path::PathBuf::from(".quelch-tui-state.json");
+    let first_mode = if auto_create {
+        IndexMode::AutoCreate
+    } else {
+        IndexMode::Interactive
+    };
+    let embedding = sync::load_embedding_config()?;
+    let embed_client = ailloy::Client::for_capability("embedding")
+        .context("failed to create embedding client — run 'quelch ai config' to set up")?;
+
+    let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::channel::<sync::UiCommand>(16);
+    let tui_handle = tokio::spawn({
+        let config = config.clone();
+        async move { quelch::tui::run(config, prefs_path, events_rx, cmd_tx, drops).await }
+    });
+
+    let interval = std::time::Duration::from_secs(config.sync.poll_interval);
+    let purge_every = config.sync.purge_every;
+    let mut cycle: u64 = 0;
+    loop {
+        cycle += 1;
+        let mode = if cycle == 1 {
+            first_mode
+        } else {
+            IndexMode::RequireExisting
+        };
+        if let Err(e) = sync::run_sync_with(
+            &config,
+            &state_path,
+            &embedding,
+            mode,
+            Some(&embed_client as &dyn sync::embedder::Embedder),
+            max_docs,
+            &mut cmd_rx,
+        )
+        .await
+        {
+            tracing::error!(error = %e, "Sync cycle failed");
+        }
+        if purge_every > 0
+            && cycle.is_multiple_of(purge_every)
+            && let Err(e) = sync::run_purge(&config).await
+        {
+            tracing::error!(error = %e, "Purge failed");
+        }
+        let sleep = tokio::time::sleep(interval);
+        tokio::pin!(sleep);
+        tokio::select! {
+            _ = &mut sleep => {}
+            Some(cmd) = cmd_rx.recv() => match cmd {
+                sync::UiCommand::Shutdown => break,
+                sync::UiCommand::SyncNow => continue,
+                _ => continue,
+            }
+        }
+    }
+    drop(cmd_rx);
+    let _ = tui_handle.await;
     Ok(())
 }
