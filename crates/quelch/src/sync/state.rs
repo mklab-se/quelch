@@ -117,7 +117,6 @@ impl SyncState {
     ) {
         let src = self.sources.entry(source.to_string()).or_default();
         src.last_sync_at = Some(Utc::now());
-        src.sync_count += 1;
         let sub = src.subsources.entry(subsource.to_string()).or_default();
         sub.last_cursor = Some(cursor);
         sub.last_sync_at = Some(Utc::now());
@@ -125,6 +124,13 @@ impl SyncState {
         if last_sample_id.is_some() {
             sub.last_sample_id = last_sample_id;
         }
+    }
+
+    /// Record that a full cycle has finished for `source` — increments sync_count by 1.
+    pub fn complete_source_cycle(&mut self, source: &str) {
+        let src = self.sources.entry(source.to_string()).or_default();
+        src.sync_count += 1;
+        src.last_sync_at = Some(Utc::now());
     }
 
     /// Reset state. If `subsource` is Some, only that subsource is cleared.
@@ -205,6 +211,17 @@ mod tests {
         let sub = s.subsources.get("DO").unwrap();
         assert_eq!(sub.documents_synced, 12);
         assert_eq!(sub.last_sample_id.as_deref(), Some("DO-9"));
+    }
+
+    #[test]
+    fn complete_source_cycle_increments_sync_count_once() {
+        let mut state = SyncState::default();
+        state.update_subsource("s", "A", Utc::now(), 5, None);
+        state.update_subsource("s", "A", Utc::now(), 7, None);
+        state.complete_source_cycle("s");
+        assert_eq!(state.get_source("s").sync_count, 1);
+        state.complete_source_cycle("s");
+        assert_eq!(state.get_source("s").sync_count, 2);
     }
 
     #[test]
