@@ -2,3 +2,5 @@
 .DS_Store
 quelch.yaml
 .quelch-state.json
+.quelch-tui-state.json
+.superpowers/
