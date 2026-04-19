@@ -248,6 +248,35 @@ async fn azure_index_put(
     (StatusCode::CREATED, Json(json!({ "name": name }))).into_response()
 }
 
+/// Azure's real `create_index` posts the schema (with `name` inside) to
+/// `/indexes?api-version=...`. Honor that alongside the `PUT /{name}` we
+/// already have.
+async fn azure_indexes_collection_post(
+    State(state): State<SharedState>,
+    Json(body): Json<Value>,
+) -> impl IntoResponse {
+    if let Some(status) = consume_fault(&state) {
+        return (StatusCode::from_u16(status).unwrap(), Json(json!({}))).into_response();
+    }
+    let name = match body.get("name").and_then(|v| v.as_str()) {
+        Some(n) => n.to_string(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "missing 'name' field" })),
+            )
+                .into_response();
+        }
+    };
+    state
+        .lock()
+        .unwrap()
+        .indexes
+        .entry(name.clone())
+        .or_default();
+    (StatusCode::CREATED, Json(json!({ "name": name }))).into_response()
+}
+
 async fn azure_index_delete(
     State(state): State<SharedState>,
     AxumPath(name): AxumPath<String>,
@@ -472,6 +501,7 @@ pub fn build_router() -> Router {
             get(confluence_search),
         )
         // Azure routes (all share the same state):
+        .route("/azure/indexes", post(azure_indexes_collection_post))
         .route("/azure/indexes/{name}", get(azure_index_get))
         .route("/azure/indexes/{name}", put(azure_index_put))
         .route("/azure/indexes/{name}", delete(azure_index_delete))
@@ -680,5 +710,29 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(r3.status().as_u16(), 404);
+    }
+
+    #[tokio::test]
+    async fn azure_post_indexes_collection_creates_from_body() {
+        let base = spawn_test_server().await;
+        let client = reqwest::Client::new();
+
+        let resp = client
+            .post(format!("{}/azure/indexes?api-version=2024-07-01", base))
+            .json(&serde_json::json!({ "name": "coll-idx", "fields": [] }))
+            .send()
+            .await
+            .unwrap();
+        assert!(resp.status().is_success());
+
+        let get = client
+            .get(format!(
+                "{}/azure/indexes/coll-idx?api-version=2024-07-01",
+                base
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert!(get.status().is_success());
     }
 }
