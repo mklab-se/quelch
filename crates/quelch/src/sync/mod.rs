@@ -263,6 +263,7 @@ pub async fn run_sync_with(
 
     for source_config in &config.sources {
         if let EngineOutcome::Shutdown = poll_commands(cmd_rx, &mut paused).await {
+            tracing::info!(phase = "cycle_finished", "Cycle shutdown");
             return Ok(());
         }
         if let Err(e) = sync_source(
@@ -558,10 +559,11 @@ async fn sync_single_subsource<C: SourceConnector>(
         // Command poll at batch boundary
         match poll_commands(cmd_rx, paused).await {
             EngineOutcome::Shutdown => {
-                info!(
+                tracing::info!(
+                    phase = "subsource_finished",
                     source = source_name,
                     subsource = subsource,
-                    "Shutdown requested"
+                    "Shutdown mid-subsource"
                 );
                 return Ok(());
             }
@@ -570,7 +572,14 @@ async fn sync_single_subsource<C: SourceConnector>(
                 subsource: Some(sub),
             } if s == source_name && sub == subsource => {
                 state.reset_source(source_name, Some(subsource));
-                state.save(state_path).ok();
+                if let Err(e) = state.save(state_path) {
+                    tracing::warn!(
+                        source = source_name,
+                        subsource = subsource,
+                        error = %e,
+                        "failed to persist reset"
+                    );
+                }
                 cursor = None;
             }
             _ => {}
