@@ -38,6 +38,8 @@ trait-variant.workspace = true
 axum.workspace = true
 colored.workspace = true
 ailloy.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
