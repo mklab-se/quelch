@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-04-20
+
+### Added
+- **Interactive TUI for `quelch sim`.** Running `quelch sim` on a TTY now launches the redesigned dashboard directly, driven by the simulated world. Previously the command fell back to plain-log output because the subcommand was missing from the TUI-capable list. `--no-tui` still selects plain mode; `--snapshot-to` forces the headless renderer regardless of TTY.
+
+### Changed
+- **Ctrl-C is responsive again.** The plain-log path now sends `UiCommand::Shutdown` on the engine's command channel in addition to cancelling the token, so the engine exits within one subsource boundary (~50 ms) instead of finishing the in-flight cycle (~20 s).
+- **Plain-log output is now actually useful.** Audited every log line per a new CLAUDE.md discipline. Each line must earn its place by telling the reader something concrete: cycle / source / subsource lifecycle transitions, batch results, Azure responses with latency, backoff events, sim startup. A 15-second `quelch sim --no-tui` now produces ~26 narrative lines instead of dozens of repeated retry warnings.
+- **Engine event filter for the TUI layer is now `quelch=debug`** so the drilldown pane's recent-docs ring receives per-document events. Plain-log default stays at `quelch=info` so human-readable output isn't swamped.
+
+### Removed / demoted
+- **Per-cycle `[exists]` spam** from `setup_indexes` — now silent (or `debug!` when an operator wants to see it). `[created]` changed to a structured `info!` tracing event.
+- **Per-retry `Request failed with ...` and `Request error: ...` warnings** from `azure::request_with_retry`. The structured `phase = "backoff_started"` event at `info!` level is the single source of truth; plain-log default (`quelch=info`) shows it once per retry, the TUI lights up the backoff banner, and the per-attempt bodies are now `debug!` for when someone needs them.
+- **Per-document `phase = "doc_synced"` events** demoted from `info!` to `debug!`. TUI still captures them for the drilldown; plain-log output stays readable.
+
+### Developer experience
+- **CLAUDE.md: "Test Your Work Against the User's Actual Requirements" section.** Codifies the principle that `cargo test` passing is necessary but not sufficient — TUI, log, and UX claims must be verified by running the binary and reading the artifacts. Includes an explicit per-log-line audit checklist (audience / payload / verbosity / frequency) for anyone adding tracing output.
+
 ## [0.5.0] - 2026-04-20
 
 ### Added
