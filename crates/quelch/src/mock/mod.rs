@@ -1,19 +1,22 @@
 pub mod data;
 
+mod azure;
+mod confluence;
+mod jira;
+mod sim;
+
 use axum::{
     Router,
-    extract::{Path as AxumPath, Query, State},
     http::{HeaderMap, StatusCode},
-    response::{IntoResponse, Json},
+    response::Json,
     routing::{delete, get, post, put},
 };
-use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
-const MOCK_TOKEN: &str = "mock-pat-token";
+pub(super) const MOCK_TOKEN: &str = "mock-pat-token";
 
 // -----------------------------------------------------------------------
 // Shared server state (for Azure mock)
@@ -21,27 +24,27 @@ const MOCK_TOKEN: &str = "mock-pat-token";
 
 /// Per-index storage for Azure mock.
 #[derive(Default)]
-struct IndexStore {
-    docs: HashMap<String, Value>,
+pub(super) struct IndexStore {
+    pub(super) docs: HashMap<String, Value>,
 }
 
 #[derive(Default)]
-struct AzureStore {
-    indexes: HashMap<String, IndexStore>,
-    pending_faults: Vec<u16>,
+pub(super) struct AzureStore {
+    pub(super) indexes: HashMap<String, IndexStore>,
+    pub(super) pending_faults: Vec<u16>,
 }
 
 /// Top-level mock state — owns Azure + mutable Jira/Confluence stores.
 #[derive(Default)]
-struct MockState {
-    azure: AzureStore,
-    jira_issues: Vec<Value>,
-    confluence_pages: Vec<Value>,
+pub(super) struct MockState {
+    pub(super) azure: AzureStore,
+    pub(super) jira_issues: Vec<Value>,
+    pub(super) confluence_pages: Vec<Value>,
 }
 
-type SharedState = Arc<Mutex<MockState>>;
+pub(super) type SharedState = Arc<Mutex<MockState>>;
 
-fn consume_fault(state: &SharedState) -> Option<u16> {
+pub(super) fn consume_fault(state: &SharedState) -> Option<u16> {
     let mut s = state.lock().unwrap();
     if s.azure.pending_faults.is_empty() {
         None
@@ -54,7 +57,7 @@ fn consume_fault(state: &SharedState) -> Option<u16> {
 // Auth helper
 // -----------------------------------------------------------------------
 
-fn check_auth(headers: &HeaderMap) -> Result<(), (StatusCode, Json<Value>)> {
+pub(super) fn check_auth(headers: &HeaderMap) -> Result<(), (StatusCode, Json<Value>)> {
     let expected = format!("Bearer {MOCK_TOKEN}");
     match headers.get("authorization").and_then(|v| v.to_str().ok()) {
         Some(val) if val == expected => Ok(()),
@@ -69,584 +72,20 @@ fn check_auth(headers: &HeaderMap) -> Result<(), (StatusCode, Json<Value>)> {
 }
 
 // -----------------------------------------------------------------------
-// Jira endpoint
-// -----------------------------------------------------------------------
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct JiraSearchParams {
-    jql: Option<String>,
-    start_at: Option<u64>,
-    max_results: Option<u64>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    fields: Option<String>,
-}
-
-async fn jira_search(
-    State(state): State<SharedState>,
-    headers: HeaderMap,
-    Query(params): Query<JiraSearchParams>,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    check_auth(&headers)?;
-
-    let all_issues: Vec<Value> = state.lock().unwrap().jira_issues.clone();
-    let jql = params.jql.unwrap_or_default();
-
-    // Filter by project if JQL contains "project = X"
-    let filtered: Vec<Value> = all_issues
-        .into_iter()
-        .filter(|issue| {
-            if jql.is_empty() {
-                return true;
-            }
-            // Parse project filter
-            if let Some(project) = extract_jql_project(&jql) {
-                let issue_project = issue["fields"]["project"]["key"].as_str().unwrap_or("");
-                if !project.eq_ignore_ascii_case(issue_project) {
-                    return false;
-                }
-            }
-            // Parse updated >= filter
-            if let Some(updated_since) = extract_jql_updated(&jql) {
-                let issue_updated = issue["fields"]["updated"].as_str().unwrap_or("");
-                if issue_updated < updated_since.as_str() {
-                    return false;
-                }
-            }
-            true
-        })
-        .collect();
-
-    let start_at = params.start_at.unwrap_or(0);
-    let max_results = params.max_results.unwrap_or(50);
-    let total = filtered.len() as u64;
-
-    let page: Vec<Value> = filtered
-        .into_iter()
-        .skip(start_at as usize)
-        .take(max_results as usize)
-        .collect();
-
-    Ok(Json(json!({
-        "expand": "schema,names",
-        "startAt": start_at,
-        "maxResults": max_results,
-        "total": total,
-        "issues": page
-    })))
-}
-
-// -----------------------------------------------------------------------
-// Confluence endpoint
-// -----------------------------------------------------------------------
-
-#[derive(Debug, Deserialize)]
-struct ConfluenceSearchParams {
-    cql: Option<String>,
-    start: Option<u64>,
-    limit: Option<u64>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    expand: Option<String>,
-}
-
-async fn confluence_search(
-    State(state): State<SharedState>,
-    headers: HeaderMap,
-    Query(params): Query<ConfluenceSearchParams>,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    check_auth(&headers)?;
-
-    let all_pages: Vec<Value> = state.lock().unwrap().confluence_pages.clone();
-    let cql = params.cql.unwrap_or_default();
-
-    let filtered: Vec<Value> = all_pages
-        .into_iter()
-        .filter(|page| {
-            if cql.is_empty() {
-                return true;
-            }
-            // Parse space filter
-            if let Some(space) = extract_cql_space(&cql) {
-                let page_space = page["space"]["key"].as_str().unwrap_or("");
-                if !space.eq_ignore_ascii_case(page_space) {
-                    return false;
-                }
-            }
-            // Parse lastmodified filter
-            if let Some(since) = extract_cql_lastmodified(&cql) {
-                let page_updated = page["version"]["when"].as_str().unwrap_or("");
-                if page_updated < since.as_str() {
-                    return false;
-                }
-            }
-            true
-        })
-        .collect();
-
-    let start = params.start.unwrap_or(0);
-    let limit = params.limit.unwrap_or(25);
-    let total = filtered.len() as u64;
-
-    let page_slice: Vec<Value> = filtered
-        .into_iter()
-        .skip(start as usize)
-        .take(limit as usize)
-        .collect();
-
-    let has_more = (start + page_slice.len() as u64) < total;
-    let mut links = json!({
-        "base": format!("http://localhost:9999/confluence"),
-        "context": "/confluence"
-    });
-    if has_more {
-        links["next"] = json!(format!(
-            "/rest/api/content/search?cql={}&start={}&limit={}",
-            cql,
-            start + limit,
-            limit
-        ));
-    }
-
-    Ok(Json(json!({
-        "results": page_slice,
-        "start": start,
-        "limit": limit,
-        "size": page_slice.len(),
-        "_links": links
-    })))
-}
-
-// -----------------------------------------------------------------------
-// Azure AI Search mock handlers
-// -----------------------------------------------------------------------
-
-async fn azure_index_get(
-    State(state): State<SharedState>,
-    AxumPath(name): AxumPath<String>,
-) -> impl IntoResponse {
-    if let Some(status) = consume_fault(&state) {
-        return (StatusCode::from_u16(status).unwrap(), Json(json!({}))).into_response();
-    }
-    let s = state.lock().unwrap();
-    if s.azure.indexes.contains_key(&name) {
-        (StatusCode::OK, Json(json!({ "name": name }))).into_response()
-    } else {
-        (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
-    }
-}
-
-async fn azure_index_put(
-    State(state): State<SharedState>,
-    AxumPath(name): AxumPath<String>,
-    Json(_body): Json<Value>,
-) -> impl IntoResponse {
-    if let Some(status) = consume_fault(&state) {
-        return (StatusCode::from_u16(status).unwrap(), Json(json!({}))).into_response();
-    }
-    state
-        .lock()
-        .unwrap()
-        .azure
-        .indexes
-        .entry(name.clone())
-        .or_default();
-    (StatusCode::CREATED, Json(json!({ "name": name }))).into_response()
-}
-
-/// Azure's real `create_index` posts the schema (with `name` inside) to
-/// `/indexes?api-version=...`. Honor that alongside the `PUT /{name}` we
-/// already have.
-async fn azure_indexes_collection_post(
-    State(state): State<SharedState>,
-    Json(body): Json<Value>,
-) -> impl IntoResponse {
-    if let Some(status) = consume_fault(&state) {
-        return (StatusCode::from_u16(status).unwrap(), Json(json!({}))).into_response();
-    }
-    let name = match body.get("name").and_then(|v| v.as_str()) {
-        Some(n) => n.to_string(),
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "missing 'name' field" })),
-            )
-                .into_response();
-        }
-    };
-    state
-        .lock()
-        .unwrap()
-        .azure
-        .indexes
-        .entry(name.clone())
-        .or_default();
-    (StatusCode::CREATED, Json(json!({ "name": name }))).into_response()
-}
-
-async fn azure_index_delete(
-    State(state): State<SharedState>,
-    AxumPath(name): AxumPath<String>,
-) -> impl IntoResponse {
-    if let Some(status) = consume_fault(&state) {
-        return (StatusCode::from_u16(status).unwrap(), Json(json!({}))).into_response();
-    }
-    state.lock().unwrap().azure.indexes.remove(&name);
-    StatusCode::NO_CONTENT.into_response()
-}
-
-#[derive(Debug, Deserialize)]
-struct AzureBatch {
-    value: Vec<Value>,
-}
-
-async fn azure_index_docs_post(
-    State(state): State<SharedState>,
-    AxumPath(name): AxumPath<String>,
-    Json(batch): Json<AzureBatch>,
-) -> impl IntoResponse {
-    if let Some(status) = consume_fault(&state) {
-        return (StatusCode::from_u16(status).unwrap(), Json(json!({}))).into_response();
-    }
-    let mut s = state.lock().unwrap();
-    let store = s.azure.indexes.entry(name).or_default();
-    let mut results = Vec::new();
-    for mut doc in batch.value {
-        let action = doc
-            .get("@search.action")
-            .and_then(|v| v.as_str())
-            .unwrap_or("mergeOrUpload")
-            .to_string();
-        let id = doc
-            .get("id")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string();
-        if let Some(obj) = doc.as_object_mut() {
-            obj.remove("@search.action");
-        }
-        match action.as_str() {
-            "delete" => {
-                store.docs.remove(&id);
-            }
-            _ => {
-                store.docs.insert(id.clone(), doc);
-            }
-        }
-        results.push(json!({ "key": id, "status": true, "statusCode": 200 }));
-    }
-    (StatusCode::OK, Json(json!({ "value": results }))).into_response()
-}
-
-#[derive(Debug, Deserialize)]
-struct AzureSearchBody {
-    search: Option<String>,
-}
-
-async fn azure_index_search_post(
-    State(state): State<SharedState>,
-    AxumPath(name): AxumPath<String>,
-    Json(body): Json<AzureSearchBody>,
-) -> impl IntoResponse {
-    if let Some(status) = consume_fault(&state) {
-        return (StatusCode::from_u16(status).unwrap(), Json(json!({}))).into_response();
-    }
-    let s = state.lock().unwrap();
-    let store = match s.azure.indexes.get(&name) {
-        Some(v) => v,
-        None => {
-            return (StatusCode::NOT_FOUND, Json(json!({ "error": "no index" }))).into_response();
-        }
-    };
-    let q = body.search.unwrap_or_default().to_lowercase();
-    let results: Vec<Value> = store
-        .docs
-        .values()
-        .filter(|doc| {
-            if q.is_empty() || q == "*" {
-                return true;
-            }
-            doc.as_object()
-                .map(|o| {
-                    o.values().any(|v| {
-                        v.as_str()
-                            .map(|s| s.to_lowercase().contains(&q))
-                            .unwrap_or(false)
-                    })
-                })
-                .unwrap_or(false)
-        })
-        .cloned()
-        .collect();
-    (StatusCode::OK, Json(json!({ "value": results }))).into_response()
-}
-
-/// GET /azure/indexes/{name}/docs — ID-listing (used by SearchClient::fetch_all_ids).
-async fn azure_index_docs_list(
-    State(state): State<SharedState>,
-    AxumPath(name): AxumPath<String>,
-) -> impl IntoResponse {
-    if let Some(status) = consume_fault(&state) {
-        return (StatusCode::from_u16(status).unwrap(), Json(json!({}))).into_response();
-    }
-    let s = state.lock().unwrap();
-    let store = match s.azure.indexes.get(&name) {
-        Some(v) => v,
-        None => {
-            return (StatusCode::NOT_FOUND, Json(json!({ "error": "no index" }))).into_response();
-        }
-    };
-    let values: Vec<Value> = store.docs.keys().map(|id| json!({ "id": id })).collect();
-    (StatusCode::OK, Json(json!({ "value": values }))).into_response()
-}
-
-#[derive(Debug, Deserialize)]
-struct FaultSpec {
-    count: usize,
-    status: u16,
-}
-
-async fn azure_fault_post(
-    State(state): State<SharedState>,
-    Json(spec): Json<FaultSpec>,
-) -> impl IntoResponse {
-    let mut s = state.lock().unwrap();
-    for _ in 0..spec.count {
-        s.azure.pending_faults.push(spec.status);
-    }
-    StatusCode::OK
-}
-
-// -----------------------------------------------------------------------
-// Simulator mutation endpoints (/_sim/*)
-// -----------------------------------------------------------------------
-
-#[derive(Debug, Deserialize)]
-struct SimUpsertIssue {
-    project: String,
-    key: String,
-    summary: String,
-    #[serde(default)]
-    description: String,
-}
-
-async fn sim_upsert_issue(
-    State(state): State<SharedState>,
-    Json(body): Json<SimUpsertIssue>,
-) -> impl IntoResponse {
-    let now = chrono::Utc::now()
-        .format("%Y-%m-%dT%H:%M:%S%.3f+0000")
-        .to_string();
-    let mut s = state.lock().unwrap();
-    if let Some(existing) = s
-        .jira_issues
-        .iter_mut()
-        .find(|i| i["key"].as_str() == Some(body.key.as_str()))
-    {
-        existing["fields"]["summary"] = json!(body.summary);
-        existing["fields"]["description"] = json!(body.description);
-        existing["fields"]["updated"] = json!(now);
-    } else {
-        s.jira_issues.push(json!({
-            "id": body.key.clone(),
-            "key": body.key.clone(),
-            "fields": {
-                "summary": body.summary,
-                "description": body.description,
-                "status": {
-                    "name": "Open",
-                    "statusCategory": { "name": "New", "id": 2, "key": "new" }
-                },
-                "priority": { "name": "Medium" },
-                "issuetype": { "name": "Story" },
-                "project": {
-                    "id": body.project.clone(),
-                    "key": body.project.clone(),
-                    "name": body.project.clone(),
-                },
-                "labels": Vec::<String>::new(),
-                "created": now.clone(),
-                "updated": now,
-                "comment": { "comments": [], "maxResults": 0, "total": 0, "startAt": 0 }
-            }
-        }));
-    }
-    (StatusCode::OK, Json(json!({ "ok": true })))
-}
-
-#[derive(Debug, Deserialize)]
-struct SimUpsertPage {
-    space: String,
-    id: String,
-    title: String,
-    #[serde(default)]
-    body: String,
-}
-
-async fn sim_upsert_page(
-    State(state): State<SharedState>,
-    Json(body): Json<SimUpsertPage>,
-) -> impl IntoResponse {
-    let now = chrono::Utc::now()
-        .format("%Y-%m-%dT%H:%M:%S%.3f+0000")
-        .to_string();
-    let mut s = state.lock().unwrap();
-    if let Some(existing) = s
-        .confluence_pages
-        .iter_mut()
-        .find(|p| p["id"].as_str() == Some(body.id.as_str()))
-    {
-        existing["title"] = json!(body.title);
-        if let Some(storage) = existing
-            .get_mut("body")
-            .and_then(|b| b.get_mut("storage"))
-            .and_then(|s| s.get_mut("value"))
-        {
-            *storage = json!(body.body);
-        }
-        existing["version"]["when"] = json!(now);
-    } else {
-        s.confluence_pages.push(json!({
-            "id": body.id,
-            "type": "page",
-            "status": "current",
-            "title": body.title,
-            "space": { "key": body.space, "name": "sim" },
-            "body": { "storage": { "value": body.body, "representation": "storage" } },
-            "version": { "number": 1, "when": now.clone() },
-            "history": { "createdDate": now, "latest": true },
-            "ancestors": [],
-            "metadata": { "labels": { "results": [], "start": 0, "limit": 200, "size": 0 } },
-            "_links": {}
-        }));
-    }
-    (StatusCode::OK, Json(json!({ "ok": true })))
-}
-
-#[derive(Debug, Deserialize)]
-struct SimAddComment {
-    key: String,
-    body: String,
-    #[serde(default)]
-    author: String,
-}
-
-async fn sim_add_comment(
-    State(state): State<SharedState>,
-    Json(body): Json<SimAddComment>,
-) -> impl IntoResponse {
-    let now = chrono::Utc::now()
-        .format("%Y-%m-%dT%H:%M:%S%.3f+0000")
-        .to_string();
-    let mut s = state.lock().unwrap();
-    if let Some(issue) = s
-        .jira_issues
-        .iter_mut()
-        .find(|i| i["key"].as_str() == Some(body.key.as_str()))
-    {
-        let comment = json!({
-            "author": { "displayName": body.author },
-            "body": body.body,
-            "created": now,
-            "updated": now,
-        });
-        if let Some(comments) = issue
-            .get_mut("fields")
-            .and_then(|f| f.get_mut("comment"))
-            .and_then(|c| c.get_mut("comments"))
-            .and_then(|v| v.as_array_mut())
-        {
-            comments.push(comment);
-        }
-        issue["fields"]["updated"] = json!(now);
-        (StatusCode::OK, Json(json!({ "ok": true })))
-    } else {
-        (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" })))
-    }
-}
-
-// -----------------------------------------------------------------------
-// Query parsing helpers
-// -----------------------------------------------------------------------
-
-/// Extract project name from JQL like "project = QUELCH ..."
-fn extract_jql_project(jql: &str) -> Option<String> {
-    let lower = jql.to_lowercase();
-    let idx = lower.find("project")?;
-    let rest = &jql[idx..];
-    // Find the = sign
-    let eq_idx = rest.find('=')?;
-    let after_eq = rest[eq_idx + 1..].trim_start();
-    // Take the first word (project key)
-    let key: String = after_eq
-        .chars()
-        .take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
-        .collect();
-    if key.is_empty() { None } else { Some(key) }
-}
-
-/// Extract updated >= timestamp from JQL like `updated >= "2026-03-15 14:30"`
-fn extract_jql_updated(jql: &str) -> Option<String> {
-    let lower = jql.to_lowercase();
-    let idx = lower.find("updated")?;
-    let rest = &jql[idx..];
-    // Find >=
-    let ge_idx = rest.find(">=")?;
-    let after_ge = rest[ge_idx + 2..].trim_start();
-    // Extract quoted value
-    if let Some(stripped) = after_ge.strip_prefix('"') {
-        let end = stripped.find('"')?;
-        let ts = &stripped[..end];
-        // Convert "2026-03-15 14:30" to comparable format "2026-03-15T14:30"
-        Some(ts.replace(' ', "T"))
-    } else {
-        None
-    }
-}
-
-/// Extract space name from CQL like `space = "QUELCH" ...`
-fn extract_cql_space(cql: &str) -> Option<String> {
-    let lower = cql.to_lowercase();
-    let idx = lower.find("space")?;
-    let rest = &cql[idx..];
-    let eq_idx = rest.find('=')?;
-    let after_eq = rest[eq_idx + 1..].trim_start();
-    if let Some(stripped) = after_eq.strip_prefix('"') {
-        let end = stripped.find('"')?;
-        Some(stripped[..end].to_string())
-    } else {
-        let key: String = after_eq
-            .chars()
-            .take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
-            .collect();
-        if key.is_empty() { None } else { Some(key) }
-    }
-}
-
-/// Extract lastmodified >= timestamp from CQL
-fn extract_cql_lastmodified(cql: &str) -> Option<String> {
-    let lower = cql.to_lowercase();
-    let idx = lower.find("lastmodified")?;
-    let rest = &cql[idx..];
-    let ge_idx = rest.find(">=")?;
-    let after_ge = rest[ge_idx + 2..].trim_start();
-    if let Some(stripped) = after_ge.strip_prefix('"') {
-        let end = stripped.find('"')?;
-        let ts = &stripped[..end];
-        Some(ts.replace(' ', "T"))
-    } else {
-        None
-    }
-}
-
-// -----------------------------------------------------------------------
 // Router builder (testable, used by integration tests)
 // -----------------------------------------------------------------------
 
 /// Build the axum Router used by the mock server. `pub` so integration
 /// tests outside this module can spin up an in-process instance.
 pub fn build_router() -> Router {
+    use azure::{
+        azure_fault_post, azure_index_delete, azure_index_docs_list, azure_index_docs_post,
+        azure_index_get, azure_index_put, azure_index_search_post, azure_indexes_collection_post,
+    };
+    use confluence::confluence_search;
+    use jira::jira_search;
+    use sim::{sim_add_comment, sim_upsert_issue, sim_upsert_page};
+
     let state = Arc::new(Mutex::new(MockState {
         azure: AzureStore::default(),
         jira_issues: data::jira_issues(),
