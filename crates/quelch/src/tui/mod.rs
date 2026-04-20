@@ -7,6 +7,7 @@ pub mod layout;
 pub mod metrics;
 pub mod prefs;
 pub mod spinner;
+pub mod status;
 pub mod tracing_layer;
 pub mod widgets;
 
@@ -126,13 +127,13 @@ pub async fn run(
     let mut frame_clock = tokio::time::interval(Duration::from_millis(125));
     frame_clock.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     app.drops = drops_counter.load(Ordering::Relaxed);
-    terminal.draw(|f| draw(f, &app))?;
+    terminal.draw(|f| draw(f, &app, std::time::Duration::from_secs(0), false))?;
 
     loop {
         tokio::select! {
             _ = frame_clock.tick() => {
                 app.drops = drops_counter.load(Ordering::Relaxed);
-                terminal.draw(|f| draw(f, &app))?;
+                terminal.draw(|f| draw(f, &app, std::time::Duration::from_secs(0), false))?;
             }
             Some(ev) = events_rx.recv() => {
                 app.apply(ev);
@@ -140,7 +141,7 @@ pub async fn run(
                     app.apply(next);
                 }
                 app.drops = drops_counter.load(Ordering::Relaxed);
-                terminal.draw(|f| draw(f, &app))?;
+                terminal.draw(|f| draw(f, &app, std::time::Duration::from_secs(0), false))?;
             }
             Some(key) = input_reader.rx.recv() => {
                 match input_state.on_key(key, &mut app) {
@@ -157,7 +158,7 @@ pub async fn run(
                     InputOutcome::None => {}
                 }
                 app.drops = drops_counter.load(Ordering::Relaxed);
-                terminal.draw(|f| draw(f, &app))?;
+                terminal.draw(|f| draw(f, &app, std::time::Duration::from_secs(0), false))?;
             }
             else => {
                 app.prefs.save(&prefs_path).ok();
@@ -205,7 +206,7 @@ mod smoke_tests {
         let app = App::new(&cfg, Prefs::default());
         let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
         term.draw(|f| {
-            draw(f, &app);
+            draw(f, &app, std::time::Duration::from_secs(0), false);
         })
         .unwrap();
     }

@@ -2,26 +2,31 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
-    text::Line,
+    text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Widget},
 };
 
-use super::app::{App, EngineStatus, Focus};
-use super::widgets::{azure_panel::AzurePanelWidget, log_view::LogView};
+use super::app::{App, Focus};
+use super::status::header_line;
+use super::widgets::{
+    azure_panel::AzurePanelWidget, drilldown::Drilldown, help_overlay::HelpOverlay,
+    log_view::LogView, source_table::SourceTable,
+};
 
-pub fn draw(f: &mut Frame, app: &App) {
+pub fn draw(f: &mut Frame, app: &App, uptime: std::time::Duration, help_open: bool) {
     let areas = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2),
-            Constraint::Min(12),
-            Constraint::Length(7),
-            Constraint::Length(2),
+            Constraint::Length(1), // header
+            Constraint::Min(12),   // sources or log
+            Constraint::Length(8), // azure
+            Constraint::Length(1), // footer
         ])
         .split(f.area());
 
     f.render_widget(Clear, f.area());
-    draw_header(f, areas[0], app);
+    draw_header(f, areas[0], app, uptime);
+
     if app.prefs.log_view_on {
         f.render_widget(
             LogView {
@@ -31,8 +36,9 @@ pub fn draw(f: &mut Frame, app: &App) {
             areas[1],
         );
     } else {
-        draw_sources(f, areas[1], app);
+        draw_sources_area(f, areas[1], app);
     }
+
     f.render_widget(
         AzurePanelWidget {
             panel: &app.azure,
@@ -43,33 +49,20 @@ pub fn draw(f: &mut Frame, app: &App) {
         areas[2],
     );
     draw_footer(f, areas[3], app);
+
+    if help_open {
+        f.render_widget(HelpOverlay, f.area());
+    }
 }
 
-fn draw_header(f: &mut Frame, area: Rect, app: &App) {
-    let status = match &app.status {
-        EngineStatus::Idle => "● idle".to_string(),
-        EngineStatus::Syncing { cycle, .. } => format!("● watching · cycle {cycle}"),
-        EngineStatus::Paused => "⏸ paused".to_string(),
-        EngineStatus::Shutdown => "⏹ shutdown".to_string(),
-    };
-    let selected = match (app.focused_source_name(), app.focused_subsource_name()) {
-        (Some(source), Some(subsource)) => format!("selected {source}/{subsource}"),
-        (Some(source), None) => format!("selected {source}"),
-        _ => "no sources".into(),
-    };
+fn draw_header(f: &mut Frame, area: Rect, app: &App, uptime: std::time::Duration) {
     f.render_widget(
-        Paragraph::new(Line::from(format!(
-            " quelch v{}  {status}  {selected}",
-            env!("CARGO_PKG_VERSION")
-        )))
-        .style(Style::default().fg(Color::White)),
+        Paragraph::new(header_line(app, chrono::Utc::now(), uptime)),
         area,
     );
 }
 
-fn draw_sources(f: &mut Frame, area: Rect, app: &App) {
-    use crate::tui::widgets::source_table::SourceTable;
-
+fn draw_sources_area(f: &mut Frame, area: Rect, app: &App) {
     let outer = Block::default()
         .borders(Borders::ALL)
         .border_style(if matches!(app.focus, Focus::Sources) {
@@ -86,23 +79,29 @@ fn draw_sources(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    f.render_widget(SourceTable { app }, inner);
+    if app.drilldown_open && app.selected_subsource.is_some() {
+        let split = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+            .split(inner);
+        f.render_widget(SourceTable { app }, split[0]);
+        f.render_widget(Drilldown { app }, split[1]);
+    } else {
+        f.render_widget(SourceTable { app }, inner);
+    }
 }
 
 fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
     let msg = if app.footer.is_empty() {
-        " arrows move  enter collapse  r sync-now  p pause  s logs  tab focus  q quit".to_string()
+        " ↑↓ select  ·  ←/→ collapse  ·  enter details  ·  r sync now  ·  p pause  ·  s logs  ·  ? help  ·  q quit".to_string()
     } else {
         format!(" {}", app.footer)
     };
     f.render_widget(
-        Paragraph::new(vec![
-            Line::from(msg),
-            Line::from(
-                " q quit  arrows move  enter collapse  r sync-now  p pause  s logs  tab focus",
-            ),
-        ])
-        .style(Style::default().fg(Color::Gray)),
+        Paragraph::new(Line::from(Span::styled(
+            msg,
+            Style::default().fg(Color::Gray),
+        ))),
         area,
     );
 }
@@ -137,10 +136,34 @@ mod tests {
     #[test]
     fn layout_renders_without_panicking() {
         let app = App::new(&cfg(), Prefs::default());
-        let mut term = ratatui::Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut term = ratatui::Terminal::new(TestBackend::new(100, 26)).unwrap();
         term.draw(|f| {
-            draw(f, &app);
+            draw(f, &app, std::time::Duration::from_secs(1), false);
         })
         .unwrap();
+    }
+
+    #[test]
+    fn footer_shows_only_one_keybinding_line() {
+        let app = App::new(&cfg(), Prefs::default());
+        let mut term = ratatui::Terminal::new(TestBackend::new(100, 26)).unwrap();
+        term.draw(|f| {
+            draw(f, &app, std::time::Duration::from_secs(1), false);
+        })
+        .unwrap();
+        let buf = term.backend().buffer();
+        let text: String = (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let occurrences = text.matches("sync now").count();
+        assert_eq!(
+            occurrences, 1,
+            "expected 1 footer line, found {occurrences}: {text}"
+        );
     }
 }
