@@ -4,3 +4,7 @@ quelch.yaml
 .quelch-state.json
 .quelch-tui-state.json
 .superpowers/
+
+# Developer scratch
+/tmp.txt
+/build_output*.json
