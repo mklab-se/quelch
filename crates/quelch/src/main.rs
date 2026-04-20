@@ -28,15 +28,17 @@ fn decide_mode(cli: &Cli, sub: &Commands) -> LogMode {
     }
 }
 
-fn install_plain(verbose: u8, quiet: bool, json: bool) {
-    let filter = match (quiet, verbose) {
-        (true, _) => "error",
-        (_, 0) => "quelch=info",
-        (_, 1) => "quelch=debug",
-        (_, 2) => "quelch=debug,reqwest=debug",
-        _ => "trace",
+fn install_plain(verbose: u8, quiet: bool, json: bool, is_sim: bool) {
+    let filter = match (quiet, verbose, is_sim) {
+        (true, _, _) => "error".to_string(),
+        (_, 0, true) => "quelch=warn,sim=info".to_string(),
+        (_, 0, false) => "quelch=info".to_string(),
+        (_, 1, true) => "quelch=info,sim=debug".to_string(),
+        (_, 1, false) => "quelch=debug".to_string(),
+        (_, 2, _) => "quelch=debug,sim=trace,reqwest=debug".to_string(),
+        _ => "trace".to_string(),
     };
-    let builder = tracing_subscriber::fmt().with_env_filter(EnvFilter::new(filter));
+    let builder = tracing_subscriber::fmt().with_env_filter(EnvFilter::new(&filter));
     if json {
         builder.json().init();
     } else {
@@ -60,9 +62,10 @@ fn install_tui() -> (
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     let mode = decide_mode(&cli, &cli.command);
+    let is_sim = matches!(&cli.command, Commands::Sim { .. });
     let tui_inputs = match mode {
         LogMode::Plain => {
-            install_plain(cli.verbose, cli.quiet, cli.json);
+            install_plain(cli.verbose, cli.quiet, cli.json, is_sim);
             None
         }
         LogMode::Tui => {
