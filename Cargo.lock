@@ -388,6 +388,7 @@ checksum = "829d955a0bb380ef178a640b91779e3987da38c9aea133b20614cfed8cdea9c6"
 dependencies = [
  "bitflags 2.11.1",
  "crossterm_winapi",
+ "futures-core",
  "mio 1.2.0",
  "parking_lot",
  "rustix 0.38.44",
@@ -1388,6 +1389,7 @@ dependencies = [
  "colored",
  "crossterm 0.28.1",
  "dirs 6.0.0",
+ "futures",
  "ratatui",
  "reqwest",
  "serde",

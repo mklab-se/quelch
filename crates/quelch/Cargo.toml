@@ -39,7 +39,8 @@ axum.workspace = true
 colored.workspace = true
 ailloy.workspace = true
 ratatui.workspace = true
-crossterm.workspace = true
+crossterm = { workspace = true, features = ["event-stream"] }
+futures.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
