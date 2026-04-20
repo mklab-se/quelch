@@ -1,6 +1,9 @@
 //! quelch simulator — runs the real engine against an in-process fake world.
 
+pub mod confluence_gen;
+pub mod jira_gen;
 pub mod opts;
+pub mod scheduler;
 pub mod world;
 
 use anyhow::Result;
