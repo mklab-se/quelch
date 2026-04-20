@@ -18,6 +18,12 @@ pub struct Prefs {
     pub log_view_on: bool,
     #[serde(default = "default_focus")]
     pub focus: String,
+    #[serde(default)]
+    pub selected_source: Option<String>,
+    #[serde(default)]
+    pub selected_subsource: Option<(String, String)>,
+    #[serde(default)]
+    pub drilldown_open: bool,
 }
 
 fn default_focus() -> String {
@@ -32,6 +38,9 @@ impl Default for Prefs {
             collapsed_subsources: HashMap::new(),
             log_view_on: false,
             focus: default_focus(),
+            selected_source: None,
+            selected_subsource: None,
+            drilldown_open: false,
         }
     }
 }
@@ -111,5 +120,27 @@ mod tests {
         std::fs::write(&path, "not valid json").unwrap();
         let loaded = Prefs::load(&path).unwrap();
         assert_eq!(loaded.version, CURRENT_PREFS_VERSION);
+    }
+
+    #[test]
+    fn new_fields_default_to_none_and_false() {
+        let p = Prefs::default();
+        assert!(p.selected_source.is_none());
+        assert!(p.selected_subsource.is_none());
+        assert!(!p.drilldown_open);
+    }
+
+    #[test]
+    fn old_file_without_new_fields_loads_cleanly() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("ui.json");
+        std::fs::write(
+            &path,
+            r#"{"version":1,"collapsed_sources":[],"collapsed_subsources":{},"log_view_on":false,"focus":"sources"}"#,
+        )
+        .unwrap();
+        let p = Prefs::load(&path).unwrap();
+        assert_eq!(p.version, 1);
+        assert!(p.selected_source.is_none());
     }
 }

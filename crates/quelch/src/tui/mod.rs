@@ -6,6 +6,7 @@ pub mod input;
 pub mod layout;
 pub mod metrics;
 pub mod prefs;
+pub mod spinner;
 pub mod tracing_layer;
 pub mod widgets;
 
