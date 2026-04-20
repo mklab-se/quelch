@@ -162,4 +162,35 @@ mod tests {
         assert!(text.contains("pause"));
         assert!(text.contains("quit"));
     }
+
+    use crate::tui::app::LogLine;
+    use crate::tui::widgets::log_view::LogView;
+    use std::collections::VecDeque;
+
+    #[test]
+    fn log_view_renders_column_headings() {
+        let mut lines = VecDeque::new();
+        lines.push_back(LogLine {
+            ts: chrono::Utc::now(),
+            level: tracing::Level::INFO,
+            target: "quelch::sync".into(),
+            message: "Cycle starting".into(),
+        });
+        let view = LogView {
+            lines: &lines,
+            focused: false,
+        };
+        let mut term = Terminal::new(TestBackend::new(100, 10)).unwrap();
+        term.draw(|f| f.render_widget(view, f.area())).unwrap();
+        let buf = term.backend().buffer();
+        let text: String = (0..buf.area.height)
+            .flat_map(|y| (0..buf.area.width).map(move |x| buf[(x, y)].symbol().to_string()))
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(text.contains("LEVEL"));
+        assert!(text.contains("TIME"));
+        assert!(text.contains("TARGET"));
+        assert!(text.contains("MESSAGE"));
+        assert!(text.contains("Cycle starting"));
+    }
 }
