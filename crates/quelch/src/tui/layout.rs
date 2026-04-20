@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 use super::app::{App, EngineStatus, Focus};
-use super::widgets::{azure_panel::AzurePanelWidget, log_view::LogView, source_card::SourceCard};
+use super::widgets::{azure_panel::AzurePanelWidget, log_view::LogView};
 
 pub fn draw(f: &mut Frame, app: &App) {
     let areas = Layout::default()
@@ -67,6 +67,8 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_sources(f: &mut Frame, area: Rect, app: &App) {
+    use crate::tui::widgets::source_table::SourceTable;
+
     let outer = Block::default()
         .borders(Borders::ALL)
         .border_style(if matches!(app.focus, Focus::Sources) {
@@ -82,47 +84,8 @@ fn draw_sources(f: &mut Frame, area: Rect, app: &App) {
         f.render_widget(Paragraph::new("No sources configured"), inner);
         return;
     }
-    let rows: Vec<(&crate::tui::app::SourceView, bool, u16)> = app
-        .sources
-        .iter()
-        .map(|s| {
-            let collapsed = app.prefs.is_source_collapsed(&s.name);
-            let height = if collapsed {
-                3
-            } else {
-                3 + s.subsources.len() as u16
-            };
-            (s, collapsed, height)
-        })
-        .collect();
-    let constraints: Vec<Constraint> = rows
-        .iter()
-        .map(|(_, _, h)| Constraint::Length(*h))
-        .collect();
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(constraints)
-        .split(inner);
 
-    for ((view, collapsed, _), rect) in rows.iter().zip(chunks.iter()) {
-        let focused_here = app
-            .focused_source_name()
-            .map(|name| name == view.name)
-            .unwrap_or(false);
-        f.render_widget(
-            SourceCard {
-                view,
-                collapsed: *collapsed,
-                focused: focused_here,
-                focused_subsource: if focused_here {
-                    app.focused_subsource_name()
-                } else {
-                    None
-                },
-            },
-            *rect,
-        );
-    }
+    f.render_widget(SourceTable { app }, inner);
 }
 
 fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
