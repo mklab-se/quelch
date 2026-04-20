@@ -1,3 +1,7 @@
+//! Azure AI Search panel. Everything on it is keyed to "documents landing
+//! in the destination index", not "HTTP requests" (which are batched and
+//! opaque to the operator) and not "latency" (not actionable).
+
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
@@ -7,25 +11,17 @@ use ratatui::{
     widgets::{Axis, Block, Borders, Chart, Dataset, GraphType, Paragraph, Widget},
 };
 
-use crate::tui::metrics::AzurePanel;
+use crate::tui::app::App;
 
 pub struct AzurePanelWidget<'a> {
-    pub panel: &'a AzurePanel,
-    pub drops: u64,
-    pub focused: bool,
-    pub backoff_reason: Option<&'a str>,
+    pub app: &'a App,
 }
 
 impl Widget for AzurePanelWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let border_style = if self.focused {
-            Style::default().fg(Color::Cyan)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(border_style)
+            .border_style(Style::default().fg(Color::DarkGray))
             .title("Azure AI Search");
         let inner = block.inner(area);
         block.render(area, buf);
@@ -33,55 +29,48 @@ impl Widget for AzurePanelWidget<'_> {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(1), // backoff banner OR subtitle
-                Constraint::Min(5),    // chart
-                Constraint::Length(3), // counter strip (3 rows)
+                Constraint::Length(1), // subtitle or backoff banner
+                Constraint::Min(4),    // chart
+                Constraint::Length(2), // counter strip
             ])
             .split(inner);
 
-        // --- Row 1: backoff banner OR chart subtitle with max ---
-        let subtitle_max = self
-            .panel
-            .requests_per_sec
-            .samples()
-            .iter()
-            .copied()
-            .max()
-            .unwrap_or(0);
-        let subtitle = if let Some(reason) = self.backoff_reason {
+        // Row 1 — either the chart subtitle, or an attention-grabbing backoff
+        // banner. Backoff takes precedence because it's actionable.
+        let panel = &self.app.pushes_per_sec;
+        let max_per_sec = panel.samples().iter().copied().max().unwrap_or(0);
+        let subtitle = if let Some(reason) = self.app.backoff_reason.as_deref() {
             Paragraph::new(Line::from(vec![
-                Span::styled(
-                    "◉ Azure client backing off",
-                    Style::default().fg(Color::Yellow),
-                ),
+                Span::styled("◉ Azure backing off", Style::default().fg(Color::Yellow)),
                 Span::raw("  "),
                 Span::styled(reason.to_string(), Style::default().fg(Color::Yellow)),
             ]))
         } else {
             Paragraph::new(Line::from(vec![
                 Span::styled(
-                    "Requests per second (last 60s)",
+                    "Documents pushed per second (last 60s)",
                     Style::default().fg(Color::DarkGray),
                 ),
                 Span::raw("    "),
                 Span::styled(
-                    format!("max {subtitle_max} req/s"),
+                    format!("peak {max_per_sec}/s"),
                     Style::default().fg(Color::DarkGray),
                 ),
             ]))
         };
         subtitle.render(chunks[0], buf);
 
-        // --- Row 2: chart ---
-        let points: Vec<(f64, f64)> = self.panel.requests_per_sec.chart_points();
-        let y_max = (subtitle_max as f64).max(1.0);
+        // Row 2 — braille-rendered line chart of pushes/sec. Y-axis auto-scales
+        // to the observed peak (min 1 so a flat zero-line still draws).
+        let points: Vec<(f64, f64)> = self.app.pushes_per_sec.chart_points();
+        let y_max = (max_per_sec as f64).max(1.0);
         let dataset = Dataset::default()
             .marker(symbols::Marker::Braille)
             .graph_type(GraphType::Line)
             .style(Style::default().fg(Color::Cyan))
             .data(&points);
-        let x_labels: Vec<Line> = vec![Line::from("-60s"), Line::from("now")];
-        let y_labels: Vec<Line> = vec![Line::from("0"), Line::from(format!("{}", y_max as u64))];
+        let x_labels: Vec<Line> = vec!["-60s".into(), "now".into()];
+        let y_labels: Vec<Line> = vec!["0".into(), format!("{}", y_max as u64).into()];
         Chart::new(vec![dataset])
             .x_axis(
                 Axis::default()
@@ -97,44 +86,42 @@ impl Widget for AzurePanelWidget<'_> {
             )
             .render(chunks[1], buf);
 
-        // --- Row 3: counter strip ---
-        let (p50, p95) = self.panel.p50_p95();
-        let bad_color = |n: u64, bad: Color| if n == 0 { Color::DarkGray } else { bad };
+        // Row 3 — two-column counter strip. Every counter answers a concrete
+        // operator question:
+        //   "How much has landed?" → Total pushed + Per min
+        //   "Is it still working?" → Fail counts and drops (non-zero = red)
+        let pushes_per_min: u64 = self.app.pushes_per_sec.samples().iter().sum();
+        let bad = |n: u64, bad_colour: Color| {
+            if n == 0 { Color::DarkGray } else { bad_colour }
+        };
         let rows = vec![
             Line::from(vec![
-                Span::styled("Total requests  ", Style::default().fg(Color::DarkGray)),
-                Span::raw(format!("{:<8}", self.panel.total)),
-                Span::styled("Latency      ", Style::default().fg(Color::DarkGray)),
-                Span::raw(format!(
-                    "median {} ms · 95th {} ms",
-                    p50.as_millis(),
-                    p95.as_millis()
-                )),
-            ]),
-            Line::from(vec![
-                Span::styled("Failed (4xx)    ", Style::default().fg(Color::DarkGray)),
+                Span::styled(" Total pushed   ", Style::default().fg(Color::DarkGray)),
+                Span::raw(format!("{:<10}", self.app.pushed_total)),
+                Span::styled("Per minute  ", Style::default().fg(Color::DarkGray)),
+                Span::raw(format!("{:<8}", pushes_per_min)),
+                Span::styled("4xx ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
-                    format!("{:<8}", self.panel.count_4xx),
-                    Style::default().fg(bad_color(self.panel.count_4xx, Color::Red)),
+                    format!("{:<4}", self.app.azure.count_4xx),
+                    Style::default().fg(bad(self.app.azure.count_4xx, Color::Red)),
                 ),
-                Span::styled("Throttled (429)  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("5xx ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
-                    format!("{}", self.panel.count_throttled),
-                    Style::default().fg(bad_color(self.panel.count_throttled, Color::Yellow)),
+                    format!("{:<4}", self.app.azure.count_5xx),
+                    Style::default().fg(bad(self.app.azure.count_5xx, Color::Red)),
                 ),
-            ]),
-            Line::from(vec![
-                Span::styled("Failed (5xx)    ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Throttled ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
-                    format!("{:<8}", self.panel.count_5xx),
-                    Style::default().fg(bad_color(self.panel.count_5xx, Color::Red)),
+                    format!("{:<4}", self.app.azure.count_throttled),
+                    Style::default().fg(bad(self.app.azure.count_throttled, Color::Yellow)),
                 ),
-                Span::styled("Dropped events   ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Dropped ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
-                    format!("{}", self.drops),
-                    Style::default().fg(bad_color(self.drops, Color::Yellow)),
+                    format!("{:<4}", self.app.drops),
+                    Style::default().fg(bad(self.app.drops, Color::Yellow)),
                 ),
             ]),
+            Line::from(""),
         ];
         Paragraph::new(rows).render(chunks[2], buf);
     }

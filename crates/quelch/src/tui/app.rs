@@ -45,21 +45,33 @@ pub struct SourceView {
 pub struct SubsourceView {
     pub key: String,
     pub state: SubsourceState,
-    pub last_cursor: Option<DateTime<Utc>>,
-    pub last_sample_id: Option<String>,
-    pub docs_synced_total: u64,
+    /// What this subsource is doing RIGHT NOW inside its current batch.
+    pub stage: crate::tui::events::Stage,
+    /// Timestamp of the most recent pushed doc's source-side `updated_at`
+    /// (i.e., "when was this issue/page last modified in Jira/Confluence?").
+    pub last_pushed_item_at: Option<DateTime<Utc>>,
+    /// Full ID of the last doc confirmed in Azure AI Search.
+    pub last_pushed_id: Option<String>,
+    /// When we last observed a push confirmation for this subsource.
+    pub last_pushed_at: Option<DateTime<Utc>>,
+    /// Cumulative count of docs confirmed in Azure for this subsource.
+    pub pushed_total: u64,
     pub last_errors: VecDeque<String>,
-    pub throughput: Throughput,
-    pub recent_docs: VecDeque<RecentDoc>,
+    /// Rolling pushes/min throughput (destination-side).
+    pub push_throughput: Throughput,
+    /// Most recent confirmed pushes; drives the drilldown "Last pushed"
+    /// list. Distinct from the global live feed.
+    pub recent_pushes: VecDeque<RecentPush>,
 }
 
 #[derive(Debug, Clone)]
-pub struct RecentDoc {
+pub struct RecentPush {
     pub ts: DateTime<Utc>,
     pub id: String,
 }
 
-const RECENT_DOCS_CAP: usize = 10;
+const RECENT_PUSHES_CAP: usize = 10;
+const LIVE_FEED_CAP: usize = 20;
 
 pub struct App {
     pub sources: Vec<SourceView>,
@@ -75,6 +87,25 @@ pub struct App {
     pub drilldown_open: bool,
     pub backoff_reason: Option<String>,
     pub backoff_until: Option<DateTime<Utc>>,
+    /// Global "live feed" of the last N docs pushed across all subsources,
+    /// most-recent-first. This is the one widget the user asked for
+    /// specifically: "I want to see Jira issues flicker by on screen so I
+    /// know things are working."
+    pub live_feed: VecDeque<LiveFeedEntry>,
+    /// Cumulative count of docs confirmed in Azure across all subsources.
+    pub pushed_total: u64,
+    /// Rolling per-second pushes (destination-side). Drives the Azure
+    /// panel's chart — what the user asked for instead of
+    /// "Azure requests per second" (which had max 1 and was meaningless).
+    pub pushes_per_sec: Throughput,
+}
+
+#[derive(Debug, Clone)]
+pub struct LiveFeedEntry {
+    pub ts: DateTime<Utc>,
+    pub source: String,
+    pub subsource: String,
+    pub id: String,
 }
 
 pub struct LogLine {
@@ -107,12 +138,14 @@ impl App {
                         .map(|k| SubsourceView {
                             key: k,
                             state: SubsourceState::Idle,
-                            last_cursor: None,
-                            last_sample_id: None,
-                            docs_synced_total: 0,
+                            stage: crate::tui::events::Stage::Idle,
+                            last_pushed_item_at: None,
+                            last_pushed_id: None,
+                            last_pushed_at: None,
+                            pushed_total: 0,
                             last_errors: VecDeque::new(),
-                            throughput: Throughput::default(),
-                            recent_docs: VecDeque::new(),
+                            push_throughput: Throughput::default(),
+                            recent_pushes: VecDeque::new(),
                         })
                         .collect(),
                 }
@@ -148,6 +181,9 @@ impl App {
             drilldown_open: prefs_drilldown,
             backoff_reason: None,
             backoff_until: None,
+            live_feed: VecDeque::with_capacity(LIVE_FEED_CAP),
+            pushed_total: 0,
+            pushes_per_sec: Throughput::default(),
         }
     }
 
@@ -190,13 +226,11 @@ impl App {
                 self.footer = format!("Syncing {source}/{subsource}");
             }
             QuelchEvent::SubsourceFinished {
-                source,
-                subsource,
-                cursor,
+                source, subsource, ..
             } => {
                 if let Some(sub) = self.find_subsource_mut(&source, &subsource) {
                     sub.state = SubsourceState::Idle;
-                    sub.last_cursor = Some(cursor);
+                    sub.stage = crate::tui::events::Stage::Idle;
                 }
                 self.recompute_source_state(&source);
                 self.footer = format!("Finished {source}/{subsource}");
@@ -205,14 +239,12 @@ impl App {
                 source,
                 subsource,
                 fetched,
-                sample_id,
                 ..
             } => {
-                if let Some(sub) = self.find_subsource_mut(&source, &subsource) {
-                    sub.docs_synced_total += fetched;
-                    sub.last_sample_id = Some(sample_id);
-                    sub.throughput.add(Instant::now(), fetched);
-                }
+                // The TUI no longer tracks batch-level counts for display;
+                // the destination-side counters (pushed_total, push_throughput)
+                // are fed per-doc via DocPushed. SubsourceBatch just updates
+                // the footer so the operator sees "pushed N docs" ticks.
                 self.footer = format!("{source}/{subsource}: pushed {fetched} docs");
             }
             QuelchEvent::SubsourceFailed {
@@ -282,20 +314,58 @@ impl App {
                     },
                 });
             }
-            QuelchEvent::DocSynced {
+            QuelchEvent::DocPushed {
                 source,
                 subsource,
                 id,
                 updated,
             } => {
+                let now = Utc::now();
+                // Per-subsource push tracking: this is what every "Pushed",
+                // "Latest ID", "Per min" and "Pushed at" column reads from.
                 if let Some(sub) = self.find_subsource_mut(&source, &subsource) {
-                    if sub.recent_docs.len() >= RECENT_DOCS_CAP {
-                        sub.recent_docs.pop_front();
+                    sub.pushed_total += 1;
+                    sub.last_pushed_id = Some(id.clone());
+                    sub.last_pushed_at = Some(now);
+                    sub.last_pushed_item_at = Some(updated);
+                    sub.push_throughput.add(Instant::now(), 1);
+                    if sub.recent_pushes.len() >= RECENT_PUSHES_CAP {
+                        sub.recent_pushes.pop_front();
                     }
-                    sub.recent_docs.push_back(RecentDoc { ts: updated, id });
+                    sub.recent_pushes.push_back(RecentPush {
+                        ts: now,
+                        id: id.clone(),
+                    });
+                }
+                // Global live-feed + throughput: what the user specifically
+                // asked for — "I want to see items flicker by on screen."
+                self.pushed_total += 1;
+                self.pushes_per_sec.add(Instant::now(), 1);
+                if self.live_feed.len() >= LIVE_FEED_CAP {
+                    self.live_feed.pop_back();
+                }
+                self.live_feed.push_front(LiveFeedEntry {
+                    ts: now,
+                    source,
+                    subsource,
+                    id,
+                });
+            }
+            QuelchEvent::Stage {
+                source,
+                subsource,
+                stage,
+            } => {
+                if let Some(sub) = self.find_subsource_mut(&source, &subsource) {
+                    sub.stage = stage;
                 }
             }
-            QuelchEvent::AzureRequest { .. } | QuelchEvent::DocFailed { .. } => {}
+            QuelchEvent::AzureRequest { .. }
+            | QuelchEvent::DocFailed { .. }
+            | QuelchEvent::DocSynced { .. } => {
+                // DocSynced is emitted by older test fixtures but no longer
+                // drives UI state — DocPushed is the source of truth.
+            }
         }
 
         self.ensure_valid_selection();
@@ -445,17 +515,14 @@ impl App {
         self.sync_selection_to_prefs();
     }
 
-    pub fn selected_source_total_docs(&self, source_name: &str) -> u64 {
+    /// Sum of pushed-to-Azure counts across the source's subsources. This
+    /// replaces the old `docs_synced_total` accessor which measured the
+    /// wrong thing (docs fetched, not docs confirmed in the destination).
+    pub fn selected_source_total_pushed(&self, source_name: &str) -> u64 {
         self.sources
             .iter()
             .find(|source| source.name == source_name)
-            .map(|source| {
-                source
-                    .subsources
-                    .iter()
-                    .map(|sub| sub.docs_synced_total)
-                    .sum()
-            })
+            .map(|source| source.subsources.iter().map(|sub| sub.pushed_total).sum())
             .unwrap_or(0)
     }
 
@@ -539,18 +606,23 @@ mod tests {
     }
 
     #[test]
-    fn applies_batch_event() {
+    fn doc_pushed_populates_counters_and_live_feed() {
         let mut a = App::new(&cfg(), Prefs::default());
-        a.apply(QuelchEvent::SubsourceBatch {
-            source: "my-jira".into(),
-            subsource: "DO".into(),
-            fetched: 5,
-            cursor: Utc::now(),
-            sample_id: "DO-1".into(),
-        });
+        for i in 0..5 {
+            a.apply(QuelchEvent::DocPushed {
+                source: "my-jira".into(),
+                subsource: "DO".into(),
+                id: format!("DO-{i}"),
+                updated: Utc::now(),
+            });
+        }
         let s = &a.sources[0].subsources[0];
-        assert_eq!(s.docs_synced_total, 5);
-        assert_eq!(s.last_sample_id.as_deref(), Some("DO-1"));
+        assert_eq!(s.pushed_total, 5);
+        assert_eq!(s.last_pushed_id.as_deref(), Some("DO-4"));
+        assert_eq!(a.pushed_total, 5);
+        assert_eq!(a.live_feed.len(), 5);
+        // Newest-first ordering.
+        assert_eq!(a.live_feed.front().unwrap().id, "DO-4");
     }
 
     #[test]
@@ -574,17 +646,17 @@ mod tests {
     }
 
     #[test]
-    fn doc_synced_appends_to_recent_docs_capped_at_ten() {
+    fn doc_pushed_appends_to_recent_pushes_capped_at_ten() {
         let mut a = App::new(&cfg(), Prefs::default());
         for i in 0..15 {
-            a.apply(QuelchEvent::DocSynced {
+            a.apply(QuelchEvent::DocPushed {
                 source: "my-jira".into(),
                 subsource: "DO".into(),
                 id: format!("DO-{i}"),
                 updated: Utc::now(),
             });
         }
-        let recent = &a.sources[0].subsources[0].recent_docs;
+        let recent = &a.sources[0].subsources[0].recent_pushes;
         assert_eq!(recent.len(), 10);
         assert_eq!(recent.back().unwrap().id, "DO-14");
         assert_eq!(recent.front().unwrap().id, "DO-5");

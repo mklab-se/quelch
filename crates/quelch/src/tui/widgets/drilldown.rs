@@ -1,8 +1,10 @@
-//! Drilldown pane: per-subsource detail view triggered by Enter.
+//! Drilldown pane: per-subsource detail view triggered by Enter. Every
+//! readout is destination-side — "this is what landed in Azure", not
+//! "this is what we fetched from the source."
 
 use ratatui::{
     buffer::Buffer,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Rect},
     style::{Color, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Widget},
@@ -43,58 +45,66 @@ impl Widget for Drilldown<'_> {
         let inner = block.inner(area);
         block.render(area, buf);
 
-        let chunks = Layout::default()
+        let chunks = ratatui::layout::Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(7), // summary lines
-                Constraint::Min(4),    // recent docs
+                Constraint::Min(4),    // last pushed
                 Constraint::Length(5), // recent errors
             ])
             .split(inner);
 
-        // Summary
         let status = match &sub.state {
             SubsourceState::Idle => ("● idle", Color::Green),
             SubsourceState::Syncing => ("◐ syncing", Color::Cyan),
             SubsourceState::Error(_) => ("● error", Color::Red),
         };
-        let cursor = sub
-            .last_cursor
+        let last_id = sub.last_pushed_id.as_deref().unwrap_or("—");
+        let last_pushed_at = sub
+            .last_pushed_at
+            .map(|t| t.format("%H:%M:%S").to_string())
+            .unwrap_or_else(|| "—".into());
+        let pushed_item_at = sub
+            .last_pushed_item_at
             .map(|t| t.to_rfc3339())
             .unwrap_or_else(|| "—".into());
-        let last = sub.last_sample_id.as_deref().unwrap_or("—");
-        let rate: u64 = sub.throughput.samples().iter().sum();
+        let rate: u64 = sub.push_throughput.samples().iter().sum();
         let summary = vec![
-            label_line("Status         ", status.0, status.1),
-            plain_line("Docs synced    ", &sub.docs_synced_total.to_string()),
-            plain_line("Rate (60s)     ", &format!("{rate} per minute")),
-            plain_line("Cursor         ", &cursor),
-            plain_line("Last item      ", last),
+            label_line("Status           ", status.0, status.1),
+            plain_line("Pushed to Azure  ", &format!("{} docs", sub.pushed_total)),
+            plain_line("Push rate (60s)  ", &format!("{rate}/min")),
+            plain_line("Latest ID        ", last_id),
+            plain_line("Pushed at        ", &last_pushed_at),
+            plain_line("Source updated   ", &pushed_item_at),
             Line::from(""),
-            plain_line("Recent (up to 10)", ""),
         ];
         Paragraph::new(summary).render(chunks[0], buf);
 
-        // Recent docs
-        let mut recent_lines: Vec<Line> = Vec::new();
-        for doc in sub.recent_docs.iter().rev() {
-            let time = doc.ts.format("%H:%M:%S").to_string();
-            recent_lines.push(Line::from(vec![
-                Span::styled("  ● ", Style::default().fg(Color::Green)),
-                Span::raw(time),
-                Span::raw("  "),
-                Span::raw(doc.id.clone()),
-            ]));
-        }
-        if recent_lines.is_empty() {
-            recent_lines.push(Line::from(Span::styled(
-                "  (none yet)",
+        // "Last pushed to Azure AI Search" — recent_pushes is populated ONLY
+        // on a confirmed DocPushed event, so every line here represents a
+        // document that is definitively in the destination index.
+        let mut lines: Vec<Line> = vec![Line::from(Span::styled(
+            "Last pushed to Azure AI Search (up to 10, newest first)",
+            Style::default().fg(Color::DarkGray),
+        ))];
+        if sub.recent_pushes.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "  (nothing pushed yet)",
                 Style::default().fg(Color::DarkGray),
             )));
+        } else {
+            for doc in sub.recent_pushes.iter().rev() {
+                let time = doc.ts.format("%H:%M:%S").to_string();
+                lines.push(Line::from(vec![
+                    Span::styled("  ● ", Style::default().fg(Color::Green)),
+                    Span::styled(time, Style::default().fg(Color::DarkGray)),
+                    Span::raw("  "),
+                    Span::raw(doc.id.clone()),
+                ]));
+            }
         }
-        Paragraph::new(recent_lines).render(chunks[1], buf);
+        Paragraph::new(lines).render(chunks[1], buf);
 
-        // Recent errors
         let mut err_lines: Vec<Line> = vec![Line::from(Span::styled(
             "Recent errors (last 3)",
             Style::default().fg(Color::DarkGray),

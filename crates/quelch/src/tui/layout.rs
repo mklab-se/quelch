@@ -10,17 +10,22 @@ use super::app::App;
 use super::status::header_line;
 use super::widgets::{
     azure_panel::AzurePanelWidget, drilldown::Drilldown, help_overlay::HelpOverlay,
-    log_view::LogView, source_table::SourceTable,
+    live_feed::LiveFeed, log_view::LogView, source_table::SourceTable,
 };
 
 pub fn draw(f: &mut Frame, app: &App, uptime: std::time::Duration, help_open: bool) {
+    // Vertical stack:
+    //   Header | Sources table | Live feed (pushes) | Azure panel | Footer
+    // The live feed is the pane the user asked for explicitly — it makes
+    // "is the thing working right now?" answerable at a glance.
     let areas = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),  // header
-            Constraint::Min(12),    // sources or log
-            Constraint::Length(11), // azure (subtitle + chart + 3-row counter strip)
-            Constraint::Length(1),  // footer
+            Constraint::Length(1), // header
+            Constraint::Min(10),   // sources or log
+            Constraint::Length(8), // live feed
+            Constraint::Length(8), // azure
+            Constraint::Length(1), // footer
         ])
         .split(f.area());
 
@@ -39,16 +44,9 @@ pub fn draw(f: &mut Frame, app: &App, uptime: std::time::Duration, help_open: bo
         draw_sources_area(f, areas[1], app);
     }
 
-    f.render_widget(
-        AzurePanelWidget {
-            panel: &app.azure,
-            drops: app.drops,
-            focused: false,
-            backoff_reason: app.backoff_reason.as_deref(),
-        },
-        areas[2],
-    );
-    draw_footer(f, areas[3], app);
+    f.render_widget(LiveFeed { app }, areas[2]);
+    f.render_widget(AzurePanelWidget { app }, areas[3]);
+    draw_footer(f, areas[4], app);
 
     if help_open {
         f.render_widget(HelpOverlay, f.area());

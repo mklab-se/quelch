@@ -47,13 +47,15 @@ mod tests {
     #[test]
     fn renders_column_headings() {
         let app = App::new(&cfg(), Prefs::default());
-        let text = rendered_text(&app, 100, 10);
+        let text = rendered_text(&app, 120, 10);
+        // Destination-side columns. No "Items" / "Rate" / "Last item" / "Updated"
+        // (those measured the wrong quantities in v0.6.0).
         assert!(text.contains("Source"), "missing Source heading:\n{text}");
-        assert!(text.contains("Status"), "missing Status heading");
-        assert!(text.contains("Items"), "missing Items heading");
-        assert!(text.contains("Rate"), "missing Rate heading");
-        assert!(text.contains("Last item"), "missing Last item heading");
-        assert!(text.contains("Updated"), "missing Updated heading");
+        assert!(text.contains("Stage"), "missing Stage heading");
+        assert!(text.contains("Pushed"), "missing Pushed heading");
+        assert!(text.contains("Per min"), "missing Per min heading");
+        assert!(text.contains("Latest ID"), "missing Latest ID heading");
+        assert!(text.contains("Pushed at"), "missing Pushed at heading");
     }
 
     #[test]
@@ -78,19 +80,11 @@ mod tests {
     use crate::tui::widgets::azure_panel::AzurePanelWidget;
 
     #[test]
-    fn azure_panel_shows_plain_english_labels() {
+    fn azure_panel_shows_destination_side_counters() {
         let app = App::new(&cfg(), Prefs::default());
         let mut term = Terminal::new(TestBackend::new(100, 12)).unwrap();
         term.draw(|f| {
-            f.render_widget(
-                AzurePanelWidget {
-                    panel: &app.azure,
-                    drops: 0,
-                    focused: false,
-                    backoff_reason: None,
-                },
-                f.area(),
-            );
+            f.render_widget(AzurePanelWidget { app: &app }, f.area());
         })
         .unwrap();
         let buf = term.backend().buffer();
@@ -98,28 +92,28 @@ mod tests {
             .flat_map(|y| (0..buf.area.width).map(move |x| buf[(x, y)].symbol().to_string()))
             .collect::<Vec<_>>()
             .join("");
-        assert!(text.contains("Total requests"), "rendered: {text}");
-        assert!(text.contains("median"), "rendered: {text}");
-        assert!(text.contains("Failed (4xx)"));
-        assert!(text.contains("Failed (5xx)"));
+        // The user-facing promise: show destination-side quantities, not
+        // HTTP-request internals or latency numbers.
+        assert!(text.contains("Total pushed"), "rendered: {text}");
+        assert!(text.contains("Per minute"));
+        assert!(text.contains("4xx"));
+        assert!(text.contains("5xx"));
         assert!(text.contains("Throttled"));
+        // v0.6.0 had a useless "median XX ms" line — it should be gone.
+        assert!(
+            !text.contains("median"),
+            "latency median resurfaced in panel: {text}"
+        );
     }
 
     use crate::tui::widgets::drilldown::Drilldown;
 
     #[test]
-    fn drilldown_shows_subsource_details() {
+    fn drilldown_shows_destination_side_pushes() {
         let mut app = App::new(&cfg(), Prefs::default());
-        // Populate a subsource with some data
-        app.apply(crate::tui::events::QuelchEvent::SubsourceBatch {
-            source: "my-jira".into(),
-            subsource: "DO".into(),
-            fetched: 5,
-            cursor: chrono::Utc::now(),
-            sample_id: "DO-42".into(),
-        });
+        // Populate with confirmed-pushed events (what the drilldown shows).
         for i in 0..3 {
-            app.apply(crate::tui::events::QuelchEvent::DocSynced {
+            app.apply(crate::tui::events::QuelchEvent::DocPushed {
                 source: "my-jira".into(),
                 subsource: "DO".into(),
                 id: format!("DO-{i}"),
@@ -138,8 +132,10 @@ mod tests {
             .flat_map(|y| (0..buf.area.width).map(move |x| buf[(x, y)].symbol().to_string()))
             .collect::<Vec<_>>()
             .join("");
-        assert!(text.contains("Docs synced"));
-        assert!(text.contains("Recent"));
+        // Must surface destination-side language ("Pushed to Azure")
+        // rather than ambiguous "Docs synced / Recent".
+        assert!(text.contains("Pushed to Azure"), "rendered: {text}");
+        assert!(text.contains("Last pushed"), "rendered: {text}");
         assert!(text.contains("DO-2"));
     }
 

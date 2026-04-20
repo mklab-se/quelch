@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-04-20
+
+### Changed — TUI semantic rework
+
+Every column and counter is now keyed to **destination-side** quantities (what actually landed in Azure AI Search), not source-side (what was fetched from Jira/Confluence). v0.6.0 shipped a dashboard where the Items/Rate/Updated/Last-item columns, the latency stats, and the drilldown "recent" list all measured the wrong thing.
+
+- **Sources pane columns replaced:** old `Source · Status · Items · Rate · Last item · Updated` becomes `Source · Stage · Pushed · Per min · Latest ID · Pushed at`. "Pushed" is the cumulative count of docs confirmed in Azure for that subsource (integer); "Per min" is pushes-per-minute as an integer; "Latest ID" is the full doc ID (no truncation); "Pushed at" is relative time since the last confirmed push.
+- **New Stage column** shows the current pipeline stage per subsource: `fetching` · `embed X/Y` (live progress during embedding) · `pushing N` · `idle`. Answers "what is quelch doing right now?" at a glance.
+- **New "Pushed to Azure AI Search (newest first)" pane** between Sources and Azure panel: live ticker of the last 20 docs confirmed in the destination index, with timestamp, source/subsource, and full ID — brightest at the top, fading with age.
+- **Azure panel rewrite:** chart plots "Documents pushed per second" (meaningful y-axis auto-scaled to observed peak) instead of "Azure requests per second" (which pegged at 1). Counters become `Total pushed · Per minute · 4xx · 5xx · Throttled · Dropped`. Removed: `Total requests`, `median/95th latency` (not actionable).
+- **Drilldown retitled** "Last pushed to Azure AI Search"; summary rows show `Pushed to Azure`, `Push rate`, `Latest ID`, `Pushed at`, `Source updated`; recent list now only shows docs confirmed pushed (old v0.6.0 list mixed in pre-push fetched docs).
+
+### Added
+
+- **`stage` / `doc_pushed` tracing events** from the engine. `stage` fires at `fetching` / `embedding (done/total)` / `pushing` boundaries inside each batch; `doc_pushed` fires per-doc after `azure.push_documents` returns success — the single source of truth for "this item is confirmed in the destination index."
+
+### Fixed
+
+- **Ctrl-C / `q` exit delay.** In v0.6.0 the engine ran its in-flight batch to completion (~20 s of SimEmbedder sleeps + Azure retries) before checking the shutdown signal. The simulator's engine loop now races `run_sync_with` against `cancel.cancelled()` in a `tokio::select!`, so quitting drops the in-flight batch immediately. State is persisted after each committed batch, so there's no loss.
+- **Pre-push `doc_synced` event was misleading** — it fired between fetch and embed, before anything reached Azure. Renamed + moved the real emission to after a successful push, as `doc_pushed`. `doc_synced` is retained as an alias variant for backward compat but drives no UI state.
+
+### Notes
+
+This release treats the v0.6.0 TUI as a labelling mistake — the underlying plumbing was measuring the wrong quantities. The fix required adding destination-side emissions from the engine, not just relabelling columns.
+
 ## [0.6.0] - 2026-04-20
 
 ### Added

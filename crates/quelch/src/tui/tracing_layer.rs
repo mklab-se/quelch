@@ -109,6 +109,9 @@ struct FieldVisitor {
     error: Option<String>,
     reason: Option<String>,
     delay_ms: Option<u64>,
+    stage: Option<String>,
+    done: Option<u64>,
+    total: Option<u64>,
 }
 
 impl tracing::field::Visit for FieldVisitor {
@@ -125,6 +128,7 @@ impl tracing::field::Visit for FieldVisitor {
             "message" => self.message = Some(v),
             "error" => self.error = Some(v),
             "reason" => self.reason = Some(v),
+            "stage" => self.stage = Some(v),
             _ => {}
         }
     }
@@ -139,6 +143,8 @@ impl tracing::field::Visit for FieldVisitor {
             "docs_synced" => self.docs_synced = Some(value),
             "duration_ms" => self.duration_ms = Some(value),
             "delay_ms" => self.delay_ms = Some(value),
+            "done" => self.done = Some(value),
+            "total" => self.total = Some(value),
             _ => {}
         }
     }
@@ -244,6 +250,38 @@ where
                     id,
                     updated: Utc::now(),
                 }),
+            Some(p) if p == phases::DOC_PUSHED => v
+                .source
+                .clone()
+                .zip(v.subsource.clone())
+                .zip(v.doc_id.clone())
+                .map(|((s, ss), id)| QuelchEvent::DocPushed {
+                    source: s,
+                    subsource: ss,
+                    id,
+                    updated: Utc::now(),
+                }),
+            Some(p) if p == phases::STAGE => v.source.clone().zip(v.subsource.clone()).and_then(
+                |(s, ss)| -> Option<QuelchEvent> {
+                    let stage = match v.stage.as_deref()? {
+                        "fetching" => crate::tui::events::Stage::Fetching,
+                        "embedding" => crate::tui::events::Stage::Embedding {
+                            done: v.done.unwrap_or(0),
+                            total: v.total.unwrap_or(0),
+                        },
+                        "pushing" => crate::tui::events::Stage::Pushing {
+                            total: v.total.unwrap_or(0),
+                        },
+                        "idle" => crate::tui::events::Stage::Idle,
+                        _ => return None,
+                    };
+                    Some(QuelchEvent::Stage {
+                        source: s,
+                        subsource: ss,
+                        stage,
+                    })
+                },
+            ),
             Some(p) if p == phases::AZURE_RESPONSE => Some(QuelchEvent::AzureResponse {
                 at: Instant::now(),
                 status: v.status.unwrap_or(0) as u16,

@@ -290,17 +290,24 @@ async fn run_engine_loop(
     let mut cycle: u64 = 0;
     while !cancel.is_cancelled() {
         cycle += 1;
-        let _ = crate::sync::run_sync_with(
-            &config,
-            &state_path,
-            &embedding,
-            IndexMode::AutoCreate,
-            Some(&embedder as &dyn crate::sync::embedder::Embedder),
-            None,
-            &mut cmd_rx,
-            cycle,
-        )
-        .await;
+        // Race the sync cycle against cancel so Ctrl-C / quit drops the
+        // in-flight batch immediately instead of waiting for all per-doc
+        // embedding sleeps to finish. State is persisted after each batch,
+        // so losing the in-progress batch is harmless — the cursor stays at
+        // the last committed batch and the next launch picks up cleanly.
+        tokio::select! {
+            _ = crate::sync::run_sync_with(
+                &config,
+                &state_path,
+                &embedding,
+                IndexMode::AutoCreate,
+                Some(&embedder as &dyn crate::sync::embedder::Embedder),
+                None,
+                &mut cmd_rx,
+                cycle,
+            ) => {}
+            _ = cancel.cancelled() => break,
+        }
         // Wait between cycles with cancel-awareness.
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_secs(5)) => {}

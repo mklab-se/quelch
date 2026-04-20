@@ -664,6 +664,14 @@ async fn sync_single_subsource<C: SourceConnector>(
         }
 
         batch_num += 1;
+        // Stage: fetching. Tells the TUI what the subsource is doing right now.
+        info!(
+            phase = phases::STAGE,
+            source = source_name,
+            subsource = subsource,
+            stage = "fetching",
+            batch = batch_num,
+        );
         let result = connector
             .fetch_changes(subsource, cursor.as_ref(), config.sync.batch_size)
             .await
@@ -704,30 +712,24 @@ async fn sync_single_subsource<C: SourceConnector>(
             break;
         }
 
-        // Emit per-doc tracing events — tracing layer will surface as DocSynced.
-        for doc in &new_docs {
-            let id = doc.fields.get("id").and_then(|v| v.as_str()).unwrap_or("?");
-            let updated = doc
-                .fields
-                .get("updated_at")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
-            // Per-doc event is for tool consumption (drilldown pane).
-            // Debug level so plain-log output stays readable at default
-            // verbosity — the TuiLayer enables debug so it still sees them.
-            debug!(
-                phase = phases::DOC_SYNCED,
-                source = source_name,
-                subsource = subsource,
-                doc_id = id,
-                updated = updated,
-            );
-        }
+        // Stage: embedding. Fires even when embedder is None so the TUI gets a
+        // brief "embedding 0/N" flash; in practice the no-embedder path below
+        // is only hit in tests.
+        info!(
+            phase = phases::STAGE,
+            source = source_name,
+            subsource = subsource,
+            stage = "embedding",
+            done = 0u64,
+            total = doc_count,
+        );
 
-        // Generate embeddings if an embedder is available.
+        // Generate embeddings if an embedder is available. Emit progress
+        // every 10 docs (or the last one) so the TUI's "Embedding X/Y"
+        // indicator advances smoothly without flooding the event channel.
         let embeddings: Option<Vec<Vec<f32>>> = if let Some(emb) = embedder {
             let mut vecs = Vec::with_capacity(new_docs.len());
-            for doc in &new_docs {
+            for (i, doc) in new_docs.iter().enumerate() {
                 let content = doc
                     .fields
                     .get("content")
@@ -738,6 +740,17 @@ async fn sync_single_subsource<C: SourceConnector>(
                     .await
                     .context("failed to generate embedding")?;
                 vecs.push(embedding);
+                let done = (i + 1) as u64;
+                if done == doc_count || done.is_multiple_of(10) {
+                    debug!(
+                        phase = phases::STAGE,
+                        source = source_name,
+                        subsource = subsource,
+                        stage = "embedding",
+                        done = done,
+                        total = doc_count,
+                    );
+                }
             }
             Some(vecs)
         } else {
@@ -761,11 +774,40 @@ async fn sync_single_subsource<C: SourceConnector>(
             })
             .collect();
 
+        // Stage: pushing.
+        info!(
+            phase = phases::STAGE,
+            source = source_name,
+            subsource = subsource,
+            stage = "pushing",
+            total = doc_count,
+        );
+
         // Push to Azure AI Search
         azure
             .push_documents(index_name, azure_docs)
             .await
             .context("failed to push documents to Azure AI Search")?;
+
+        // Each doc is now confirmed in Azure. Emit a `doc_pushed` event per
+        // doc so the TUI's live feed + drilldown + "latest ID" readouts show
+        // what actually landed in the destination index. Debug level keeps
+        // plain-log output readable at default verbosity.
+        for doc in &new_docs {
+            let id = doc.fields.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+            let updated = doc
+                .fields
+                .get("updated_at")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            debug!(
+                phase = phases::DOC_PUSHED,
+                source = source_name,
+                subsource = subsource,
+                doc_id = id,
+                updated = updated,
+            );
+        }
 
         total_synced += doc_count;
 

@@ -7,6 +7,25 @@ use tracing::Level;
 pub type SourceId = String;
 pub type SubsourceId = String;
 
+/// Pipeline stage a subsource is currently in, independent of the overall
+/// `SubsourceState`. Used by the TUI to show "what's happening right now"
+/// so the operator can tell fetching-from-Jira apart from embedding and
+/// from pushing-to-Azure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Stage {
+    Idle,
+    Fetching,
+    /// `done` of `total` documents embedded so far in the current batch.
+    Embedding {
+        done: u64,
+        total: u64,
+    },
+    /// About to push `total` documents to Azure AI Search.
+    Pushing {
+        total: u64,
+    },
+}
+
 #[derive(Debug, Clone)]
 pub enum QuelchEvent {
     CycleStarted {
@@ -58,6 +77,21 @@ pub enum QuelchEvent {
         subsource: SubsourceId,
         id: String,
         updated: DateTime<Utc>,
+    },
+    /// A document has landed in Azure AI Search. Fired by the engine after
+    /// `push_documents` returns success. This is the event the "live feed",
+    /// "latest ID", and drilldown "last pushed" readouts listen to.
+    DocPushed {
+        source: SourceId,
+        subsource: SubsourceId,
+        id: String,
+        updated: DateTime<Utc>,
+    },
+    /// What a subsource is doing RIGHT NOW inside its current batch.
+    Stage {
+        source: SourceId,
+        subsource: SubsourceId,
+        stage: Stage,
     },
     DocFailed {
         source: SourceId,
