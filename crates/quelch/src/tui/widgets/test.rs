@@ -142,4 +142,24 @@ mod tests {
         assert!(text.contains("Recent"));
         assert!(text.contains("DO-2"));
     }
+
+    use crate::tui::widgets::help_overlay::HelpOverlay;
+
+    #[test]
+    fn help_overlay_lists_key_bindings() {
+        let mut term = Terminal::new(TestBackend::new(70, 30)).unwrap();
+        term.draw(|f| {
+            f.render_widget(HelpOverlay {}, f.area());
+        })
+        .unwrap();
+        let buf = term.backend().buffer();
+        let text: String = (0..buf.area.height)
+            .flat_map(|y| (0..buf.area.width).map(move |x| buf[(x, y)].symbol().to_string()))
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(text.contains("Keyboard shortcuts"));
+        assert!(text.contains("sync now"));
+        assert!(text.contains("pause"));
+        assert!(text.contains("quit"));
+    }
 }
