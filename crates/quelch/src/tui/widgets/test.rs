@@ -74,4 +74,34 @@ mod tests {
         assert!(!text.contains("  DO"));
         assert!(!text.contains("  HR"));
     }
+
+    use crate::tui::widgets::azure_panel::AzurePanelWidget;
+
+    #[test]
+    fn azure_panel_shows_plain_english_labels() {
+        let app = App::new(&cfg(), Prefs::default());
+        let mut term = Terminal::new(TestBackend::new(100, 12)).unwrap();
+        term.draw(|f| {
+            f.render_widget(
+                AzurePanelWidget {
+                    panel: &app.azure,
+                    drops: 0,
+                    focused: false,
+                    backoff_reason: None,
+                },
+                f.area(),
+            );
+        })
+        .unwrap();
+        let buf = term.backend().buffer();
+        let text: String = (0..buf.area.height)
+            .flat_map(|y| (0..buf.area.width).map(move |x| buf[(x, y)].symbol().to_string()))
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(text.contains("Total requests"), "rendered: {text}");
+        assert!(text.contains("median"), "rendered: {text}");
+        assert!(text.contains("Failed (4xx)"));
+        assert!(text.contains("Failed (5xx)"));
+        assert!(text.contains("Throttled"));
+    }
 }

@@ -38,6 +38,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             panel: &app.azure,
             drops: app.drops,
             focused: matches!(app.focus, Focus::Azure),
+            backoff_reason: app.backoff_reason.as_deref(),
         },
         areas[2],
     );
