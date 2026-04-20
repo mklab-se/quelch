@@ -10,6 +10,7 @@ pub struct InputState {
     /// Tracks the last timestamp an ALL-CAPS action (R, P) was pressed, to
     /// implement "press again within 2s to confirm".
     pub pending_confirm: Option<(char, Instant)>,
+    help_open: bool,
 }
 
 #[derive(Debug)]
@@ -20,6 +21,10 @@ pub enum InputOutcome {
 }
 
 impl InputState {
+    pub fn help_open(&self) -> bool {
+        self.help_open
+    }
+
     pub fn on_key(&mut self, key: KeyEvent, app: &mut App) -> InputOutcome {
         let is_shift = key.modifiers.contains(KeyModifiers::SHIFT);
         match key.code {
@@ -57,10 +62,27 @@ impl InputState {
                     app.move_selection_right();
                 }
             }
-            KeyCode::Char(' ') | KeyCode::Enter => {
+            KeyCode::Char(' ') => {
                 if matches!(app.focus, Focus::Sources) {
                     app.toggle_selected_collapsed();
                 }
+            }
+            KeyCode::Enter => {
+                if matches!(app.focus, Focus::Sources) && app.focused_subsource_name().is_some() {
+                    app.toggle_drilldown();
+                } else if matches!(app.focus, Focus::Sources) {
+                    app.toggle_selected_collapsed();
+                }
+            }
+            KeyCode::Esc => {
+                if self.help_open {
+                    self.help_open = false;
+                } else if app.drilldown_open {
+                    app.toggle_drilldown();
+                }
+            }
+            KeyCode::Char('?') => {
+                self.help_open = !self.help_open;
             }
             KeyCode::Char('s') => {
                 app.prefs.log_view_on = !app.prefs.log_view_on;
@@ -210,5 +232,50 @@ mod tests {
 
         state.on_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE), &mut app);
         assert_eq!(app.focused_subsource_name(), None);
+    }
+
+    #[test]
+    fn enter_on_focused_subsource_opens_drilldown() {
+        let mut state = InputState::default();
+        let mut app = make_app();
+        // Navigate to focus a subsource
+        state.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &mut app);
+        assert_eq!(app.focused_subsource_name(), Some("DO"));
+        // Enter opens drilldown
+        state.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &mut app);
+        assert!(app.drilldown_open);
+        // Esc closes it
+        state.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &mut app);
+        assert!(!app.drilldown_open);
+    }
+
+    #[test]
+    fn question_mark_toggles_help_overlay() {
+        let mut state = InputState::default();
+        let mut app = make_app();
+        assert!(!state.help_open());
+        state.on_key(
+            KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE),
+            &mut app,
+        );
+        assert!(state.help_open());
+        state.on_key(
+            KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE),
+            &mut app,
+        );
+        assert!(!state.help_open());
+    }
+
+    #[test]
+    fn esc_closes_help_overlay() {
+        let mut state = InputState::default();
+        let mut app = make_app();
+        state.on_key(
+            KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE),
+            &mut app,
+        );
+        assert!(state.help_open());
+        state.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &mut app);
+        assert!(!state.help_open());
     }
 }
