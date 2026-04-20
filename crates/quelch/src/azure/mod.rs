@@ -388,13 +388,19 @@ impl SearchClient {
         for attempt in 0..MAX_RETRY_ATTEMPTS {
             if attempt > 0 {
                 let delay = std::time::Duration::from_secs(1 << attempt);
-                warn!(
-                    "Retrying after {:?} (attempt {}/{})",
-                    delay,
-                    attempt + 1,
-                    MAX_RETRY_ATTEMPTS
+                tracing::warn!(
+                    phase = crate::sync::phases::BACKOFF_STARTED,
+                    source = "azure",
+                    reason = "HTTP 429 or 5xx",
+                    delay_ms = delay.as_millis() as u64,
+                    "Retrying after backoff"
                 );
                 tokio::time::sleep(delay).await;
+                tracing::info!(
+                    phase = crate::sync::phases::BACKOFF_FINISHED,
+                    source = "azure",
+                    "Backoff finished"
+                );
             }
 
             let start = Instant::now();

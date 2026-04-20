@@ -291,7 +291,8 @@ pub async fn run_sync_with(
             cmd_rx,
             &mut paused,
         )
-        .await {
+        .await
+        {
             Ok(EngineOutcome::Shutdown) => {
                 tracing::info!(
                     phase = phases::CYCLE_FINISHED,
@@ -467,7 +468,11 @@ async fn sync_with_connector<C: SourceConnector>(
     let source_start = Instant::now();
     let mut source_docs_synced = 0u64;
 
-    info!(phase = phases::SOURCE_STARTED, source = source_name, "Starting source");
+    info!(
+        phase = phases::SOURCE_STARTED,
+        source = source_name,
+        "Starting source"
+    );
 
     for subsource_key in connector.subsources() {
         let previous_docs = state
@@ -505,7 +510,8 @@ async fn sync_with_connector<C: SourceConnector>(
             cmd_rx,
             paused,
         )
-        .await {
+        .await
+        {
             Ok(EngineOutcome::Shutdown) => return Ok(EngineOutcome::Shutdown),
             Ok(EngineOutcome::Continue) => {
                 let current_docs = state

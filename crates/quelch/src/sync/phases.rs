@@ -14,3 +14,5 @@ pub const SUBSOURCE_BATCH: &str = "subsource_batch";
 pub const SUBSOURCE_EMPTY: &str = "subsource_empty";
 pub const DOC_SYNCED: &str = "doc_synced";
 pub const AZURE_RESPONSE: &str = "azure_response";
+pub const BACKOFF_STARTED: &str = "backoff_started";
+pub const BACKOFF_FINISHED: &str = "backoff_finished";

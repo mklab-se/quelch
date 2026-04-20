@@ -107,6 +107,8 @@ struct FieldVisitor {
     duration_ms: Option<u64>,
     message: Option<String>,
     error: Option<String>,
+    reason: Option<String>,
+    delay_ms: Option<u64>,
 }
 
 impl tracing::field::Visit for FieldVisitor {
@@ -122,6 +124,7 @@ impl tracing::field::Visit for FieldVisitor {
             "sample_id" => self.sample_id = Some(v),
             "message" => self.message = Some(v),
             "error" => self.error = Some(v),
+            "reason" => self.reason = Some(v),
             _ => {}
         }
     }
@@ -135,6 +138,7 @@ impl tracing::field::Visit for FieldVisitor {
             "cycle" => self.cycle = Some(value),
             "docs_synced" => self.docs_synced = Some(value),
             "duration_ms" => self.duration_ms = Some(value),
+            "delay_ms" => self.delay_ms = Some(value),
             _ => {}
         }
     }
@@ -167,16 +171,17 @@ where
                 cycle: v.cycle.unwrap_or(0),
                 duration: Duration::from_millis(v.duration_ms.unwrap_or(0)),
             }),
-            Some(p) if p == phases::SOURCE_STARTED => {
-                v.source.clone().map(|source| QuelchEvent::SourceStarted { source })
-            }
-            Some(p) if p == phases::SOURCE_FINISHED => v.source.clone().map(|source| {
-                QuelchEvent::SourceFinished {
+            Some(p) if p == phases::SOURCE_STARTED => v
+                .source
+                .clone()
+                .map(|source| QuelchEvent::SourceStarted { source }),
+            Some(p) if p == phases::SOURCE_FINISHED => {
+                v.source.clone().map(|source| QuelchEvent::SourceFinished {
                     source,
                     docs_synced: v.docs_synced.unwrap_or(0),
                     duration: Duration::from_millis(v.duration_ms.unwrap_or(0)),
-                }
-            }),
+                })
+            }
             Some(p) if p == phases::SUBSOURCE_STARTED => {
                 v.source.clone().zip(v.subsource.clone()).map(|(s, ss)| {
                     QuelchEvent::SubsourceStarted {
@@ -245,6 +250,18 @@ where
                 latency: Duration::from_millis(v.latency_ms.unwrap_or(0)),
                 throttled: v.throttled.unwrap_or(0) != 0,
             }),
+            Some(p) if p == phases::BACKOFF_STARTED => {
+                v.source.clone().map(|s| QuelchEvent::BackoffStarted {
+                    source: s,
+                    until: chrono::Utc::now()
+                        + chrono::Duration::milliseconds(v.delay_ms.unwrap_or(0) as i64),
+                    reason: v.reason.clone().unwrap_or_default(),
+                })
+            }
+            Some(p) if p == phases::BACKOFF_FINISHED => v
+                .source
+                .clone()
+                .map(|s| QuelchEvent::BackoffFinished { source: s }),
             _ => None,
         };
 
@@ -374,6 +391,89 @@ mod tests {
                 assert_eq!(duration, Duration::from_millis(25));
             }
             other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn emits_source_started_and_finished() {
+        use crate::sync::phases;
+        use tracing_subscriber::prelude::*;
+
+        let (layer, mut rx, _drops) = layer_and_receiver();
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let _g = tracing::subscriber::set_default(subscriber);
+
+        tracing::info!(phase = phases::SOURCE_STARTED, source = "my-jira", "start");
+        tracing::info!(
+            phase = phases::SOURCE_FINISHED,
+            source = "my-jira",
+            docs_synced = 42u64,
+            duration_ms = 1234u64,
+            "done"
+        );
+
+        let first = tokio::time::timeout(Duration::from_millis(200), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        match first {
+            QuelchEvent::SourceStarted { source } => assert_eq!(source, "my-jira"),
+            other => panic!("expected SourceStarted, got {other:?}"),
+        }
+
+        let second = tokio::time::timeout(Duration::from_millis(200), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        match second {
+            QuelchEvent::SourceFinished {
+                source,
+                docs_synced,
+                duration,
+            } => {
+                assert_eq!(source, "my-jira");
+                assert_eq!(docs_synced, 42);
+                assert_eq!(duration.as_millis(), 1234);
+            }
+            other => panic!("expected SourceFinished, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn emits_backoff_events() {
+        use crate::sync::phases;
+        use tracing_subscriber::prelude::*;
+
+        let (layer, mut rx, _drops) = layer_and_receiver();
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let _g = tracing::subscriber::set_default(subscriber);
+
+        tracing::warn!(
+            phase = phases::BACKOFF_STARTED,
+            source = "azure",
+            reason = "HTTP 429",
+            delay_ms = 1000u64,
+            "backoff"
+        );
+        tracing::info!(
+            phase = phases::BACKOFF_FINISHED,
+            source = "azure",
+            "resumed"
+        );
+
+        let first = tokio::time::timeout(Duration::from_millis(200), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(first, QuelchEvent::BackoffStarted { .. }));
+
+        let second = tokio::time::timeout(Duration::from_millis(200), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        match second {
+            QuelchEvent::BackoffFinished { source } => assert_eq!(source, "azure"),
+            other => panic!("expected BackoffFinished, got {other:?}"),
         }
     }
 }
