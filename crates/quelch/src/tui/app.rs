@@ -137,10 +137,7 @@ impl App {
                 if !matches!(self.status, EngineStatus::Paused | EngineStatus::Shutdown) {
                     self.status = EngineStatus::Idle;
                 }
-                self.footer = format!(
-                    "Cycle {cycle} finished in {:.1}s",
-                    duration.as_secs_f32()
-                );
+                self.footer = format!("Cycle {cycle} finished in {:.1}s", duration.as_secs_f32());
             }
             QuelchEvent::SourceStarted { source } => {
                 if let Some(src) = self.find_source_mut(&source) {
@@ -257,14 +254,18 @@ impl App {
                     },
                 });
             }
-            QuelchEvent::AzureRequest { .. } | QuelchEvent::DocSynced { .. } | QuelchEvent::DocFailed { .. } => {}
+            QuelchEvent::AzureRequest { .. }
+            | QuelchEvent::DocSynced { .. }
+            | QuelchEvent::DocFailed { .. } => {}
         }
 
         self.ensure_valid_selection();
     }
 
     pub fn focused_source_name(&self) -> Option<&str> {
-        self.sources.get(self.selected_source).map(|source| source.name.as_str())
+        self.sources
+            .get(self.selected_source)
+            .map(|source| source.name.as_str())
     }
 
     pub fn focused_subsource_name(&self) -> Option<&str> {
@@ -376,7 +377,13 @@ impl App {
         self.sources
             .iter()
             .find(|source| source.name == source_name)
-            .map(|source| source.subsources.iter().map(|sub| sub.docs_synced_total).sum())
+            .map(|source| {
+                source
+                    .subsources
+                    .iter()
+                    .map(|sub| sub.docs_synced_total)
+                    .sum()
+            })
             .unwrap_or(0)
     }
 

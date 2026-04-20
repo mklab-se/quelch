@@ -36,7 +36,8 @@ impl Widget for LogView<'_> {
 
         let height = inner.height as usize;
         let start = self.lines.len().saturating_sub(height);
-        let lines: Vec<Line> = self.lines
+        let lines: Vec<Line> = self
+            .lines
             .iter()
             .skip(start)
             .map(|l| {
@@ -50,7 +51,9 @@ impl Widget for LogView<'_> {
                 ])
             })
             .collect();
-        Paragraph::new(lines).wrap(Wrap { trim: true }).render(inner, buf);
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: true })
+            .render(inner, buf);
     }
 }
 

@@ -532,7 +532,8 @@ async fn cmd_watch_tui(
             &mut cmd_rx,
             cycle,
         )
-        .await {
+        .await
+        {
             Ok(sync::EngineOutcome::Shutdown) => break,
             Ok(sync::EngineOutcome::Continue) | Ok(sync::EngineOutcome::ResetCursor { .. }) => {}
             Err(e) => {

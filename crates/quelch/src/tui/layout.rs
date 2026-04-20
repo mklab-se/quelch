@@ -134,7 +134,9 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(
         Paragraph::new(vec![
             Line::from(msg),
-            Line::from(" q quit  arrows move  enter collapse  r sync-now  p pause  s logs  tab focus"),
+            Line::from(
+                " q quit  arrows move  enter collapse  r sync-now  p pause  s logs  tab focus",
+            ),
         ])
         .style(Style::default().fg(Color::Gray)),
         area,

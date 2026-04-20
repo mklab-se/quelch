@@ -76,9 +76,7 @@ impl Widget for SourceCard<'_> {
                     ),
                     Span::raw(format!(
                         "  {:8}  +{} docs  last {}",
-                        status,
-                        sub.docs_synced_total,
-                        last
+                        status, sub.docs_synced_total, last
                     )),
                 ]));
                 if !sub.last_errors.is_empty() {
@@ -90,7 +88,9 @@ impl Widget for SourceCard<'_> {
                 }
             }
         }
-        Paragraph::new(lines).wrap(Wrap { trim: true }).render(inner, buf);
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: true })
+            .render(inner, buf);
     }
 }
 

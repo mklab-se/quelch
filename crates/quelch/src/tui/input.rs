@@ -20,11 +20,7 @@ pub enum InputOutcome {
 }
 
 impl InputState {
-    pub fn on_key(
-        &mut self,
-        key: KeyEvent,
-        app: &mut App,
-    ) -> InputOutcome {
+    pub fn on_key(&mut self, key: KeyEvent, app: &mut App) -> InputOutcome {
         let is_shift = key.modifiers.contains(KeyModifiers::SHIFT);
         match key.code {
             KeyCode::Char('q') => return InputOutcome::Quit,
