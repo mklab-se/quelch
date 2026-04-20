@@ -1,6 +1,7 @@
 //! quelch simulator — runs the real engine against an in-process fake world.
 
 pub mod opts;
+pub mod world;
 
 use anyhow::Result;
 
