@@ -1,5 +1,6 @@
 //! quelch simulator — runs the real engine against an in-process fake world.
 
+pub mod azure_faults;
 pub mod confluence_gen;
 pub mod embedder;
 pub mod jira_gen;
