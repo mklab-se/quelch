@@ -19,28 +19,34 @@ const MOCK_TOKEN: &str = "mock-pat-token";
 // Shared server state (for Azure mock)
 // -----------------------------------------------------------------------
 
-/// Per-index storage: map of doc id → full doc object.
+/// Per-index storage for Azure mock.
 #[derive(Default)]
 struct IndexStore {
     docs: HashMap<String, Value>,
 }
 
 #[derive(Default)]
-struct AzureMockState {
+struct AzureStore {
     indexes: HashMap<String, IndexStore>,
-    /// Remaining forced faults: each fault applies to the next single request.
     pending_faults: Vec<u16>,
 }
 
-type SharedState = Arc<Mutex<AzureMockState>>;
+/// Top-level mock state — owns Azure + mutable Jira/Confluence stores.
+#[derive(Default)]
+struct MockState {
+    azure: AzureStore,
+    jira_issues: Vec<Value>,
+    confluence_pages: Vec<Value>,
+}
 
-/// Returns Some(status) if a fault was consumed; None otherwise.
+type SharedState = Arc<Mutex<MockState>>;
+
 fn consume_fault(state: &SharedState) -> Option<u16> {
     let mut s = state.lock().unwrap();
-    if s.pending_faults.is_empty() {
+    if s.azure.pending_faults.is_empty() {
         None
     } else {
-        Some(s.pending_faults.remove(0))
+        Some(s.azure.pending_faults.remove(0))
     }
 }
 
@@ -78,17 +84,18 @@ struct JiraSearchParams {
 }
 
 async fn jira_search(
+    State(state): State<SharedState>,
     headers: HeaderMap,
     Query(params): Query<JiraSearchParams>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     check_auth(&headers)?;
 
-    let all_issues = data::jira_issues();
+    let all_issues: Vec<Value> = state.lock().unwrap().jira_issues.clone();
     let jql = params.jql.unwrap_or_default();
 
     // Filter by project if JQL contains "project = X"
-    let filtered: Vec<&Value> = all_issues
-        .iter()
+    let filtered: Vec<Value> = all_issues
+        .into_iter()
         .filter(|issue| {
             if jql.is_empty() {
                 return true;
@@ -119,7 +126,6 @@ async fn jira_search(
         .into_iter()
         .skip(start_at as usize)
         .take(max_results as usize)
-        .cloned()
         .collect();
 
     Ok(Json(json!({
@@ -146,16 +152,17 @@ struct ConfluenceSearchParams {
 }
 
 async fn confluence_search(
+    State(state): State<SharedState>,
     headers: HeaderMap,
     Query(params): Query<ConfluenceSearchParams>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     check_auth(&headers)?;
 
-    let all_pages = data::confluence_pages();
+    let all_pages: Vec<Value> = state.lock().unwrap().confluence_pages.clone();
     let cql = params.cql.unwrap_or_default();
 
-    let filtered: Vec<&Value> = all_pages
-        .iter()
+    let filtered: Vec<Value> = all_pages
+        .into_iter()
         .filter(|page| {
             if cql.is_empty() {
                 return true;
@@ -186,7 +193,6 @@ async fn confluence_search(
         .into_iter()
         .skip(start as usize)
         .take(limit as usize)
-        .cloned()
         .collect();
 
     let has_more = (start + page_slice.len() as u64) < total;
@@ -224,7 +230,7 @@ async fn azure_index_get(
         return (StatusCode::from_u16(status).unwrap(), Json(json!({}))).into_response();
     }
     let s = state.lock().unwrap();
-    if s.indexes.contains_key(&name) {
+    if s.azure.indexes.contains_key(&name) {
         (StatusCode::OK, Json(json!({ "name": name }))).into_response()
     } else {
         (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
@@ -242,6 +248,7 @@ async fn azure_index_put(
     state
         .lock()
         .unwrap()
+        .azure
         .indexes
         .entry(name.clone())
         .or_default();
@@ -271,6 +278,7 @@ async fn azure_indexes_collection_post(
     state
         .lock()
         .unwrap()
+        .azure
         .indexes
         .entry(name.clone())
         .or_default();
@@ -284,7 +292,7 @@ async fn azure_index_delete(
     if let Some(status) = consume_fault(&state) {
         return (StatusCode::from_u16(status).unwrap(), Json(json!({}))).into_response();
     }
-    state.lock().unwrap().indexes.remove(&name);
+    state.lock().unwrap().azure.indexes.remove(&name);
     StatusCode::NO_CONTENT.into_response()
 }
 
@@ -302,7 +310,7 @@ async fn azure_index_docs_post(
         return (StatusCode::from_u16(status).unwrap(), Json(json!({}))).into_response();
     }
     let mut s = state.lock().unwrap();
-    let store = s.indexes.entry(name).or_default();
+    let store = s.azure.indexes.entry(name).or_default();
     let mut results = Vec::new();
     for mut doc in batch.value {
         let action = doc
@@ -345,7 +353,7 @@ async fn azure_index_search_post(
         return (StatusCode::from_u16(status).unwrap(), Json(json!({}))).into_response();
     }
     let s = state.lock().unwrap();
-    let store = match s.indexes.get(&name) {
+    let store = match s.azure.indexes.get(&name) {
         Some(v) => v,
         None => {
             return (StatusCode::NOT_FOUND, Json(json!({ "error": "no index" }))).into_response();
@@ -383,7 +391,7 @@ async fn azure_index_docs_list(
         return (StatusCode::from_u16(status).unwrap(), Json(json!({}))).into_response();
     }
     let s = state.lock().unwrap();
-    let store = match s.indexes.get(&name) {
+    let store = match s.azure.indexes.get(&name) {
         Some(v) => v,
         None => {
             return (StatusCode::NOT_FOUND, Json(json!({ "error": "no index" }))).into_response();
@@ -405,9 +413,157 @@ async fn azure_fault_post(
 ) -> impl IntoResponse {
     let mut s = state.lock().unwrap();
     for _ in 0..spec.count {
-        s.pending_faults.push(spec.status);
+        s.azure.pending_faults.push(spec.status);
     }
     StatusCode::OK
+}
+
+// -----------------------------------------------------------------------
+// Simulator mutation endpoints (/_sim/*)
+// -----------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct SimUpsertIssue {
+    project: String,
+    key: String,
+    summary: String,
+    #[serde(default)]
+    description: String,
+}
+
+async fn sim_upsert_issue(
+    State(state): State<SharedState>,
+    Json(body): Json<SimUpsertIssue>,
+) -> impl IntoResponse {
+    let now = chrono::Utc::now()
+        .format("%Y-%m-%dT%H:%M:%S%.3f+0000")
+        .to_string();
+    let mut s = state.lock().unwrap();
+    if let Some(existing) = s
+        .jira_issues
+        .iter_mut()
+        .find(|i| i["key"].as_str() == Some(body.key.as_str()))
+    {
+        existing["fields"]["summary"] = json!(body.summary);
+        existing["fields"]["description"] = json!(body.description);
+        existing["fields"]["updated"] = json!(now);
+    } else {
+        s.jira_issues.push(json!({
+            "id": body.key.clone(),
+            "key": body.key.clone(),
+            "fields": {
+                "summary": body.summary,
+                "description": body.description,
+                "status": {
+                    "name": "Open",
+                    "statusCategory": { "name": "New", "id": 2, "key": "new" }
+                },
+                "priority": { "name": "Medium" },
+                "issuetype": { "name": "Story" },
+                "project": {
+                    "id": body.project.clone(),
+                    "key": body.project.clone(),
+                    "name": body.project.clone(),
+                },
+                "labels": Vec::<String>::new(),
+                "created": now.clone(),
+                "updated": now,
+                "comment": { "comments": [], "maxResults": 0, "total": 0, "startAt": 0 }
+            }
+        }));
+    }
+    (StatusCode::OK, Json(json!({ "ok": true })))
+}
+
+#[derive(Debug, Deserialize)]
+struct SimUpsertPage {
+    space: String,
+    id: String,
+    title: String,
+    #[serde(default)]
+    body: String,
+}
+
+async fn sim_upsert_page(
+    State(state): State<SharedState>,
+    Json(body): Json<SimUpsertPage>,
+) -> impl IntoResponse {
+    let now = chrono::Utc::now()
+        .format("%Y-%m-%dT%H:%M:%S%.3f+0000")
+        .to_string();
+    let mut s = state.lock().unwrap();
+    if let Some(existing) = s
+        .confluence_pages
+        .iter_mut()
+        .find(|p| p["id"].as_str() == Some(body.id.as_str()))
+    {
+        existing["title"] = json!(body.title);
+        if let Some(storage) = existing
+            .get_mut("body")
+            .and_then(|b| b.get_mut("storage"))
+            .and_then(|s| s.get_mut("value"))
+        {
+            *storage = json!(body.body);
+        }
+        existing["version"]["when"] = json!(now);
+    } else {
+        s.confluence_pages.push(json!({
+            "id": body.id,
+            "type": "page",
+            "status": "current",
+            "title": body.title,
+            "space": { "key": body.space, "name": "sim" },
+            "body": { "storage": { "value": body.body, "representation": "storage" } },
+            "version": { "number": 1, "when": now.clone() },
+            "history": { "createdDate": now, "latest": true },
+            "ancestors": [],
+            "metadata": { "labels": { "results": [], "start": 0, "limit": 200, "size": 0 } },
+            "_links": {}
+        }));
+    }
+    (StatusCode::OK, Json(json!({ "ok": true })))
+}
+
+#[derive(Debug, Deserialize)]
+struct SimAddComment {
+    key: String,
+    body: String,
+    #[serde(default)]
+    author: String,
+}
+
+async fn sim_add_comment(
+    State(state): State<SharedState>,
+    Json(body): Json<SimAddComment>,
+) -> impl IntoResponse {
+    let now = chrono::Utc::now()
+        .format("%Y-%m-%dT%H:%M:%S%.3f+0000")
+        .to_string();
+    let mut s = state.lock().unwrap();
+    if let Some(issue) = s
+        .jira_issues
+        .iter_mut()
+        .find(|i| i["key"].as_str() == Some(body.key.as_str()))
+    {
+        let comment = json!({
+            "author": { "displayName": body.author },
+            "body": body.body,
+            "created": now,
+            "updated": now,
+        });
+        if let Some(comments) = issue
+            .get_mut("fields")
+            .and_then(|f| f.get_mut("comment"))
+            .and_then(|c| c.get_mut("comments"))
+            .and_then(|v| v.as_array_mut())
+        {
+            comments.push(comment);
+        }
+        issue["fields"]["updated"] = json!(now);
+        (StatusCode::OK, Json(json!({ "ok": true })))
+    } else {
+        (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" })))
+    }
 }
 
 // -----------------------------------------------------------------------
@@ -491,7 +647,11 @@ fn extract_cql_lastmodified(cql: &str) -> Option<String> {
 /// Build the axum Router used by the mock server. `pub` so integration
 /// tests outside this module can spin up an in-process instance.
 pub fn build_router() -> Router {
-    let state: SharedState = Arc::new(Mutex::new(AzureMockState::default()));
+    let state = Arc::new(Mutex::new(MockState {
+        azure: AzureStore::default(),
+        jira_issues: data::jira_issues(),
+        confluence_pages: data::confluence_pages(),
+    }));
 
     Router::new()
         // Jira + Confluence routes:
@@ -515,6 +675,10 @@ pub fn build_router() -> Router {
         )
         .route("/azure/indexes/{name}/docs", get(azure_index_docs_list))
         .route("/azure/_fault", post(azure_fault_post))
+        // Simulator mutation endpoints:
+        .route("/_sim/jira/upsert_issue", post(sim_upsert_issue))
+        .route("/_sim/confluence/upsert_page", post(sim_upsert_page))
+        .route("/_sim/jira/comment", post(sim_add_comment))
         .with_state(state)
 }
 
@@ -793,6 +957,75 @@ mod tests {
         assert!(
             i.get("size").unwrap().as_u64().unwrap() > 0,
             "INFRA space should exist"
+        );
+    }
+
+    #[tokio::test]
+    async fn sim_upsert_issue_adds_to_jira_store() {
+        let base = spawn_test_server().await;
+        let client = reqwest::Client::new();
+
+        let resp = client
+            .post(format!("{base}/_sim/jira/upsert_issue"))
+            .json(&serde_json::json!({
+                "project": "QUELCH",
+                "key": "QUELCH-999",
+                "summary": "sim-created",
+                "description": "injected by sim",
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert!(resp.status().is_success());
+
+        let search = client
+            .get(format!("{base}/jira/rest/api/2/search"))
+            .header("authorization", format!("Bearer {}", MOCK_TOKEN))
+            .query(&[("jql", "project = QUELCH"), ("maxResults", "500")])
+            .send()
+            .await
+            .unwrap();
+        let body: serde_json::Value = search.json().await.unwrap();
+        let issues = body.get("issues").unwrap().as_array().unwrap();
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.get("key").and_then(|k| k.as_str()) == Some("QUELCH-999")),
+            "injected issue not in search result"
+        );
+    }
+
+    #[tokio::test]
+    async fn sim_upsert_page_adds_to_confluence_store() {
+        let base = spawn_test_server().await;
+        let client = reqwest::Client::new();
+
+        let resp = client
+            .post(format!("{base}/_sim/confluence/upsert_page"))
+            .json(&serde_json::json!({
+                "space": "INFRA",
+                "id": "200500",
+                "title": "sim-created",
+                "body": "<p>injected</p>",
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert!(resp.status().is_success());
+
+        let search = client
+            .get(format!("{base}/confluence/rest/api/content/search"))
+            .header("authorization", format!("Bearer {}", MOCK_TOKEN))
+            .query(&[("cql", "space = INFRA")])
+            .send()
+            .await
+            .unwrap();
+        let body: serde_json::Value = search.json().await.unwrap();
+        let results = body.get("results").unwrap().as_array().unwrap();
+        assert!(
+            results
+                .iter()
+                .any(|r| r.get("id").and_then(|i| i.as_str()) == Some("200500"))
         );
     }
 }
