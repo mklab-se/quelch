@@ -17,10 +17,10 @@ pub fn draw(f: &mut Frame, app: &App, uptime: std::time::Duration, help_open: bo
     let areas = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // header
-            Constraint::Min(12),   // sources or log
-            Constraint::Length(8), // azure
-            Constraint::Length(1), // footer
+            Constraint::Length(1),  // header
+            Constraint::Min(12),    // sources or log
+            Constraint::Length(11), // azure (subtitle + chart + 3-row counter strip)
+            Constraint::Length(1),  // footer
         ])
         .split(f.area());
 
