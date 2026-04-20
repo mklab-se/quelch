@@ -53,7 +53,7 @@ async fn update_random_issue(
 ) -> Result<()> {
     let search = client
         .get(format!("{base}/jira/rest/api/2/search"))
-        .header("authorization", "Bearer mock-pat-token")
+        .header("authorization", format!("Bearer {}", crate::sim::MOCK_PAT))
         .query(&[
             ("jql", format!("project = {project}").as_str()),
             ("maxResults", "100"),

@@ -27,6 +27,12 @@ pub async fn run(
             _ = tokio::time::sleep(dwell) => {}
             _ = cancel.cancelled() => return Ok(()),
         }
+        // fault_rate is specified as "probability per Azure request" in the CLI,
+        // but this loop ticks every 2-8s regardless of request volume. At the
+        // engine's observed rate (~3-5 req/s during active sync), a single tick
+        // covers ~10 requests on average — hence the x10 conversion. With
+        // fault_rate=0.03, that yields ~30% chance of injecting a fault per tick,
+        // which empirically maps to about one fault per 30 real requests.
         let should_fault = rng.r#gen::<f64>() < (fault_rate * 10.0).min(1.0);
         if !should_fault {
             continue;

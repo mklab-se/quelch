@@ -29,7 +29,7 @@ use crate::config::{
 use crate::sim::embedder::SimEmbedder;
 use crate::sync::{IndexMode, UiCommand};
 
-const MOCK_PAT: &str = "mock-pat-token";
+pub const MOCK_PAT: &str = "mock-pat-token";
 
 /// Runs the simulator until `opts.duration` elapses or Ctrl-C is pressed.
 pub async fn run(opts: SimOpts) -> Result<()> {
@@ -108,6 +108,7 @@ pub async fn run(opts: SimOpts) -> Result<()> {
             engine_state_path,
             embedding,
             embedder,
+            cmd_rx,
             engine_cancel,
         )
         .await;
@@ -124,6 +125,7 @@ pub async fn run(opts: SimOpts) -> Result<()> {
 
         let res = run_tui_snapshot(&opts, &base, rx, drops).await;
 
+        let _ = cmd_tx.send(UiCommand::Shutdown).await;
         cancel.cancel();
         let _ = engine_handle.await;
         scheduler_handle.abort();
@@ -158,8 +160,6 @@ pub async fn run(opts: SimOpts) -> Result<()> {
 
     // 8. Graceful shutdown.
     let _ = cmd_tx.send(UiCommand::Shutdown).await;
-    // Also drain the receiver we borrowed out — simpler to drop it.
-    drop(cmd_rx);
     let _ = engine_handle.await;
     scheduler_handle.abort();
     fault_handle.abort();
@@ -185,10 +185,9 @@ async fn run_engine_loop(
     state_path: PathBuf,
     embedding: EmbeddingConfig,
     embedder: SimEmbedder,
+    mut cmd_rx: tokio::sync::mpsc::Receiver<UiCommand>,
     cancel: CancellationToken,
 ) -> Result<()> {
-    let (_tx, mut rx) = tokio::sync::mpsc::channel::<UiCommand>(1);
-
     let mut cycle: u64 = 0;
     while !cancel.is_cancelled() {
         cycle += 1;
@@ -199,7 +198,7 @@ async fn run_engine_loop(
             IndexMode::AutoCreate,
             Some(&embedder as &dyn crate::sync::embedder::Embedder),
             None,
-            &mut rx,
+            &mut cmd_rx,
             cycle,
         )
         .await;

@@ -49,7 +49,7 @@ async fn update_random_page(
 ) -> Result<()> {
     let search = client
         .get(format!("{base}/confluence/rest/api/content/search"))
-        .header("authorization", "Bearer mock-pat-token")
+        .header("authorization", format!("Bearer {}", crate::sim::MOCK_PAT))
         .query(&[
             ("cql", format!("space = {space}").as_str()),
             ("limit", "100"),
