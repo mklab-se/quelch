@@ -84,6 +84,24 @@ pub enum Commands {
         #[arg(short, long, default_value = "9999")]
         port: u16,
     },
+    /// Run quelch against a fully simulated environment for local testing and CI.
+    Sim {
+        /// Run for this long then exit. Default: run until Ctrl-C. Example: 30s, 2m, 1h.
+        #[arg(long)]
+        duration: Option<humantime::Duration>,
+        /// Seed the activity generator for reproducible runs.
+        #[arg(long)]
+        seed: Option<u64>,
+        /// Scale activity rate. 1.0 = default, 2.0 = twice as fast.
+        #[arg(long, default_value = "1.0")]
+        rate_multiplier: f64,
+        /// Probability each Azure request gets a 429 or 503. 0.0 disables.
+        #[arg(long, default_value = "0.03")]
+        fault_rate: f64,
+        /// CI-friendly: fail with exit code 1 if fewer than N docs are indexed.
+        #[arg(long)]
+        assert_docs: Option<u64>,
+    },
     /// Search indexed data in Azure AI Search
     Search {
         /// The search query

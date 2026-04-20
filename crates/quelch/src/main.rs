@@ -111,6 +111,23 @@ async fn main() -> Result<()> {
             search::run_search(&config, &query, index.as_deref(), top, json).await
         }
         Commands::Mock { port } => quelch::mock::run_mock_server(port).await,
+        Commands::Sim {
+            duration,
+            seed,
+            rate_multiplier,
+            fault_rate,
+            assert_docs,
+        } => {
+            let opts = quelch::sim::SimOpts {
+                duration: duration.map(|d| d.into()),
+                seed,
+                rate_multiplier,
+                fault_rate,
+                assert_docs,
+                mock_port: None,
+            };
+            quelch::sim::run(opts).await
+        }
         Commands::Ai { command } => ai::run(command).await,
         Commands::GenerateAgent { output } => cmd_generate_agent(&cli.config, &output),
     }

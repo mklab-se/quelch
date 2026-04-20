@@ -4,6 +4,7 @@ pub mod config;
 pub mod copilot;
 pub mod mock;
 pub mod search;
+pub mod sim;
 pub mod sources;
 pub mod sync;
 pub mod text;
