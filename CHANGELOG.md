@@ -6,6 +6,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-04-20
+
+### Added
+- **`quelch sim` subcommand** — runs the real engine against a fully in-process simulated world (mock Jira, Confluence, Azure AI Search, and embedder) with burst-aware activity, Azure fault injection, and jittery embedder latency. Single command, no external services. Flags: `--duration`, `--seed`, `--rate-multiplier`, `--fault-rate`, `--assert-docs`, `--snapshot-to`, `--snapshot-frames`, `--snapshot-width`, `--snapshot-height`.
+- **AI-verifiable TUI snapshot mode** — `quelch sim --snapshot-to FILE` renders the TUI to a headless ratatui `TestBackend` and dumps each frame as text to a file, enabling CI and AI agents to assert rendered content without a real terminal.
+- **CI simulator smoke test** — new `sim-smoke-test` job in `.github/workflows/ci.yml` runs `quelch sim --duration 30s --seed 42 --no-tui --assert-docs 20` on every push.
+- **`sim_headless` and `tui_snapshot` integration tests** — assert exit code, summary line, structured phase events in log mode; assert column headings, plain-English labels, chart axis labels, deduplicated footer in TUI mode; includes a narrow-terminal (100×30) variant.
+- **Mock `/_sim/*` mutation endpoints** — the mock server gains `POST /_sim/jira/upsert_issue`, `POST /_sim/confluence/upsert_page`, `POST /_sim/jira/comment` so the simulator can inject realistic activity live.
+
+### Changed
+- **TUI redesign from scratch.** The v0.4.0 TUI had confusing labels, no columns, misaligned content rendering outside borders, no real time-series graphs, no clear status indicators, and a duplicated footer. Rebuilt end-to-end:
+  - Sources pane uses `ratatui::Table` with explicit columns: Source · Status · Items · Rate · Last item · Updated.
+  - Status shown as coloured dot glyphs (`● idle`, `◐ syncing`, `● error`, `◉ backoff`) with an animated spinner during sync.
+  - Azure panel uses `ratatui::Chart`/`Dataset` with real y-axis ticks, `-60s → now` x-axis labels, and a plain-English counter strip (Total requests · Latency median/95th · Failed (4xx/5xx) · Throttled (429) · Dropped events).
+  - Selected row uses inverse-video highlight; expanded/collapsed state persists across runs in `.quelch-tui-state.json`.
+  - New `Drilldown` pane (opened by `Enter` on a subsource row) shows recent synced doc ids + recent errors.
+  - New `HelpOverlay` modal (opened by `?`) groups keybindings by Navigation / Actions / View / Other.
+  - Single deduplicated footer line.
+  - Keypress latency reduced from up to 200 ms to a few milliseconds via async `crossterm::EventStream`.
+  - Pause state updates optimistically in the header the moment `p` is pressed.
+  - Live Azure backoff banner appears when `request_with_retry` is sleeping.
+- **Engine emits additional structured events** — `source_started`, `source_finished`, `backoff_started`, `backoff_finished` phase events are now produced by the sync engine and Azure client, consumed by the `TuiLayer` for header and Azure-panel display.
+- **Mock server split** — `crates/quelch/src/mock/mod.rs` refactored from a single 1031-line file into focused `jira.rs`, `confluence.rs`, `azure.rs`, `sim.rs` submodules along HTTP-route families; `mod.rs` retains only shared state, auth, router, and the integration test suite. Route paths and handler bodies unchanged.
+- **`UiCommand::Shutdown` is now delivered to the engine** — `sim::run_engine_loop` receives the real command channel, so Ctrl-C exits the in-flight cycle at the next subsource/batch boundary (~50 ms) instead of waiting for the cycle to finish (~20 s).
+
+### Removed
+- **`Focus::Azure` enum variant and Tab-cycle handling** — with arrow-based navigation and drilldown as the primary interactions, the Sources/Azure focus distinction had no behaviour beyond border colour. Removed from `App`, `input.rs`, `layout.rs`, and the help overlay. `Prefs.focus` field retained for on-disk back-compat.
+
+### Developer experience
+- `tmp.txt`, `build_output.json`, and `build_output_clean.json` removed from the repo root and added to `.gitignore`.
+- New workspace dependencies: `humantime`, `rand`, `tokio-util`, `futures`; new dev dep: `assert_cmd`.
+
 ## [0.4.0] - 2026-04-20
 
 ### Added
