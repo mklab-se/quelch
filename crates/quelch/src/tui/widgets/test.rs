@@ -104,4 +104,42 @@ mod tests {
         assert!(text.contains("Failed (5xx)"));
         assert!(text.contains("Throttled"));
     }
+
+    use crate::tui::widgets::drilldown::Drilldown;
+
+    #[test]
+    fn drilldown_shows_subsource_details() {
+        let mut app = App::new(&cfg(), Prefs::default());
+        // Populate a subsource with some data
+        app.apply(crate::tui::events::QuelchEvent::SubsourceBatch {
+            source: "my-jira".into(),
+            subsource: "DO".into(),
+            fetched: 5,
+            cursor: chrono::Utc::now(),
+            sample_id: "DO-42".into(),
+        });
+        for i in 0..3 {
+            app.apply(crate::tui::events::QuelchEvent::DocSynced {
+                source: "my-jira".into(),
+                subsource: "DO".into(),
+                id: format!("DO-{i}"),
+                updated: chrono::Utc::now(),
+            });
+        }
+        app.move_selection_down(); // focus DO
+
+        let mut term = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        term.draw(|f| {
+            f.render_widget(Drilldown { app: &app }, f.area());
+        })
+        .unwrap();
+        let buf = term.backend().buffer();
+        let text: String = (0..buf.area.height)
+            .flat_map(|y| (0..buf.area.width).map(move |x| buf[(x, y)].symbol().to_string()))
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(text.contains("Docs synced"));
+        assert!(text.contains("Recent"));
+        assert!(text.contains("DO-2"));
+    }
 }
