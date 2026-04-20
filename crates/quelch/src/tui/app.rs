@@ -61,18 +61,11 @@ pub struct RecentDoc {
 
 const RECENT_DOCS_CAP: usize = 10;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Focus {
-    Sources,
-    Azure,
-}
-
 pub struct App {
     pub sources: Vec<SourceView>,
     pub azure: AzurePanel,
     pub prefs: Prefs,
     pub status: EngineStatus,
-    pub focus: Focus,
     pub footer: String,
     pub log_tail: VecDeque<LogLine>,
     pub drops: u64,
@@ -144,11 +137,6 @@ impl App {
         Self {
             sources,
             azure: AzurePanel::default(),
-            focus: if prefs.focus.eq_ignore_ascii_case("azure") {
-                Focus::Azure
-            } else {
-                Focus::Sources
-            },
             prefs,
             status: EngineStatus::Idle,
             footer: "Waiting for sync activity. Use arrows to inspect sources, s to toggle logs, q to quit.".into(),

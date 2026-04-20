@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use crate::sync::UiCommand;
 
-use super::app::{App, EngineStatus, Focus};
+use super::app::{App, EngineStatus};
 
 #[derive(Default)]
 pub struct InputState {
@@ -32,45 +32,25 @@ impl InputState {
             KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => {
                 return InputOutcome::Quit;
             }
-            KeyCode::Tab => {
-                app.focus = match app.focus {
-                    Focus::Sources => Focus::Azure,
-                    Focus::Azure => Focus::Sources,
-                };
-                app.prefs.focus = match app.focus {
-                    Focus::Sources => "sources".into(),
-                    Focus::Azure => "azure".into(),
-                };
-            }
             KeyCode::Down => {
-                if matches!(app.focus, Focus::Sources) {
-                    app.move_selection_down();
-                }
+                app.move_selection_down();
             }
             KeyCode::Up => {
-                if matches!(app.focus, Focus::Sources) {
-                    app.move_selection_up();
-                }
+                app.move_selection_up();
             }
             KeyCode::Left => {
-                if matches!(app.focus, Focus::Sources) {
-                    app.move_selection_left();
-                }
+                app.move_selection_left();
             }
             KeyCode::Right => {
-                if matches!(app.focus, Focus::Sources) {
-                    app.move_selection_right();
-                }
+                app.move_selection_right();
             }
             KeyCode::Char(' ') => {
-                if matches!(app.focus, Focus::Sources) {
-                    app.toggle_selected_collapsed();
-                }
+                app.toggle_selected_collapsed();
             }
             KeyCode::Enter => {
-                if matches!(app.focus, Focus::Sources) && app.focused_subsource_name().is_some() {
+                if app.focused_subsource_name().is_some() {
                     app.toggle_drilldown();
-                } else if matches!(app.focus, Focus::Sources) {
+                } else {
                     app.toggle_selected_collapsed();
                 }
             }

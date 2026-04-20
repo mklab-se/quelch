@@ -266,7 +266,7 @@ async fn run_tui_snapshot(
     let config = sim_config(base);
     let mut app = crate::tui::app::App::new(&config, prefs);
 
-    let backend = TestBackend::new(120, 40);
+    let backend = TestBackend::new(opts.snapshot_width, opts.snapshot_height);
     let mut terminal = Terminal::new(backend)?;
     let start = std::time::Instant::now();
     let mut file = std::fs::File::create(&path)?;
@@ -334,6 +334,8 @@ mod tests {
             mock_port: None,
             snapshot_to: None,
             snapshot_frames: 10,
+            snapshot_width: 120,
+            snapshot_height: 40,
         };
         run(opts).await.unwrap();
     }

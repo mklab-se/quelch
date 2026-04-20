@@ -1,4 +1,4 @@
-//! Persisted TUI preferences: collapsed sections, focus, log-view toggle.
+//! Persisted TUI preferences: collapsed sections, log-view toggle, selection.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};

@@ -12,6 +12,8 @@ pub struct SimOpts {
     pub mock_port: Option<u16>,
     pub snapshot_to: Option<std::path::PathBuf>,
     pub snapshot_frames: u32,
+    pub snapshot_width: u16,
+    pub snapshot_height: u16,
 }
 
 impl Default for SimOpts {
@@ -25,6 +27,8 @@ impl Default for SimOpts {
             mock_port: None,
             snapshot_to: None,
             snapshot_frames: 10,
+            snapshot_width: 120,
+            snapshot_height: 40,
         }
     }
 }

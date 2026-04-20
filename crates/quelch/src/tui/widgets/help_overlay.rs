@@ -40,7 +40,6 @@ impl Widget for HelpOverlay {
             heading("Navigation"),
             kv("↑ ↓", "move up / down"),
             kv("← →", "collapse / expand"),
-            kv("Tab", "cycle focus panes"),
             kv("Enter", "open drilldown"),
             Line::from(""),
             heading("Actions"),

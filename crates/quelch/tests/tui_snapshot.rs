@@ -102,3 +102,49 @@ fn tui_snapshot_azure_chart_renders_something() {
     assert!(snap.contains("-60s"), "chart x-axis label missing");
     assert!(snap.contains("now"), "chart x-axis label missing");
 }
+
+#[test]
+fn tui_snapshot_renders_at_narrow_terminal_100x30() {
+    let dir = tempdir().unwrap();
+    let snap_path = dir.path().join("snap.txt");
+
+    let mut cmd = Command::cargo_bin("quelch").unwrap();
+    cmd.arg("sim")
+        .arg("--snapshot-to")
+        .arg(&snap_path)
+        .arg("--snapshot-frames")
+        .arg("4")
+        .arg("--snapshot-width")
+        .arg("100")
+        .arg("--snapshot-height")
+        .arg("30")
+        .arg("--seed")
+        .arg("42")
+        .arg("--rate-multiplier")
+        .arg("6.0")
+        .timeout(Duration::from_secs(120))
+        .assert()
+        .success();
+
+    let snap = std::fs::read_to_string(&snap_path).expect("snapshot file");
+    assert!(!snap.is_empty());
+
+    // Same content assertions, proving the layout stays intact at 100x30.
+    for heading in ["Source", "Status", "Items", "Rate", "Last item"] {
+        assert!(
+            snap.contains(heading),
+            "heading missing at 100x30: {heading}\n{snap}"
+        );
+    }
+    assert!(
+        snap.contains("Total requests"),
+        "azure label missing at 100x30"
+    );
+    // No line should exceed 100 chars of content (+ possible trailing newline).
+    for line in snap.lines() {
+        assert!(
+            line.chars().count() <= 101,
+            "line exceeds 100 cols at 100x30:\n{line}"
+        );
+    }
+}

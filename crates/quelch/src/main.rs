@@ -122,6 +122,8 @@ async fn main() -> Result<()> {
             assert_docs,
             snapshot_to,
             snapshot_frames,
+            snapshot_width,
+            snapshot_height,
         } => {
             let opts = quelch::sim::SimOpts {
                 duration: duration.map(|d| d.into()),
@@ -132,6 +134,8 @@ async fn main() -> Result<()> {
                 mock_port: None,
                 snapshot_to,
                 snapshot_frames,
+                snapshot_width,
+                snapshot_height,
             };
             quelch::sim::run(opts).await
         }

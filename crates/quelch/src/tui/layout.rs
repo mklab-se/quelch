@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph, Widget},
 };
 
-use super::app::{App, Focus};
+use super::app::App;
 use super::status::header_line;
 use super::widgets::{
     azure_panel::AzurePanelWidget, drilldown::Drilldown, help_overlay::HelpOverlay,
@@ -31,7 +31,7 @@ pub fn draw(f: &mut Frame, app: &App, uptime: std::time::Duration, help_open: bo
         f.render_widget(
             LogView {
                 lines: &app.log_tail,
-                focused: matches!(app.focus, Focus::Sources),
+                focused: false,
             },
             areas[1],
         );
@@ -43,7 +43,7 @@ pub fn draw(f: &mut Frame, app: &App, uptime: std::time::Duration, help_open: bo
         AzurePanelWidget {
             panel: &app.azure,
             drops: app.drops,
-            focused: matches!(app.focus, Focus::Azure),
+            focused: false,
             backoff_reason: app.backoff_reason.as_deref(),
         },
         areas[2],
@@ -65,11 +65,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, uptime: std::time::Duration
 fn draw_sources_area(f: &mut Frame, area: Rect, app: &App) {
     let outer = Block::default()
         .borders(Borders::ALL)
-        .border_style(if matches!(app.focus, Focus::Sources) {
-            Style::default().fg(Color::Cyan)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        })
+        .border_style(Style::default().fg(Color::DarkGray))
         .title("Sources");
     let inner = outer.inner(area);
     outer.render(area, f.buffer_mut());

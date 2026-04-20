@@ -109,6 +109,12 @@ pub enum Commands {
         /// Number of frames to capture when --snapshot-to is set.
         #[arg(long, default_value = "10")]
         snapshot_frames: u32,
+        /// Width of the TestBackend when --snapshot-to is set. Default 120.
+        #[arg(long, default_value = "120")]
+        snapshot_width: u16,
+        /// Height of the TestBackend when --snapshot-to is set. Default 40.
+        #[arg(long, default_value = "40")]
+        snapshot_height: u16,
     },
     /// Search indexed data in Azure AI Search
     Search {
