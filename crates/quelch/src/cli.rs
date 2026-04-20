@@ -101,6 +101,14 @@ pub enum Commands {
         /// CI-friendly: fail with exit code 1 if fewer than N docs are indexed.
         #[arg(long)]
         assert_docs: Option<u64>,
+        /// Render the TUI to a headless backend and write a multi-frame text
+        /// dump to this file. Enables deterministic verification of the TUI
+        /// from CI or an AI agent. Implies --no-tui for stdout.
+        #[arg(long)]
+        snapshot_to: Option<PathBuf>,
+        /// Number of frames to capture when --snapshot-to is set.
+        #[arg(long, default_value = "10")]
+        snapshot_frames: u32,
     },
     /// Search indexed data in Azure AI Search
     Search {

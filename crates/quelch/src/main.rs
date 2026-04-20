@@ -120,6 +120,8 @@ async fn main() -> Result<()> {
             rate_multiplier,
             fault_rate,
             assert_docs,
+            snapshot_to,
+            snapshot_frames,
         } => {
             let opts = quelch::sim::SimOpts {
                 duration: duration.map(|d| d.into()),
@@ -128,6 +130,8 @@ async fn main() -> Result<()> {
                 fault_rate,
                 assert_docs,
                 mock_port: None,
+                snapshot_to,
+                snapshot_frames,
             };
             quelch::sim::run(opts).await
         }

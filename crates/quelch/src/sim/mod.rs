@@ -113,6 +113,38 @@ pub async fn run(opts: SimOpts) -> Result<()> {
         .await;
     });
 
+    // Snapshot mode: render the TUI to a TestBackend and dump frames to disk.
+    if let Some(snapshot_path) = opts.snapshot_to.clone() {
+        use tracing_subscriber::prelude::*;
+        let (layer, rx, drops) = crate::tui::tracing_layer::layer_and_receiver();
+        let _ = tracing_subscriber::registry()
+            .with(tracing_subscriber::EnvFilter::new("quelch=info,sim=info"))
+            .with(layer)
+            .try_init();
+
+        let res = run_tui_snapshot(&opts, &base, rx, drops).await;
+
+        cancel.cancel();
+        let _ = engine_handle.await;
+        scheduler_handle.abort();
+        fault_handle.abort();
+        mock_handle.abort();
+
+        let docs = synced_doc_count(&state_path).unwrap_or(0);
+        println!(
+            "sim-snapshot: {} frames written to {}, {} docs synced",
+            opts.snapshot_frames,
+            snapshot_path.display(),
+            docs
+        );
+        if let Some(threshold) = opts.assert_docs
+            && docs < threshold
+        {
+            anyhow::bail!("assert_docs failed: only {docs} < {threshold}");
+        }
+        return res;
+    }
+
     // 7. Wait for duration OR cancel.
     let started = Instant::now();
     if let Some(duration) = opts.duration {
@@ -210,6 +242,66 @@ fn sim_config(base: &str) -> Config {
     }
 }
 
+/// Run the sim rendering into a headless ratatui TestBackend and write
+/// N frames of the full rendered buffer to `path`. Does NOT touch stdout's
+/// alternate screen — safe for CI and AI-agent verification.
+async fn run_tui_snapshot(
+    opts: &SimOpts,
+    base: &str,
+    events_rx: tokio::sync::mpsc::Receiver<crate::tui::events::QuelchEvent>,
+    drops: std::sync::Arc<std::sync::atomic::AtomicU64>,
+) -> Result<()> {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use std::io::Write;
+
+    let path = opts
+        .snapshot_to
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("snapshot_to not set"))?
+        .clone();
+    let frames = opts.snapshot_frames.max(1);
+    let mut events_rx = events_rx;
+
+    let prefs = crate::tui::prefs::Prefs::default();
+    let config = sim_config(base);
+    let mut app = crate::tui::app::App::new(&config, prefs);
+
+    let backend = TestBackend::new(120, 40);
+    let mut terminal = Terminal::new(backend)?;
+    let start = std::time::Instant::now();
+    let mut file = std::fs::File::create(&path)?;
+
+    for frame_idx in 0..frames {
+        while let Ok(ev) = events_rx.try_recv() {
+            app.apply(ev);
+        }
+        app.tick_spinner();
+        app.drops = drops.load(std::sync::atomic::Ordering::Relaxed);
+
+        terminal.draw(|f| {
+            crate::tui::layout::draw(f, &app, start.elapsed(), false);
+        })?;
+
+        let buf = terminal.backend().buffer();
+        writeln!(
+            file,
+            "===== FRAME {frame_idx} (uptime {:.2}s) =====",
+            start.elapsed().as_secs_f32()
+        )?;
+        for y in 0..buf.area.height {
+            let line: String = (0..buf.area.width)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>();
+            writeln!(file, "{line}")?;
+        }
+        writeln!(file)?;
+
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    Ok(())
+}
+
 fn synced_doc_count(state_path: &std::path::Path) -> Result<u64> {
     let raw = std::fs::read_to_string(state_path)?;
     let v: serde_json::Value = serde_json::from_str(&raw)?;
@@ -241,6 +333,8 @@ mod tests {
             fault_rate: 0.0,
             assert_docs: None,
             mock_port: None,
+            snapshot_to: None,
+            snapshot_frames: 10,
         };
         run(opts).await.unwrap();
     }

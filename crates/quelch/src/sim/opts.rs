@@ -10,6 +10,8 @@ pub struct SimOpts {
     pub fault_rate: f64,
     pub assert_docs: Option<u64>,
     pub mock_port: Option<u16>,
+    pub snapshot_to: Option<std::path::PathBuf>,
+    pub snapshot_frames: u32,
 }
 
 impl Default for SimOpts {
@@ -21,6 +23,8 @@ impl Default for SimOpts {
             fault_rate: 0.03,
             assert_docs: None,
             mock_port: None,
+            snapshot_to: None,
+            snapshot_frames: 10,
         }
     }
 }
