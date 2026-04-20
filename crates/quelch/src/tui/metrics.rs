@@ -42,6 +42,15 @@ impl Throughput {
     pub fn samples(&self) -> Vec<u64> {
         self.buckets.iter().map(|(_, n)| *n).collect()
     }
+
+    /// Return `(bucket_index, count)` points suitable for `ratatui::Chart`.
+    pub fn chart_points(&self) -> Vec<(f64, f64)> {
+        self.buckets
+            .iter()
+            .enumerate()
+            .map(|(i, (_, n))| (i as f64, *n as f64))
+            .collect()
+    }
 }
 
 /// Azure panel state: rolling throughput + latency window + response counters.
@@ -125,5 +134,18 @@ mod tests {
         assert_eq!(a.count_4xx, 2);
         assert_eq!(a.count_5xx, 1);
         assert_eq!(a.count_throttled, 1);
+    }
+
+    #[test]
+    fn chart_points_returns_ordered_xy_pairs() {
+        let mut t = Throughput::default();
+        let t0 = Instant::now();
+        t.add(t0, 3);
+        t.add(t0 + Duration::from_secs(2), 5);
+        let pts = t.chart_points();
+        assert_eq!(pts.len(), 2);
+        assert_eq!(pts[0].1, 3.0);
+        assert_eq!(pts[1].1, 5.0);
+        assert!(pts[0].0 < pts[1].0);
     }
 }
