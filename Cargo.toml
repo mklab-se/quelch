@@ -69,3 +69,15 @@ ailloy = { version = "0.7.2", default-features = false, features = ["config-tui"
 
 # Async streams
 futures = "0.3"
+
+# Duration parsing
+humantime = "2"
+
+# Random
+rand = "0.8"
+
+# Tokio utilities
+tokio-util = { version = "0.7", features = ["rt"] }
+
+# CLI testing
+assert_cmd = "2"
