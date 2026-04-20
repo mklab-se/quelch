@@ -9,6 +9,7 @@ use tracing::Level;
 use super::events::QuelchEvent;
 use super::metrics::{AzurePanel, Throughput};
 use super::prefs::Prefs;
+use super::spinner::Spinner;
 use crate::config::{Config, SourceConfig};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,7 +50,16 @@ pub struct SubsourceView {
     pub docs_synced_total: u64,
     pub last_errors: VecDeque<String>,
     pub throughput: Throughput,
+    pub recent_docs: VecDeque<RecentDoc>,
 }
+
+#[derive(Debug, Clone)]
+pub struct RecentDoc {
+    pub ts: DateTime<Utc>,
+    pub id: String,
+}
+
+const RECENT_DOCS_CAP: usize = 10;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Focus {
@@ -68,6 +78,10 @@ pub struct App {
     pub drops: u64,
     pub selected_source: usize,
     pub selected_subsource: Option<usize>,
+    pub spinner: Spinner,
+    pub drilldown_open: bool,
+    pub backoff_reason: Option<String>,
+    pub backoff_until: Option<DateTime<Utc>>,
 }
 
 pub struct LogLine {
@@ -82,7 +96,8 @@ const LAST_ERRORS_CAP: usize = 3;
 
 impl App {
     pub fn new(config: &Config, prefs: Prefs) -> Self {
-        let sources = config
+        let prefs_drilldown = prefs.drilldown_open;
+        let sources: Vec<SourceView> = config
             .sources
             .iter()
             .map(|sc| {
@@ -104,11 +119,28 @@ impl App {
                             docs_synced_total: 0,
                             last_errors: VecDeque::new(),
                             throughput: Throughput::default(),
+                            recent_docs: VecDeque::new(),
                         })
                         .collect(),
                 }
             })
             .collect();
+
+        let mut selected_source = 0usize;
+        let mut selected_subsource: Option<usize> = None;
+        if let Some(sel) = &prefs.selected_source
+            && let Some(idx) = sources.iter().position(|s: &SourceView| &s.name == sel)
+        {
+            selected_source = idx;
+            if let Some((src_name, sub_name)) = &prefs.selected_subsource
+                && src_name == sel
+                && let Some(src) = sources.get(idx)
+                && let Some(sub_idx) = src.subsources.iter().position(|ss| &ss.key == sub_name)
+            {
+                selected_subsource = Some(sub_idx);
+            }
+        }
+
         Self {
             sources,
             azure: AzurePanel::default(),
@@ -122,8 +154,12 @@ impl App {
             footer: "Waiting for sync activity. Use arrows to inspect sources, s to toggle logs, q to quit.".into(),
             log_tail: VecDeque::with_capacity(LOG_CAP),
             drops: 0,
-            selected_source: 0,
-            selected_subsource: None,
+            selected_source,
+            selected_subsource,
+            spinner: Spinner::default(),
+            drilldown_open: prefs_drilldown,
+            backoff_reason: None,
+            backoff_until: None,
         }
     }
 
@@ -229,10 +265,14 @@ impl App {
                     src.state = SourceState::Backoff { until };
                 }
                 self.footer = format!("{source} backing off: {reason}");
+                self.backoff_reason = Some(reason);
+                self.backoff_until = Some(until);
             }
             QuelchEvent::BackoffFinished { source } => {
                 self.recompute_source_state(&source);
                 self.footer = format!("{source} resumed after backoff");
+                self.backoff_reason = None;
+                self.backoff_until = None;
             }
             QuelchEvent::Log {
                 level,
@@ -254,12 +294,49 @@ impl App {
                     },
                 });
             }
-            QuelchEvent::AzureRequest { .. }
-            | QuelchEvent::DocSynced { .. }
-            | QuelchEvent::DocFailed { .. } => {}
+            QuelchEvent::DocSynced {
+                source,
+                subsource,
+                id,
+                updated,
+            } => {
+                if let Some(sub) = self.find_subsource_mut(&source, &subsource) {
+                    if sub.recent_docs.len() >= RECENT_DOCS_CAP {
+                        sub.recent_docs.pop_front();
+                    }
+                    sub.recent_docs.push_back(RecentDoc { ts: updated, id });
+                }
+            }
+            QuelchEvent::AzureRequest { .. } | QuelchEvent::DocFailed { .. } => {}
         }
 
         self.ensure_valid_selection();
+    }
+
+    pub fn spinner_glyph(&self) -> char {
+        self.spinner.glyph()
+    }
+
+    pub fn tick_spinner(&mut self) {
+        self.spinner.tick();
+    }
+
+    pub fn toggle_drilldown(&mut self) {
+        self.drilldown_open = !self.drilldown_open;
+        self.prefs.drilldown_open = self.drilldown_open;
+    }
+
+    fn sync_selection_to_prefs(&mut self) {
+        self.prefs.selected_source = self
+            .sources
+            .get(self.selected_source)
+            .map(|s| s.name.clone());
+        self.prefs.selected_subsource = self.prefs.selected_source.as_ref().and_then(|src| {
+            let src_idx = self.sources.iter().position(|s| &s.name == src)?;
+            let sub_idx = self.selected_subsource?;
+            let sub_name = self.sources[src_idx].subsources.get(sub_idx)?.key.clone();
+            Some((src.clone(), sub_name))
+        });
     }
 
     pub fn focused_source_name(&self) -> Option<&str> {
@@ -302,6 +379,7 @@ impl App {
             }
             _ => {}
         }
+        self.sync_selection_to_prefs();
     }
 
     pub fn move_selection_up(&mut self) {
@@ -323,6 +401,7 @@ impl App {
             }
             None => {}
         }
+        self.sync_selection_to_prefs();
     }
 
     pub fn move_selection_left(&mut self) {
@@ -330,6 +409,7 @@ impl App {
 
         if self.selected_subsource.is_some() {
             self.selected_subsource = None;
+            self.sync_selection_to_prefs();
             return;
         }
 
@@ -338,12 +418,14 @@ impl App {
         {
             self.prefs.toggle_source_collapsed(&source);
         }
+        self.sync_selection_to_prefs();
     }
 
     pub fn move_selection_right(&mut self) {
         self.ensure_valid_selection();
 
         if self.selected_subsource.is_some() {
+            self.sync_selection_to_prefs();
             return;
         }
 
@@ -356,6 +438,7 @@ impl App {
         } else if !source.subsources.is_empty() {
             self.selected_subsource = Some(0);
         }
+        self.sync_selection_to_prefs();
     }
 
     pub fn toggle_selected_collapsed(&mut self) {
@@ -371,6 +454,7 @@ impl App {
                 .toggle_subsource_collapsed(&source_name, &subsource_name),
             None => self.prefs.toggle_source_collapsed(&source_name),
         }
+        self.sync_selection_to_prefs();
     }
 
     pub fn selected_source_total_docs(&self, source_name: &str) -> u64 {
@@ -499,5 +583,41 @@ mod tests {
 
         a.move_selection_left();
         assert_eq!(a.focused_subsource_name(), None);
+    }
+
+    #[test]
+    fn doc_synced_appends_to_recent_docs_capped_at_ten() {
+        let mut a = App::new(&cfg(), Prefs::default());
+        for i in 0..15 {
+            a.apply(QuelchEvent::DocSynced {
+                source: "my-jira".into(),
+                subsource: "DO".into(),
+                id: format!("DO-{i}"),
+                updated: Utc::now(),
+            });
+        }
+        let recent = &a.sources[0].subsources[0].recent_docs;
+        assert_eq!(recent.len(), 10);
+        assert_eq!(recent.back().unwrap().id, "DO-14");
+        assert_eq!(recent.front().unwrap().id, "DO-5");
+    }
+
+    #[test]
+    fn enter_toggles_drilldown_open() {
+        let mut a = App::new(&cfg(), Prefs::default());
+        a.move_selection_down();
+        assert_eq!(a.focused_subsource_name(), Some("DO"));
+        assert!(!a.drilldown_open);
+        a.toggle_drilldown();
+        assert!(a.drilldown_open);
+        a.toggle_drilldown();
+        assert!(!a.drilldown_open);
+    }
+
+    #[test]
+    fn spinner_glyph_available_on_app() {
+        let a = App::new(&cfg(), Prefs::default());
+        let g = a.spinner_glyph();
+        assert!(['◐', '◓', '◑', '◒'].contains(&g));
     }
 }
