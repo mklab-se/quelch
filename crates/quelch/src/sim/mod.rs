@@ -14,9 +14,12 @@ pub mod world;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 pub use opts::SimOpts;
@@ -28,18 +31,24 @@ use crate::config::{
 };
 use crate::sim::embedder::SimEmbedder;
 use crate::sync::{IndexMode, UiCommand};
+use crate::tui::events::QuelchEvent;
 
 pub const MOCK_PAT: &str = "mock-pat-token";
 
-/// Runs the simulator until `opts.duration` elapses or Ctrl-C is pressed.
-pub async fn run(opts: SimOpts) -> Result<()> {
+/// Bundle the event receiver + drops counter that the TUI needs when the
+/// caller has already installed a `TuiLayer` via `install_tui` in `main.rs`.
+pub type TuiInputs = (mpsc::Receiver<QuelchEvent>, Arc<AtomicU64>);
+
+/// Runs the simulator. Behaviour depends on `opts.snapshot_to` and whether the
+/// caller passed TUI inputs:
+///
+/// * `snapshot_to = Some(_)` → renders the TUI into a headless `TestBackend`,
+///   dumps frames to the given file, then exits. `tui_inputs` must be `Some`.
+/// * `tui_inputs = Some(_)` without `snapshot_to` → spawns the real interactive
+///   TUI (enters raw mode) alongside the engine; runs until the user quits.
+/// * Otherwise → plain-log mode; runs until `opts.duration` elapses or Ctrl-C.
+pub async fn run(opts: SimOpts, tui_inputs: Option<TuiInputs>) -> Result<()> {
     let cancel = CancellationToken::new();
-    let ctrl_c_cancel = cancel.clone();
-    tokio::spawn(async move {
-        if tokio::signal::ctrl_c().await.is_ok() {
-            ctrl_c_cancel.cancel();
-        }
-    });
 
     // 1. Start mock server on random port.
     let listener = tokio::net::TcpListener::bind(SocketAddr::from((
@@ -114,23 +123,28 @@ pub async fn run(opts: SimOpts) -> Result<()> {
         .await;
     });
 
-    // Snapshot mode: render the TUI to a TestBackend and dump frames to disk.
+    let started = Instant::now();
+
+    // 7a. Snapshot mode — caller must have provided a TuiLayer via install_tui
+    //     so the events_rx below sees real tracing output.
     if let Some(snapshot_path) = opts.snapshot_to.clone() {
-        use tracing_subscriber::prelude::*;
-        let (layer, rx, drops) = crate::tui::tracing_layer::layer_and_receiver();
-        let _ = tracing_subscriber::registry()
-            .with(tracing_subscriber::EnvFilter::new("quelch=info,sim=info"))
-            .with(layer)
-            .try_init();
+        let (events_rx, drops) = tui_inputs.ok_or_else(|| {
+            anyhow::anyhow!(
+                "snapshot mode requires TUI wiring; run without --no-tui or pass tui_inputs"
+            )
+        })?;
 
-        let res = run_tui_snapshot(&opts, &base, rx, drops).await;
+        let res = run_tui_snapshot(&opts, &base, events_rx, drops).await;
 
-        let _ = cmd_tx.send(UiCommand::Shutdown).await;
-        cancel.cancel();
-        let _ = engine_handle.await;
-        scheduler_handle.abort();
-        fault_handle.abort();
-        mock_handle.abort();
+        shutdown_all(
+            &cmd_tx,
+            &cancel,
+            engine_handle,
+            scheduler_handle,
+            fault_handle,
+            mock_handle,
+        )
+        .await;
 
         let docs = synced_doc_count(&state_path).unwrap_or(0);
         println!(
@@ -147,8 +161,73 @@ pub async fn run(opts: SimOpts) -> Result<()> {
         return res;
     }
 
-    // 7. Wait for duration OR cancel.
-    let started = Instant::now();
+    // 7b. Interactive TUI mode — spawn `tui::run` alongside the engine. The
+    //     TUI enters raw mode and owns the terminal until the user quits
+    //     (`q`, `Ctrl-C` inside the TUI, or Shutdown from elsewhere).
+    if let Some((events_rx, drops)) = tui_inputs {
+        let prefs_path =
+            std::env::temp_dir().join(format!("quelch-sim-tui-{}.json", std::process::id()));
+        let tui_config = config.clone();
+        let tui_cmd_tx = cmd_tx.clone();
+        let tui_cancel = cancel.clone();
+        let tui_handle = tokio::spawn(async move {
+            let result =
+                crate::tui::run(tui_config, prefs_path, events_rx, tui_cmd_tx, drops).await;
+            // TUI exit → tear down the rest.
+            tui_cancel.cancel();
+            result
+        });
+
+        tokio::select! {
+            _ = async {
+                if let Some(duration) = opts.duration {
+                    tokio::time::sleep(duration).await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            } => {
+                cancel.cancel();
+            }
+            _ = cancel.cancelled() => {}
+        }
+
+        shutdown_all(
+            &cmd_tx,
+            &cancel,
+            engine_handle,
+            scheduler_handle,
+            fault_handle,
+            mock_handle,
+        )
+        .await;
+        let _ = tui_handle.await;
+
+        let docs = synced_doc_count(&state_path).unwrap_or(0);
+        println!(
+            "sim: {:.1}s, {} docs synced",
+            started.elapsed().as_secs_f32(),
+            docs
+        );
+        if let Some(threshold) = opts.assert_docs
+            && docs < threshold
+        {
+            anyhow::bail!("assert_docs failed: only {docs} < {threshold}");
+        }
+        return Ok(());
+    }
+
+    // 7c. Plain-log mode — install a Ctrl-C handler that also sends Shutdown
+    //     on the engine's command channel so it exits within one subsource
+    //     boundary (~50 ms) instead of finishing the in-flight cycle.
+    let ctrl_c_cancel = cancel.clone();
+    let ctrl_c_cmd_tx = cmd_tx.clone();
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            let _ = ctrl_c_cmd_tx.send(UiCommand::Shutdown).await;
+            ctrl_c_cancel.cancel();
+        }
+    });
+
     if let Some(duration) = opts.duration {
         tokio::select! {
             _ = tokio::time::sleep(duration) => cancel.cancel(),
@@ -158,14 +237,16 @@ pub async fn run(opts: SimOpts) -> Result<()> {
         cancel.cancelled().await;
     }
 
-    // 8. Graceful shutdown.
-    let _ = cmd_tx.send(UiCommand::Shutdown).await;
-    let _ = engine_handle.await;
-    scheduler_handle.abort();
-    fault_handle.abort();
-    mock_handle.abort();
+    shutdown_all(
+        &cmd_tx,
+        &cancel,
+        engine_handle,
+        scheduler_handle,
+        fault_handle,
+        mock_handle,
+    )
+    .await;
 
-    // 9. Evaluate assert_docs.
     let docs = synced_doc_count(&state_path).unwrap_or(0);
     println!(
         "sim: {:.1}s, {} docs synced",
@@ -178,6 +259,24 @@ pub async fn run(opts: SimOpts) -> Result<()> {
         anyhow::bail!("assert_docs failed: only {docs} < {threshold}");
     }
     Ok(())
+}
+
+/// Coordinated teardown: tell the engine to stop, cancel the token, then join
+/// all long-running tasks. Caller owns the final println!/assert.
+async fn shutdown_all(
+    cmd_tx: &mpsc::Sender<UiCommand>,
+    cancel: &CancellationToken,
+    engine_handle: tokio::task::JoinHandle<()>,
+    scheduler_handle: tokio::task::JoinHandle<()>,
+    fault_handle: tokio::task::JoinHandle<()>,
+    mock_handle: tokio::task::JoinHandle<()>,
+) {
+    let _ = cmd_tx.send(UiCommand::Shutdown).await;
+    cancel.cancel();
+    let _ = engine_handle.await;
+    scheduler_handle.abort();
+    fault_handle.abort();
+    mock_handle.abort();
 }
 
 async fn run_engine_loop(
@@ -337,6 +436,6 @@ mod tests {
             snapshot_width: 120,
             snapshot_height: 40,
         };
-        run(opts).await.unwrap();
+        run(opts, None).await.unwrap();
     }
 }

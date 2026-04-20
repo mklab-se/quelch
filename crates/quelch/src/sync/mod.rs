@@ -8,7 +8,7 @@ use std::io::Write;
 use std::path::Path;
 use std::time::Instant;
 use tokio::sync::mpsc;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::azure::SearchClient;
 use crate::azure::schema::{EmbeddingConfig, confluence_index_schema, jira_index_schema};
@@ -187,7 +187,10 @@ pub async fn setup_indexes(
             .with_context(|| format!("failed to check index '{}'", schema.name))?;
 
         if exists {
-            println!("  [exists]  {}", schema.name);
+            // Silent in sync loops — would otherwise spam once per cycle. An
+            // operator running `quelch setup` gets the summary line via
+            // `setup_indexes`'s return value.
+            debug!(index = %schema.name, "index already exists");
             continue;
         }
 
@@ -213,10 +216,10 @@ pub async fn setup_indexes(
                 .create_index(schema)
                 .await
                 .with_context(|| format!("failed to create index '{}'", schema.name))?;
-            println!("  [created] {}", schema.name);
+            info!(index = %schema.name, "created Azure index");
             created.push(schema.name.clone());
         } else {
-            println!("  [skipped] {}", schema.name);
+            info!(index = %schema.name, "skipped index creation");
         }
     }
 
@@ -709,13 +712,15 @@ async fn sync_single_subsource<C: SourceConnector>(
                 .get("updated_at")
                 .and_then(|v| v.as_str())
                 .unwrap_or("?");
-            info!(
+            // Per-doc event is for tool consumption (drilldown pane).
+            // Debug level so plain-log output stays readable at default
+            // verbosity — the TuiLayer enables debug so it still sees them.
+            debug!(
                 phase = phases::DOC_SYNCED,
                 source = source_name,
                 subsource = subsource,
                 doc_id = id,
                 updated = updated,
-                "doc"
             );
         }
 

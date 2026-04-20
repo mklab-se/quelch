@@ -60,6 +60,28 @@ crates/quelch/src/
 - All public types and functions documented with `///` doc comments
 - Keep files focused and under ~500 lines
 
+## Test Your Work Against the User's Actual Requirements
+
+**Before claiming any task is done, you must personally verify it satisfies the user's stated requirements — not just that `cargo test` passes.** Tests prove the code compiles and internal invariants hold. They do NOT prove the user's experience works.
+
+- If the user said "the TUI should look like X": **run the binary, capture its output as an artifact (e.g. `quelch sim --snapshot-to FILE`), and read the artifact yourself**. Confirm every element the user asked for is actually there. If you can't launch an interactive terminal, use a headless renderer. If you can't verify something at all, say so explicitly rather than assuming.
+- If the user said "the log output should be useful": **run the binary, capture stdout/stderr, read it line by line**. For each log line ask: who reads this? what do they learn? are they helped? If the answer is "nobody" or "nothing useful", remove the line or demote its level.
+- If the user said "Ctrl-C should be responsive": **press Ctrl-C yourself and measure**. Don't claim it's fixed because "the channel is now wired".
+- Unit + integration tests are necessary but not sufficient. They catch what you remembered to check. The user-experience audit catches what you forgot.
+
+When a user has to show you that your own work is broken, that is a process failure. Ship only what you have personally exercised against the original request.
+
+### Audit every log line
+
+For every `println!`, `info!`, `warn!`, `error!`, `debug!` you add or touch:
+
+1. **Who is the audience?** (operator running the binary / developer debugging a specific problem / nobody)
+2. **What does it teach them?** (a state transition / a failure that needs action / internal noise)
+3. **Is it helpful at default verbosity, or is it only helpful when they asked for more detail?** If the latter, it belongs at `debug!` / `trace!`, not `info!` / `warn!`.
+4. **Does it fire once per run, once per cycle, or once per item?** Per-item logs at `info!` are almost always wrong.
+
+If you can't answer #1 and #2 with a concrete human-useful sentence, the line should not exist.
+
 ## Releasing
 
 Use the `/release <major|minor|patch>` skill. This bumps the version, updates the changelog, commits, tags, and pushes. The GitHub Actions release workflow then:

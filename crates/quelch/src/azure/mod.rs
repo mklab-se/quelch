@@ -4,7 +4,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use thiserror::Error;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use self::schema::IndexSchema;
 
@@ -388,7 +388,12 @@ impl SearchClient {
         for attempt in 0..MAX_RETRY_ATTEMPTS {
             if attempt > 0 {
                 let delay = std::time::Duration::from_secs(1 << attempt);
-                tracing::warn!(
+                // At `info!` so the TUI's `TuiLayer` (filter `quelch=info`)
+                // catches it and lights up the backoff banner, while plain-log
+                // default (`quelch=warn,sim=info`) stays quiet — an operator
+                // doesn't need a per-retry line when the engine is making
+                // forward progress. `-v` promotes the filter and shows it.
+                tracing::info!(
                     phase = crate::sync::phases::BACKOFF_STARTED,
                     source = "azure",
                     reason = "HTTP 429 or 5xx",
@@ -411,7 +416,11 @@ impl SearchClient {
                     let status = resp.status();
                     emit_response_event(status.as_u16(), elapsed);
                     let body = resp.text().await.unwrap_or_default();
-                    warn!("Request failed with {}: {}", status, body);
+                    // Transient: the next loop iteration will emit the
+                    // structured `backoff_started` and retry. We only surface
+                    // a WARN at MAX_RETRY_ATTEMPTS exhaustion (below) — before
+                    // then, printing a per-attempt line is noise.
+                    debug!(status = %status, body = %body, "Azure request failed (will retry)");
                     last_err = Some(AzureError::Api {
                         status: status.as_u16(),
                         message: body,
@@ -423,7 +432,7 @@ impl SearchClient {
                 }
                 Err(e) => {
                     emit_response_event(0, elapsed);
-                    warn!("Request error: {}", e);
+                    debug!(error = %e, "Azure transport error (will retry)");
                     last_err = Some(AzureError::Http(e));
                 }
             }

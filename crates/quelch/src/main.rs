@@ -20,7 +20,22 @@ enum LogMode {
 }
 
 fn decide_mode(cli: &Cli, sub: &Commands) -> LogMode {
-    let watchable = matches!(sub, Commands::Sync { .. } | Commands::Watch { .. });
+    // Snapshot mode always needs TUI wiring (TuiLayer feeding the TestBackend),
+    // regardless of TTY, --no-tui, or --json. It never enters raw mode, so it's
+    // safe even in CI or from assert_cmd.
+    if matches!(
+        sub,
+        Commands::Sim {
+            snapshot_to: Some(_),
+            ..
+        }
+    ) {
+        return LogMode::Tui;
+    }
+    let watchable = matches!(
+        sub,
+        Commands::Sync { .. } | Commands::Watch { .. } | Commands::Sim { .. }
+    );
     if cli.no_tui || cli.json || cli.quiet || !std::io::stdout().is_terminal() || !watchable {
         LogMode::Plain
     } else {
@@ -28,14 +43,21 @@ fn decide_mode(cli: &Cli, sub: &Commands) -> LogMode {
     }
 }
 
-fn install_plain(verbose: u8, quiet: bool, json: bool, is_sim: bool) {
-    let filter = match (quiet, verbose, is_sim) {
-        (true, _, _) => "error".to_string(),
-        (_, 0, true) => "quelch=warn,sim=info".to_string(),
-        (_, 0, false) => "quelch=info".to_string(),
-        (_, 1, true) => "quelch=info,sim=debug".to_string(),
-        (_, 1, false) => "quelch=debug".to_string(),
-        (_, 2, _) => "quelch=debug,sim=trace,reqwest=debug".to_string(),
+fn install_plain(verbose: u8, quiet: bool, json: bool, _is_sim: bool) {
+    // Plain-log filter choice is about what a human watching stdout needs to
+    // read to know the engine is doing its job, without drowning them in
+    // per-doc / per-retry noise.
+    //
+    // At default verbosity, `quelch=info` enables the structured lifecycle
+    // events (cycle_started / source_started / subsource_started / *_finished
+    // / backoff_started / backoff_finished) and the sim's one-shot startup
+    // lines, but suppresses the debug-level per-doc stream. `-v` turns the
+    // per-doc stream on for debugging.
+    let filter = match (quiet, verbose) {
+        (true, _) => "error".to_string(),
+        (_, 0) => "quelch=info".to_string(),
+        (_, 1) => "quelch=debug".to_string(),
+        (_, 2) => "quelch=debug,reqwest=debug".to_string(),
         _ => "trace".to_string(),
     };
     let builder = tracing_subscriber::fmt().with_env_filter(EnvFilter::new(&filter));
@@ -51,8 +73,10 @@ fn install_tui() -> (
     Arc<AtomicU64>,
 ) {
     let (layer, rx, drops) = quelch::tui::tracing_layer::layer_and_receiver();
+    // TUI wants debug-level so the drilldown pane's recent-docs ring receives
+    // per-doc events. The dashboard itself filters which events it renders.
     tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::new("quelch=info"))
+        .with(tracing_subscriber::EnvFilter::new("quelch=debug"))
         .with(layer)
         .init();
     (rx, drops)
@@ -137,7 +161,7 @@ async fn main() -> Result<()> {
                 snapshot_width,
                 snapshot_height,
             };
-            quelch::sim::run(opts).await
+            quelch::sim::run(opts, tui_inputs).await
         }
         Commands::Ai { command } => ai::run(command).await,
         Commands::GenerateAgent { output } => cmd_generate_agent(&cli.config, &output),
@@ -594,4 +618,46 @@ async fn cmd_watch_tui(
     drop(cmd_rx);
     let _ = tui_handle.await;
     Ok(())
+}
+
+#[cfg(test)]
+mod decide_mode_tests {
+    use super::*;
+
+    fn cli_with(no_tui: bool, json: bool, quiet: bool) -> Cli {
+        Cli {
+            config: std::path::PathBuf::from("quelch.yaml"),
+            verbose: 0,
+            quiet,
+            json,
+            no_tui,
+            command: Commands::Sim {
+                duration: None,
+                seed: None,
+                rate_multiplier: 1.0,
+                fault_rate: 0.0,
+                assert_docs: None,
+                snapshot_to: None,
+                snapshot_frames: 0,
+                snapshot_width: 120,
+                snapshot_height: 40,
+            },
+        }
+    }
+
+    #[test]
+    fn sim_is_tui_capable() {
+        let cli = cli_with(false, false, false);
+        let watchable = matches!(
+            &cli.command,
+            Commands::Sync { .. } | Commands::Watch { .. } | Commands::Sim { .. }
+        );
+        assert!(watchable, "Commands::Sim must be in the tui-capable list");
+    }
+
+    #[test]
+    fn no_tui_flag_forces_plain_for_sim() {
+        let cli = cli_with(true, false, false);
+        assert!(matches!(decide_mode(&cli, &cli.command), LogMode::Plain));
+    }
 }
