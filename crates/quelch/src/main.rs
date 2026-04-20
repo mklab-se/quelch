@@ -481,7 +481,10 @@ async fn cmd_sync_tui(
 
     drop(cmd_rx);
     let _ = tui_handle.await;
-    res
+    match res? {
+        sync::EngineOutcome::Shutdown | sync::EngineOutcome::Continue => Ok(()),
+        sync::EngineOutcome::ResetCursor { .. } => Ok(()),
+    }
 }
 
 async fn cmd_watch_tui(
@@ -519,7 +522,7 @@ async fn cmd_watch_tui(
         } else {
             IndexMode::RequireExisting
         };
-        if let Err(e) = sync::run_sync_with(
+        match sync::run_sync_with(
             &config,
             &state_path,
             &embedding,
@@ -529,9 +532,12 @@ async fn cmd_watch_tui(
             &mut cmd_rx,
             cycle,
         )
-        .await
-        {
-            tracing::error!(error = %e, "Sync cycle failed");
+        .await {
+            Ok(sync::EngineOutcome::Shutdown) => break,
+            Ok(sync::EngineOutcome::Continue) | Ok(sync::EngineOutcome::ResetCursor { .. }) => {}
+            Err(e) => {
+                tracing::error!(error = %e, "Sync cycle failed");
+            }
         }
         if purge_every > 0
             && cycle.is_multiple_of(purge_every)

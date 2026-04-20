@@ -238,7 +238,8 @@ pub async fn run_sync(
     run_sync_with(
         config, state_path, embedding, index_mode, embedder, max_docs, &mut rx, 1,
     )
-    .await
+    .await?;
+    Ok(())
 }
 
 /// Run a sync cycle while observing `cmd_rx` for TUI commands. The engine
@@ -254,7 +255,7 @@ pub async fn run_sync_with(
     max_docs: Option<u64>,
     cmd_rx: &mut mpsc::Receiver<UiCommand>,
     cycle: u64,
-) -> Result<()> {
+) -> Result<EngineOutcome> {
     setup_indexes(config, embedding, index_mode).await?;
     let azure = SearchClient::new(&config.azure.endpoint, &config.azure.api_key);
     let subs = subsources_by_source(config);
@@ -277,9 +278,9 @@ pub async fn run_sync_with(
                 duration_ms = cycle_start.elapsed().as_millis() as u64,
                 "Cycle shutdown"
             );
-            return Ok(());
+            return Ok(EngineOutcome::Shutdown);
         }
-        if let Err(e) = sync_source(
+        match sync_source(
             &azure,
             embedder,
             source_config,
@@ -290,16 +291,28 @@ pub async fn run_sync_with(
             cmd_rx,
             &mut paused,
         )
-        .await
-        {
-            let error_chain = format_error_chain(&e);
-            error!(
-                phase = phases::SOURCE_FAILED,
-                source = source_config.name(),
-                error = %error_chain,
-                "Sync failed for source"
-            );
-            failures.push(format!("{}: {}", source_config.name(), error_chain));
+        .await {
+            Ok(EngineOutcome::Shutdown) => {
+                tracing::info!(
+                    phase = phases::CYCLE_FINISHED,
+                    cycle = cycle,
+                    duration_ms = cycle_start.elapsed().as_millis() as u64,
+                    "Cycle shutdown"
+                );
+                return Ok(EngineOutcome::Shutdown);
+            }
+            Ok(EngineOutcome::Continue) => {}
+            Ok(EngineOutcome::ResetCursor { .. }) => {}
+            Err(e) => {
+                let error_chain = format_error_chain(&e);
+                error!(
+                    phase = phases::SOURCE_FAILED,
+                    source = source_config.name(),
+                    error = %error_chain,
+                    "Sync failed for source"
+                );
+                failures.push(format!("{}: {}", source_config.name(), error_chain));
+            }
         }
     }
 
@@ -317,7 +330,7 @@ pub async fn run_sync_with(
             failures.join(" | ")
         );
     }
-    Ok(())
+    Ok(EngineOutcome::Continue)
 }
 
 /// Purge orphaned documents from all configured indexes.
@@ -419,7 +432,7 @@ async fn sync_source(
     max_docs: Option<u64>,
     cmd_rx: &mut mpsc::Receiver<UiCommand>,
     paused: &mut bool,
-) -> Result<()> {
+) -> Result<EngineOutcome> {
     match source_config {
         SourceConfig::Jira(jira_config) => {
             let connector = JiraConnector::new(jira_config);
@@ -427,7 +440,6 @@ async fn sync_source(
                 azure, embedder, &connector, config, state, state_path, max_docs, cmd_rx, paused,
             )
             .await
-            .map(|_| ())
         }
         SourceConfig::Confluence(conf_config) => {
             let connector = ConfluenceConnector::new(conf_config);
@@ -435,7 +447,6 @@ async fn sync_source(
                 azure, embedder, &connector, config, state, state_path, max_docs, cmd_rx, paused,
             )
             .await
-            .map(|_| ())
         }
     }
 }
@@ -453,9 +464,19 @@ async fn sync_with_connector<C: SourceConnector>(
     paused: &mut bool,
 ) -> Result<EngineOutcome> {
     let source_name = connector.source_name();
-    info!(source = source_name, "Starting source");
+    let source_start = Instant::now();
+    let mut source_docs_synced = 0u64;
+
+    info!(phase = phases::SOURCE_STARTED, source = source_name, "Starting source");
 
     for subsource_key in connector.subsources() {
+        let previous_docs = state
+            .get_source(source_name)
+            .subsources
+            .get(subsource_key)
+            .map(|sub| sub.documents_synced)
+            .unwrap_or(0);
+
         // Command poll at subsource boundary
         match poll_commands(cmd_rx, paused).await {
             EngineOutcome::Shutdown => return Ok(EngineOutcome::Shutdown),
@@ -472,7 +493,7 @@ async fn sync_with_connector<C: SourceConnector>(
             _ => {}
         }
 
-        if let Err(e) = sync_single_subsource(
+        match sync_single_subsource(
             azure,
             embedder,
             connector,
@@ -484,23 +505,40 @@ async fn sync_with_connector<C: SourceConnector>(
             cmd_rx,
             paused,
         )
-        .await
-        {
-            error!(
-                phase = phases::SUBSOURCE_FAILED,
-                source = source_name,
-                subsource = subsource_key,
-                error = %e,
-                "Subsource failed"
-            );
-            // fall through to next subsource
+        .await {
+            Ok(EngineOutcome::Shutdown) => return Ok(EngineOutcome::Shutdown),
+            Ok(EngineOutcome::Continue) => {
+                let current_docs = state
+                    .get_source(source_name)
+                    .subsources
+                    .get(subsource_key)
+                    .map(|sub| sub.documents_synced)
+                    .unwrap_or(previous_docs);
+                source_docs_synced += current_docs.saturating_sub(previous_docs);
+            }
+            Ok(EngineOutcome::ResetCursor { .. }) => {}
+            Err(e) => {
+                error!(
+                    phase = phases::SUBSOURCE_FAILED,
+                    source = source_name,
+                    subsource = subsource_key,
+                    error = %e,
+                    "Subsource failed"
+                );
+            }
         }
     }
 
     state.complete_source_cycle(source_name);
     state.save(state_path).ok();
 
-    info!(source = source_name, "Finished source");
+    info!(
+        phase = phases::SOURCE_FINISHED,
+        source = source_name,
+        docs_synced = source_docs_synced,
+        duration_ms = source_start.elapsed().as_millis() as u64,
+        "Finished source"
+    );
     Ok(EngineOutcome::Continue)
 }
 
@@ -560,7 +598,7 @@ async fn sync_single_subsource<C: SourceConnector>(
     max_docs: Option<u64>,
     cmd_rx: &mut mpsc::Receiver<UiCommand>,
     paused: &mut bool,
-) -> Result<()> {
+) -> Result<EngineOutcome> {
     let source_name = connector.source_name();
     let index_name = connector.index_name();
 
@@ -596,7 +634,7 @@ async fn sync_single_subsource<C: SourceConnector>(
                     subsource = subsource,
                     "Shutdown mid-subsource"
                 );
-                return Ok(());
+                return Ok(EngineOutcome::Shutdown);
             }
             EngineOutcome::ResetCursor {
                 source: s,
@@ -768,7 +806,7 @@ async fn sync_single_subsource<C: SourceConnector>(
         "Subsource complete"
     );
 
-    Ok(())
+    Ok(EngineOutcome::Continue)
 }
 
 /// Embed a single document's content, retrying with progressively truncated text

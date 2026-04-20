@@ -3,7 +3,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Widget},
+    widgets::{Block, Borders, Paragraph, Widget, Wrap},
 };
 
 use crate::tui::app::{Focus, SourceState, SourceView, SubsourceState};
@@ -29,7 +29,27 @@ impl Widget for SourceCard<'_> {
         let inner = block.inner(area);
         block.render(area, buf);
 
-        let mut lines: Vec<Line> = vec![Line::from(state_line(&self.view.state))];
+        let total_docs: u64 = self
+            .view
+            .subsources
+            .iter()
+            .map(|sub| sub.docs_synced_total)
+            .sum();
+        let active_subsources = self
+            .view
+            .subsources
+            .iter()
+            .filter(|sub| matches!(sub.state, SubsourceState::Syncing))
+            .count();
+        let mut lines: Vec<Line> = vec![Line::from(vec![
+            state_line(&self.view.state),
+            Span::raw(format!(
+                "  {} subsources  {} active  {} docs total",
+                self.view.subsources.len(),
+                active_subsources,
+                total_docs
+            )),
+        ])];
         if !self.collapsed {
             for sub in &self.view.subsources {
                 let marker = if Some(sub.key.as_str()) == self.focused_subsource {
@@ -42,6 +62,12 @@ impl Widget for SourceCard<'_> {
                     SubsourceState::Syncing => "syncing",
                     SubsourceState::Error(_) => "error",
                 };
+                let last = sub
+                    .last_sample_id
+                    .as_deref()
+                    .map(str::to_string)
+                    .or_else(|| sub.last_cursor.map(|cursor| cursor.to_rfc3339()))
+                    .unwrap_or_else(|| "waiting".into());
                 lines.push(Line::from(vec![
                     Span::raw(format!("{marker} ")),
                     Span::styled(
@@ -49,15 +75,22 @@ impl Widget for SourceCard<'_> {
                         Style::default().add_modifier(Modifier::BOLD),
                     ),
                     Span::raw(format!(
-                        "  {}  +{} docs  last {}",
+                        "  {:8}  +{} docs  last {}",
                         status,
                         sub.docs_synced_total,
-                        sub.last_sample_id.as_deref().unwrap_or("-")
+                        last
                     )),
                 ]));
+                if !sub.last_errors.is_empty() {
+                    lines.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled("recent error: ", Style::default().fg(Color::Red)),
+                        Span::raw(sub.last_errors.back().cloned().unwrap_or_default()),
+                    ]));
+                }
             }
         }
-        Paragraph::new(lines).render(inner, buf);
+        Paragraph::new(lines).wrap(Wrap { trim: true }).render(inner, buf);
     }
 }
 

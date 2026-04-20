@@ -13,10 +13,11 @@ use anyhow::Result;
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::thread;
 use std::time::Duration;
 
-use crossterm::event::{self, Event, KeyEventKind};
+use crossterm::event::{self, Event, KeyEvent, KeyEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -31,7 +32,7 @@ use crate::sync::UiCommand;
 use self::app::App;
 use self::events::QuelchEvent;
 use self::input::{InputOutcome, InputState};
-use self::layout::{LayoutOptions, draw};
+use self::layout::draw;
 use self::prefs::Prefs;
 
 /// Restores the terminal on drop — even if a panic unwinds through run().
@@ -57,6 +58,53 @@ impl Drop for TerminalGuard {
     }
 }
 
+struct InputReader {
+    rx: mpsc::UnboundedReceiver<KeyEvent>,
+    stop: Arc<AtomicBool>,
+    handle: Option<thread::JoinHandle<()>>,
+}
+
+impl InputReader {
+    fn spawn() -> Self {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_flag = stop.clone();
+
+        let handle = thread::spawn(move || {
+            while !stop_flag.load(Ordering::Relaxed) {
+                match event::poll(Duration::from_millis(100)) {
+                    Ok(true) => match event::read() {
+                        Ok(Event::Key(key)) if key.kind == KeyEventKind::Press => {
+                            if tx.send(key).is_err() {
+                                break;
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(_) => break,
+                    },
+                    Ok(false) => {}
+                    Err(_) => break,
+                }
+            }
+        });
+
+        Self {
+            rx,
+            stop,
+            handle: Some(handle),
+        }
+    }
+}
+
+impl Drop for InputReader {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
 /// Entry point: runs the TUI until Shutdown or Ctrl-C.
 pub async fn run(
     config: Config,
@@ -70,54 +118,49 @@ pub async fn run(
 
     let _guard = TerminalGuard::new()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
+    terminal.clear()?;
     let mut input_state = InputState::default();
+    let mut input_reader = InputReader::spawn();
 
-    let mut interval = tokio::time::interval(Duration::from_millis(200));
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut frame_clock = tokio::time::interval(Duration::from_millis(125));
+    frame_clock.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    app.drops = drops_counter.load(Ordering::Relaxed);
+    terminal.draw(|f| draw(f, &app))?;
 
     loop {
         tokio::select! {
-            _ = interval.tick() => {
-                while let Ok(ev) = events_rx.try_recv() {
-                    app.apply(ev);
+            _ = frame_clock.tick() => {
+                app.drops = drops_counter.load(Ordering::Relaxed);
+                terminal.draw(|f| draw(f, &app))?;
+            }
+            Some(ev) = events_rx.recv() => {
+                app.apply(ev);
+                while let Ok(next) = events_rx.try_recv() {
+                    app.apply(next);
                 }
                 app.drops = drops_counter.load(Ordering::Relaxed);
-                let focused_source = app.sources.first().map(|s| s.name.clone());
-                let focused_sub = app
-                    .sources
-                    .first()
-                    .and_then(|s| s.subsources.first().map(|x| x.key.clone()));
-                terminal.draw(|f| {
-                    draw(
-                        f,
-                        &app,
-                        LayoutOptions {
-                            focused_source: focused_source.as_deref(),
-                            focused_subsource: focused_sub.as_deref(),
-                        },
-                    );
-                })?;
-                if event::poll(Duration::from_millis(0))?
-                    && let Event::Key(key) = event::read()?
-                    && key.kind == KeyEventKind::Press
-                {
-                    match input_state.on_key(
-                        key,
-                        &mut app,
-                        focused_source.as_deref(),
-                        focused_sub.as_deref(),
-                    ) {
-                        InputOutcome::Quit => {
-                            let _ = cmd_tx.send(UiCommand::Shutdown).await;
-                            app.prefs.save(&prefs_path).ok();
-                            return Ok(());
-                        }
-                        InputOutcome::Command(cmd) => {
-                            let _ = cmd_tx.send(cmd).await;
-                        }
-                        InputOutcome::None => {}
+                terminal.draw(|f| draw(f, &app))?;
+            }
+            Some(key) = input_reader.rx.recv() => {
+                match input_state.on_key(key, &mut app) {
+                    InputOutcome::Quit => {
+                        app.status = app::EngineStatus::Shutdown;
+                        app.footer = "Shutting down after the current batch boundary".into();
+                        let _ = cmd_tx.send(UiCommand::Shutdown).await;
+                        app.prefs.save(&prefs_path).ok();
+                        return Ok(());
                     }
+                    InputOutcome::Command(cmd) => {
+                        let _ = cmd_tx.send(cmd).await;
+                    }
+                    InputOutcome::None => {}
                 }
+                app.drops = drops_counter.load(Ordering::Relaxed);
+                terminal.draw(|f| draw(f, &app))?;
+            }
+            else => {
+                app.prefs.save(&prefs_path).ok();
+                return Ok(());
             }
         }
     }
@@ -161,14 +204,7 @@ mod smoke_tests {
         let app = App::new(&cfg, Prefs::default());
         let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
         term.draw(|f| {
-            draw(
-                f,
-                &app,
-                LayoutOptions {
-                    focused_source: Some("j"),
-                    focused_subsource: Some("DO"),
-                },
-            );
+            draw(f, &app);
         })
         .unwrap();
     }

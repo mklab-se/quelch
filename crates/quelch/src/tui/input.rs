@@ -24,8 +24,6 @@ impl InputState {
         &mut self,
         key: KeyEvent,
         app: &mut App,
-        focused_source: Option<&str>,
-        focused_sub: Option<&str>,
     ) -> InputOutcome {
         let is_shift = key.modifiers.contains(KeyModifiers::SHIFT);
         match key.code {
@@ -38,13 +36,34 @@ impl InputState {
                     Focus::Sources => Focus::Azure,
                     Focus::Azure => Focus::Sources,
                 };
+                app.prefs.focus = match app.focus {
+                    Focus::Sources => "sources".into(),
+                    Focus::Azure => "azure".into(),
+                };
+            }
+            KeyCode::Down => {
+                if matches!(app.focus, Focus::Sources) {
+                    app.move_selection_down();
+                }
+            }
+            KeyCode::Up => {
+                if matches!(app.focus, Focus::Sources) {
+                    app.move_selection_up();
+                }
+            }
+            KeyCode::Left => {
+                if matches!(app.focus, Focus::Sources) {
+                    app.move_selection_left();
+                }
+            }
+            KeyCode::Right => {
+                if matches!(app.focus, Focus::Sources) {
+                    app.move_selection_right();
+                }
             }
             KeyCode::Char(' ') | KeyCode::Enter => {
-                if let Some(src) = focused_source {
-                    match focused_sub {
-                        Some(sub) => app.prefs.toggle_subsource_collapsed(src, sub),
-                        None => app.prefs.toggle_source_collapsed(src),
-                    }
+                if matches!(app.focus, Focus::Sources) {
+                    app.toggle_selected_collapsed();
                 }
             }
             KeyCode::Char('s') => {
@@ -65,10 +84,10 @@ impl InputState {
             }
             KeyCode::Char('R') => {
                 if self.armed('R') {
-                    if let Some(src) = focused_source {
+                    if let Some(src) = app.focused_source_name() {
                         return InputOutcome::Command(UiCommand::ResetCursor {
                             source: src.to_string(),
-                            subsource: focused_sub.map(str::to_string),
+                            subsource: app.focused_subsource_name().map(str::to_string),
                         });
                     }
                 } else {
@@ -78,7 +97,7 @@ impl InputState {
             }
             KeyCode::Char('P') => {
                 if self.armed('P') {
-                    if let Some(src) = focused_source {
+                    if let Some(src) = app.focused_source_name() {
                         return InputOutcome::Command(UiCommand::PurgeNow {
                             source: src.to_string(),
                         });
@@ -153,9 +172,9 @@ mod tests {
         let mut state = InputState::default();
         let mut app = make_app();
         let key = KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE);
-        state.on_key(key, &mut app, Some("j"), None);
+        state.on_key(key, &mut app);
         assert!(app.prefs.is_source_collapsed("j"));
-        state.on_key(key, &mut app, Some("j"), None);
+        state.on_key(key, &mut app);
         assert!(!app.prefs.is_source_collapsed("j"));
     }
 
@@ -164,7 +183,7 @@ mod tests {
         let mut state = InputState::default();
         let mut app = make_app();
         let key = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE);
-        state.on_key(key, &mut app, Some("j"), None);
+        state.on_key(key, &mut app);
         assert!(app.prefs.log_view_on);
     }
 
@@ -173,15 +192,27 @@ mod tests {
         let mut state = InputState::default();
         let mut app = make_app();
         let shift_r = KeyEvent::new(KeyCode::Char('R'), KeyModifiers::SHIFT);
-        match state.on_key(shift_r, &mut app, Some("j"), None) {
+        match state.on_key(shift_r, &mut app) {
             InputOutcome::None => {}
             other => panic!("expected arm first, got {other:?}"),
         }
-        match state.on_key(shift_r, &mut app, Some("j"), None) {
+        match state.on_key(shift_r, &mut app) {
             InputOutcome::Command(UiCommand::ResetCursor { source, .. }) => {
                 assert_eq!(source, "j");
             }
             other => panic!("expected ResetCursor, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn arrows_move_selection() {
+        let mut state = InputState::default();
+        let mut app = make_app();
+
+        state.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &mut app);
+        assert_eq!(app.focused_subsource_name(), Some("DO"));
+
+        state.on_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE), &mut app);
+        assert_eq!(app.focused_subsource_name(), None);
     }
 }

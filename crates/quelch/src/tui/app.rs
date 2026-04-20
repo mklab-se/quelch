@@ -66,6 +66,8 @@ pub struct App {
     pub footer: String,
     pub log_tail: VecDeque<LogLine>,
     pub drops: u64,
+    pub selected_source: usize,
+    pub selected_subsource: Option<usize>,
 }
 
 pub struct LogLine {
@@ -110,12 +112,18 @@ impl App {
         Self {
             sources,
             azure: AzurePanel::default(),
+            focus: if prefs.focus.eq_ignore_ascii_case("azure") {
+                Focus::Azure
+            } else {
+                Focus::Sources
+            },
             prefs,
             status: EngineStatus::Idle,
-            focus: Focus::Sources,
-            footer: String::new(),
+            footer: "Waiting for sync activity. Use arrows to inspect sources, s to toggle logs, q to quit.".into(),
             log_tail: VecDeque::with_capacity(LOG_CAP),
             drops: 0,
+            selected_source: 0,
+            selected_subsource: None,
         }
     }
 
@@ -123,9 +131,33 @@ impl App {
         match ev {
             QuelchEvent::CycleStarted { cycle, at } => {
                 self.status = EngineStatus::Syncing { cycle, since: at };
+                self.footer = format!("Cycle {cycle} started");
             }
-            QuelchEvent::CycleFinished { .. } => {
-                self.status = EngineStatus::Idle;
+            QuelchEvent::CycleFinished { cycle, duration } => {
+                if !matches!(self.status, EngineStatus::Paused | EngineStatus::Shutdown) {
+                    self.status = EngineStatus::Idle;
+                }
+                self.footer = format!(
+                    "Cycle {cycle} finished in {:.1}s",
+                    duration.as_secs_f32()
+                );
+            }
+            QuelchEvent::SourceStarted { source } => {
+                if let Some(src) = self.find_source_mut(&source) {
+                    src.state = SourceState::Syncing;
+                }
+                self.footer = format!("Syncing source {source}");
+            }
+            QuelchEvent::SourceFinished {
+                source,
+                docs_synced,
+                duration,
+            } => {
+                self.recompute_source_state(&source);
+                self.footer = format!(
+                    "Finished {source}, synced {docs_synced} docs in {:.1}s",
+                    duration.as_secs_f32()
+                );
             }
             QuelchEvent::SubsourceStarted { source, subsource } => {
                 if let Some(sub) = self.find_subsource_mut(&source, &subsource) {
@@ -134,6 +166,7 @@ impl App {
                 if let Some(src) = self.find_source_mut(&source) {
                     src.state = SourceState::Syncing;
                 }
+                self.footer = format!("Syncing {source}/{subsource}");
             }
             QuelchEvent::SubsourceFinished {
                 source,
@@ -144,6 +177,8 @@ impl App {
                     sub.state = SubsourceState::Idle;
                     sub.last_cursor = Some(cursor);
                 }
+                self.recompute_source_state(&source);
+                self.footer = format!("Finished {source}/{subsource}");
             }
             QuelchEvent::SubsourceBatch {
                 source,
@@ -157,6 +192,7 @@ impl App {
                     sub.last_sample_id = Some(sample_id);
                     sub.throughput.add(Instant::now(), fetched);
                 }
+                self.footer = format!("{source}/{subsource}: pushed {fetched} docs");
             }
             QuelchEvent::SubsourceFailed {
                 source,
@@ -170,6 +206,8 @@ impl App {
                     }
                     sub.last_errors.push_back(error);
                 }
+                self.recompute_source_state(&source);
+                self.footer = format!("error: {source}/{subsource} failed");
             }
             QuelchEvent::SourceFailed { source, error } => {
                 if let Some(src) = self.find_source_mut(&source) {
@@ -185,6 +223,20 @@ impl App {
             } => {
                 self.azure.on_response(at, status, latency, throttled);
             }
+            QuelchEvent::BackoffStarted {
+                source,
+                until,
+                reason,
+            } => {
+                if let Some(src) = self.find_source_mut(&source) {
+                    src.state = SourceState::Backoff { until };
+                }
+                self.footer = format!("{source} backing off: {reason}");
+            }
+            QuelchEvent::BackoffFinished { source } => {
+                self.recompute_source_state(&source);
+                self.footer = format!("{source} resumed after backoff");
+            }
             QuelchEvent::Log {
                 level,
                 target,
@@ -198,11 +250,171 @@ impl App {
                     ts,
                     level,
                     target,
-                    message,
+                    message: if message.is_empty() {
+                        "event".into()
+                    } else {
+                        message
+                    },
                 });
+            }
+            QuelchEvent::AzureRequest { .. } | QuelchEvent::DocSynced { .. } | QuelchEvent::DocFailed { .. } => {}
+        }
+
+        self.ensure_valid_selection();
+    }
+
+    pub fn focused_source_name(&self) -> Option<&str> {
+        self.sources.get(self.selected_source).map(|source| source.name.as_str())
+    }
+
+    pub fn focused_subsource_name(&self) -> Option<&str> {
+        let source = self.sources.get(self.selected_source)?;
+        let sub_idx = self.selected_subsource?;
+        source.subsources.get(sub_idx).map(|sub| sub.key.as_str())
+    }
+
+    pub fn move_selection_down(&mut self) {
+        self.ensure_valid_selection();
+
+        let Some(source) = self.sources.get(self.selected_source) else {
+            return;
+        };
+
+        let source_is_collapsed = self.prefs.is_source_collapsed(&source.name);
+        match self.selected_subsource {
+            Some(sub_idx) if sub_idx + 1 < source.subsources.len() => {
+                self.selected_subsource = Some(sub_idx + 1);
+            }
+            Some(_) | None if self.selected_source + 1 < self.sources.len() => {
+                if self.selected_subsource.is_none()
+                    && !source_is_collapsed
+                    && !source.subsources.is_empty()
+                {
+                    self.selected_subsource = Some(0);
+                } else {
+                    self.selected_source += 1;
+                    self.selected_subsource = None;
+                }
+            }
+            None if !source_is_collapsed && !source.subsources.is_empty() => {
+                self.selected_subsource = Some(0);
             }
             _ => {}
         }
+    }
+
+    pub fn move_selection_up(&mut self) {
+        self.ensure_valid_selection();
+
+        match self.selected_subsource {
+            Some(sub_idx) if sub_idx > 0 => {
+                self.selected_subsource = Some(sub_idx - 1);
+            }
+            Some(_) => {
+                self.selected_subsource = None;
+            }
+            None if self.selected_source > 0 => {
+                self.selected_source -= 1;
+                let prev = &self.sources[self.selected_source];
+                if !self.prefs.is_source_collapsed(&prev.name) && !prev.subsources.is_empty() {
+                    self.selected_subsource = Some(prev.subsources.len() - 1);
+                }
+            }
+            None => {}
+        }
+    }
+
+    pub fn move_selection_left(&mut self) {
+        self.ensure_valid_selection();
+
+        if self.selected_subsource.is_some() {
+            self.selected_subsource = None;
+            return;
+        }
+
+        if let Some(source) = self.focused_source_name().map(str::to_string)
+            && !self.prefs.is_source_collapsed(&source)
+        {
+            self.prefs.toggle_source_collapsed(&source);
+        }
+    }
+
+    pub fn move_selection_right(&mut self) {
+        self.ensure_valid_selection();
+
+        if self.selected_subsource.is_some() {
+            return;
+        }
+
+        let Some(source) = self.sources.get(self.selected_source) else {
+            return;
+        };
+
+        if self.prefs.is_source_collapsed(&source.name) {
+            self.prefs.toggle_source_collapsed(&source.name);
+        } else if !source.subsources.is_empty() {
+            self.selected_subsource = Some(0);
+        }
+    }
+
+    pub fn toggle_selected_collapsed(&mut self) {
+        self.ensure_valid_selection();
+
+        let Some(source_name) = self.focused_source_name().map(str::to_string) else {
+            return;
+        };
+
+        match self.focused_subsource_name().map(str::to_string) {
+            Some(subsource_name) => self
+                .prefs
+                .toggle_subsource_collapsed(&source_name, &subsource_name),
+            None => self.prefs.toggle_source_collapsed(&source_name),
+        }
+    }
+
+    pub fn selected_source_total_docs(&self, source_name: &str) -> u64 {
+        self.sources
+            .iter()
+            .find(|source| source.name == source_name)
+            .map(|source| source.subsources.iter().map(|sub| sub.docs_synced_total).sum())
+            .unwrap_or(0)
+    }
+
+    fn ensure_valid_selection(&mut self) {
+        if self.sources.is_empty() {
+            self.selected_source = 0;
+            self.selected_subsource = None;
+            return;
+        }
+
+        self.selected_source = self.selected_source.min(self.sources.len() - 1);
+        let sub_len = self.sources[self.selected_source].subsources.len();
+        self.selected_subsource = self.selected_subsource.filter(|idx| *idx < sub_len);
+    }
+
+    fn recompute_source_state(&mut self, source_name: &str) {
+        let Some(source) = self.find_source_mut(source_name) else {
+            return;
+        };
+
+        if matches!(source.state, SourceState::Backoff { .. }) {
+            return;
+        }
+
+        source.state = if source
+            .subsources
+            .iter()
+            .any(|sub| matches!(sub.state, SubsourceState::Syncing))
+        {
+            SourceState::Syncing
+        } else if let Some(error) = source.subsources.iter().find_map(|sub| match &sub.state {
+            SubsourceState::Error(error) => Some(error.clone()),
+            _ => None,
+        }) {
+            SourceState::Error(error)
+        } else {
+            SourceState::Idle
+        };
     }
 
     fn find_source_mut(&mut self, name: &str) -> Option<&mut SourceView> {
@@ -260,5 +472,25 @@ mod tests {
         let s = &a.sources[0].subsources[0];
         assert_eq!(s.docs_synced_total, 5);
         assert_eq!(s.last_sample_id.as_deref(), Some("DO-1"));
+    }
+
+    #[test]
+    fn arrow_navigation_walks_visible_tree() {
+        let mut a = App::new(&cfg(), Prefs::default());
+
+        assert_eq!(a.focused_source_name(), Some("my-jira"));
+        assert_eq!(a.focused_subsource_name(), None);
+
+        a.move_selection_down();
+        assert_eq!(a.focused_subsource_name(), Some("DO"));
+
+        a.move_selection_down();
+        assert_eq!(a.focused_subsource_name(), Some("HR"));
+
+        a.move_selection_up();
+        assert_eq!(a.focused_subsource_name(), Some("DO"));
+
+        a.move_selection_left();
+        assert_eq!(a.focused_subsource_name(), None);
     }
 }

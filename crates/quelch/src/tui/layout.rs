@@ -3,39 +3,35 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     text::Line,
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph, Widget},
 };
 
 use super::app::{App, EngineStatus, Focus};
 use super::widgets::{azure_panel::AzurePanelWidget, log_view::LogView, source_card::SourceCard};
 
-pub struct LayoutOptions<'a> {
-    pub focused_source: Option<&'a str>,
-    pub focused_subsource: Option<&'a str>,
-}
-
-pub fn draw(f: &mut Frame, app: &App, opts: LayoutOptions) {
+pub fn draw(f: &mut Frame, app: &App) {
     let areas = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),
-            Constraint::Min(10),
-            Constraint::Length(6),
-            Constraint::Length(1),
+            Constraint::Length(2),
+            Constraint::Min(12),
+            Constraint::Length(7),
+            Constraint::Length(2),
         ])
         .split(f.area());
 
+    f.render_widget(Clear, f.area());
     draw_header(f, areas[0], app);
     if app.prefs.log_view_on {
         f.render_widget(
             LogView {
-                lines: app.log_tail.as_slices().0,
+                lines: &app.log_tail,
                 focused: matches!(app.focus, Focus::Sources),
             },
             areas[1],
         );
     } else {
-        draw_sources(f, areas[1], app, opts);
+        draw_sources(f, areas[1], app);
     }
     f.render_widget(
         AzurePanelWidget {
@@ -55,21 +51,35 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         EngineStatus::Paused => "⏸ paused".to_string(),
         EngineStatus::Shutdown => "⏹ shutdown".to_string(),
     };
+    let selected = match (app.focused_source_name(), app.focused_subsource_name()) {
+        (Some(source), Some(subsource)) => format!("selected {source}/{subsource}"),
+        (Some(source), None) => format!("selected {source}"),
+        _ => "no sources".into(),
+    };
     f.render_widget(
         Paragraph::new(Line::from(format!(
-            " quelch v{}  {status}",
+            " quelch v{}  {status}  {selected}",
             env!("CARGO_PKG_VERSION")
-        ))),
+        )))
+        .style(Style::default().fg(Color::White)),
         area,
     );
 }
 
-fn draw_sources(f: &mut Frame, area: Rect, app: &App, opts: LayoutOptions) {
+fn draw_sources(f: &mut Frame, area: Rect, app: &App) {
+    let outer = Block::default()
+        .borders(Borders::ALL)
+        .border_style(if matches!(app.focus, Focus::Sources) {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        })
+        .title("Sources");
+    let inner = outer.inner(area);
+    outer.render(area, f.buffer_mut());
+
     if app.sources.is_empty() {
-        f.render_widget(
-            Block::default().borders(Borders::ALL).title("Sources"),
-            area,
-        );
+        f.render_widget(Paragraph::new("No sources configured"), inner);
         return;
     }
     let rows: Vec<(&crate::tui::app::SourceView, bool, u16)> = app
@@ -92,17 +102,20 @@ fn draw_sources(f: &mut Frame, area: Rect, app: &App, opts: LayoutOptions) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
-        .split(area);
+        .split(inner);
 
     for ((view, collapsed, _), rect) in rows.iter().zip(chunks.iter()) {
-        let focused_here = opts.focused_source.map(|n| n == view.name).unwrap_or(false);
+        let focused_here = app
+            .focused_source_name()
+            .map(|name| name == view.name)
+            .unwrap_or(false);
         f.render_widget(
             SourceCard {
                 view,
                 collapsed: *collapsed,
                 focused: focused_here,
                 focused_subsource: if focused_here {
-                    opts.focused_subsource
+                    app.focused_subsource_name()
                 } else {
                     None
                 },
@@ -114,12 +127,16 @@ fn draw_sources(f: &mut Frame, area: Rect, app: &App, opts: LayoutOptions) {
 
 fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
     let msg = if app.footer.is_empty() {
-        " q quit  space collapse  r sync-now  p pause  s logs  tab focus  ? help".to_string()
+        " arrows move  enter collapse  r sync-now  p pause  s logs  tab focus  q quit".to_string()
     } else {
         format!(" {}", app.footer)
     };
     f.render_widget(
-        Paragraph::new(Line::from(msg)).style(Style::default().fg(Color::Gray)),
+        Paragraph::new(vec![
+            Line::from(msg),
+            Line::from(" q quit  arrows move  enter collapse  r sync-now  p pause  s logs  tab focus"),
+        ])
+        .style(Style::default().fg(Color::Gray)),
         area,
     );
 }
@@ -156,14 +173,7 @@ mod tests {
         let app = App::new(&cfg(), Prefs::default());
         let mut term = ratatui::Terminal::new(TestBackend::new(80, 24)).unwrap();
         term.draw(|f| {
-            draw(
-                f,
-                &app,
-                LayoutOptions {
-                    focused_source: Some("j"),
-                    focused_subsource: Some("DO"),
-                },
-            );
+            draw(f, &app);
         })
         .unwrap();
     }

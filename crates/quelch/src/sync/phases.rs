@@ -4,6 +4,8 @@
 
 pub const CYCLE_STARTED: &str = "cycle_started";
 pub const CYCLE_FINISHED: &str = "cycle_finished";
+pub const SOURCE_STARTED: &str = "source_started";
+pub const SOURCE_FINISHED: &str = "source_finished";
 pub const SOURCE_FAILED: &str = "source_failed";
 pub const SUBSOURCE_STARTED: &str = "subsource_started";
 pub const SUBSOURCE_FINISHED: &str = "subsource_finished";

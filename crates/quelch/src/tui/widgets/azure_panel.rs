@@ -47,12 +47,14 @@ impl Widget for AzurePanelWidget<'_> {
             .bar_set(symbols::bar::NINE_LEVELS)
             .style(Style::default().fg(Color::Green));
         req.render(chunks[0], buf);
+        Paragraph::new(Line::from("req/s, last 60s")).render(chunks[0], buf);
 
         let err = Sparkline::default()
             .data(&err_samples)
             .bar_set(symbols::bar::NINE_LEVELS)
             .style(Style::default().fg(Color::Red));
         err.render(chunks[1], buf);
+        Paragraph::new(Line::from("5xx/s, last 60s")).render(chunks[1], buf);
 
         let counters = format!(
             "total {}  p50 {}ms  p95 {}ms  4xx {}  5xx {}  throttled {}  drops {}",
@@ -64,6 +66,11 @@ impl Widget for AzurePanelWidget<'_> {
             self.panel.count_throttled,
             self.drops
         );
-        Paragraph::new(Line::from(counters)).render(chunks[2], buf);
+        Paragraph::new(Line::from(if self.panel.total == 0 {
+            "No Azure AI Search traffic yet".into()
+        } else {
+            counters
+        }))
+        .render(chunks[2], buf);
     }
 }

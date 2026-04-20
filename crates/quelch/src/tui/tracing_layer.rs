@@ -103,6 +103,7 @@ struct FieldVisitor {
     latency_ms: Option<u64>,
     throttled: Option<u64>,
     cycle: Option<u64>,
+    docs_synced: Option<u64>,
     duration_ms: Option<u64>,
     message: Option<String>,
     error: Option<String>,
@@ -132,6 +133,7 @@ impl tracing::field::Visit for FieldVisitor {
             "latency_ms" => self.latency_ms = Some(value),
             "throttled" => self.throttled = Some(value),
             "cycle" => self.cycle = Some(value),
+            "docs_synced" => self.docs_synced = Some(value),
             "duration_ms" => self.duration_ms = Some(value),
             _ => {}
         }
@@ -164,6 +166,16 @@ where
             Some(p) if p == phases::CYCLE_FINISHED => Some(QuelchEvent::CycleFinished {
                 cycle: v.cycle.unwrap_or(0),
                 duration: Duration::from_millis(v.duration_ms.unwrap_or(0)),
+            }),
+            Some(p) if p == phases::SOURCE_STARTED => {
+                v.source.clone().map(|source| QuelchEvent::SourceStarted { source })
+            }
+            Some(p) if p == phases::SOURCE_FINISHED => v.source.clone().map(|source| {
+                QuelchEvent::SourceFinished {
+                    source,
+                    docs_synced: v.docs_synced.unwrap_or(0),
+                    duration: Duration::from_millis(v.duration_ms.unwrap_or(0)),
+                }
             }),
             Some(p) if p == phases::SUBSOURCE_STARTED => {
                 v.source.clone().zip(v.subsource.clone()).map(|(s, ss)| {
@@ -326,6 +338,40 @@ mod tests {
                 assert_eq!(subsource, "ss");
                 assert_eq!(fetched, 5);
                 assert_eq!(sample_id, "id-1");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn source_finished_event_roundtrips_through_tracing() {
+        use crate::sync::phases;
+
+        let (layer, mut rx, _drops) = layer_and_receiver();
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let _g = tracing::subscriber::set_default(subscriber);
+
+        tracing::info!(
+            phase = phases::SOURCE_FINISHED,
+            source = "s",
+            docs_synced = 9u64,
+            duration_ms = 25u64,
+            "done"
+        );
+
+        let ev = tokio::time::timeout(Duration::from_millis(200), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        match ev {
+            QuelchEvent::SourceFinished {
+                source,
+                docs_synced,
+                duration,
+            } => {
+                assert_eq!(source, "s");
+                assert_eq!(docs_synced, 9);
+                assert_eq!(duration, Duration::from_millis(25));
             }
             other => panic!("wrong variant: {other:?}"),
         }
