@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path as AxumPath, State},
+    extract::{Path as AxumPath, Query, State},
     http::StatusCode,
     response::{IntoResponse, Json},
 };
@@ -185,6 +185,68 @@ pub(super) async fn azure_index_docs_list(
     };
     let values: Vec<Value> = store.docs.keys().map(|id| json!({ "id": id })).collect();
     (StatusCode::OK, Json(json!({ "value": values }))).into_response()
+}
+
+/// GET /azure/indexes/{name}/docs/$count — plain-text doc count, with
+/// optional `$filter=field eq 'value'` (joined by ` and `). Returns the
+/// number as a bare integer in the response body, matching Azure's
+/// real contract.
+#[derive(Debug, Deserialize)]
+pub(super) struct CountParams {
+    #[serde(rename = "$filter")]
+    filter: Option<String>,
+}
+
+pub(super) async fn azure_index_docs_count(
+    State(state): State<SharedState>,
+    AxumPath(name): AxumPath<String>,
+    Query(params): Query<CountParams>,
+) -> impl IntoResponse {
+    if let Some(status) = consume_fault(&state) {
+        return (StatusCode::from_u16(status).unwrap(), String::new()).into_response();
+    }
+    let s = state.lock().unwrap();
+    let store = match s.azure.indexes.get(&name) {
+        Some(v) => v,
+        None => return (StatusCode::NOT_FOUND, String::from("0")).into_response(),
+    };
+    let filters = params
+        .filter
+        .as_deref()
+        .map(parse_simple_filter)
+        .unwrap_or_default();
+    let count = store
+        .docs
+        .values()
+        .filter(|doc| {
+            filters
+                .iter()
+                .all(|(field, value)| doc_field_eq(doc, field, value))
+        })
+        .count();
+    (StatusCode::OK, count.to_string()).into_response()
+}
+
+/// Parse a tiny subset of OData `$filter` — just `field eq 'value'` clauses
+/// joined by ` and `. Any other expression returns an empty filter (matches
+/// everything), which is safer than failing the mock for unrecognised syntax.
+fn parse_simple_filter(expr: &str) -> Vec<(String, String)> {
+    expr.split(" and ")
+        .filter_map(|clause| {
+            let clause = clause.trim();
+            let (field, rest) = clause.split_once(" eq ")?;
+            let rest = rest.trim();
+            let value = rest.strip_prefix('\'')?.strip_suffix('\'')?;
+            Some((field.trim().to_string(), value.to_string()))
+        })
+        .collect()
+}
+
+fn doc_field_eq(doc: &Value, field: &str, value: &str) -> bool {
+    doc.get(field)
+        .and_then(|v| v.as_str())
+        .map(|s| s == value)
+        .unwrap_or(false)
 }
 
 #[derive(Debug, Deserialize)]

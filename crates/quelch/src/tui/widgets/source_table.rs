@@ -1,14 +1,17 @@
-//! Sources pane: one row per source + one per subsource. Every column is
-//! keyed to what *actually landed in Azure AI Search* — never to what was
-//! merely fetched from Jira/Confluence. Columns: Source · Stage · Pushed
-//! · Per min · Latest ID · Pushed at.
+//! Sources pane. Every cell is keyed to destination-side truth — what
+//! actually landed in Azure AI Search — with a live badge while a push is
+//! in flight so the number is understood as "authoritative + in-flight"
+//! rather than "frozen". Columns: Source · Stage · Pushed · Per min ·
+//! Latest ID · Pushed at.
 
-use chrono::Utc;
+use std::time::Instant;
+
+use chrono::{DateTime, Local, Utc};
 use ratatui::{
     buffer::Buffer,
     layout::{Alignment, Constraint, Rect},
     style::{Color, Modifier, Style},
-    text::Text,
+    text::{Line, Span, Text},
     widgets::{Cell, Row, Table, Widget},
 };
 
@@ -21,6 +24,7 @@ pub struct SourceTable<'a> {
 
 impl Widget for SourceTable<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        let now = Instant::now();
         let mut rows: Vec<Row> = vec![header_row(), rule_row()];
 
         let sel_src = self.app.selected_source;
@@ -34,6 +38,7 @@ impl Widget for SourceTable<'_> {
                 collapsed,
                 is_src_selected,
                 self.app.spinner_glyph(),
+                now,
             ));
 
             if !collapsed {
@@ -43,6 +48,7 @@ impl Widget for SourceTable<'_> {
                         sub,
                         is_sub_selected,
                         self.app.spinner_glyph(),
+                        now,
                     ));
                 }
             }
@@ -51,10 +57,10 @@ impl Widget for SourceTable<'_> {
         let widths = [
             Constraint::Length(22),
             Constraint::Length(20),
-            Constraint::Length(9),
+            Constraint::Length(11), // number + optional live dot
             Constraint::Length(9),
             Constraint::Min(24),
-            Constraint::Length(12),
+            Constraint::Length(20),
         ];
 
         Table::new(rows, widths).column_spacing(1).render(area, buf);
@@ -68,7 +74,7 @@ fn header_row() -> Row<'static> {
         Cell::from(Text::from("Pushed").alignment(Alignment::Right)),
         Cell::from(Text::from("Per min").alignment(Alignment::Right)),
         Cell::from("Latest ID"),
-        Cell::from("Pushed at"),
+        Cell::from("Pushed at (local)"),
     ])
     .style(Style::default().fg(Color::DarkGray))
 }
@@ -77,25 +83,38 @@ fn rule_row() -> Row<'static> {
     Row::new(vec![
         Cell::from("──────────────────────"),
         Cell::from("────────────────────"),
-        Cell::from("─────────"),
+        Cell::from("───────────"),
         Cell::from("─────────"),
         Cell::from("────────────────────────"),
-        Cell::from("────────────"),
+        Cell::from("────────────────────"),
     ])
     .style(Style::default().fg(Color::DarkGray))
 }
 
-fn source_row(src: &SourceView, collapsed: bool, selected: bool, spin: char) -> Row<'static> {
+fn source_row(
+    src: &SourceView,
+    collapsed: bool,
+    selected: bool,
+    spin: char,
+    now: Instant,
+) -> Row<'static> {
     let name_col = format!(
         "{arrow} {name}",
         arrow = if collapsed { "▸" } else { "▾" },
         name = src.name,
     );
-    let pushed_total: u64 = src.subsources.iter().map(|s| s.pushed_total).sum();
+    // Prefer the authoritative source-level index count; fall back to summing
+    // per-subsource counts (+ session deltas) during the brief window before
+    // the first count query returns.
+    let sum_subs: u64 = src.subsources.iter().map(|s| s.displayed_pushed()).sum();
+    let pushed_display = src
+        .index_count
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| sum_subs.to_string());
     let pushes_per_min: u64 = src
         .subsources
         .iter()
-        .map(|s| s.push_throughput.samples().iter().sum::<u64>())
+        .map(|s| s.push_throughput.per_minute_at(now))
         .sum();
     let latest = src
         .subsources
@@ -104,14 +123,15 @@ fn source_row(src: &SourceView, collapsed: bool, selected: bool, spin: char) -> 
         .max_by_key(|(ts, _)| *ts)
         .map(|(_, id)| id.clone());
     let latest_ts = src.subsources.iter().filter_map(|s| s.last_pushed_at).max();
+    let any_live = src.subsources.iter().any(|s| s.is_live());
 
     let row = Row::new(vec![
         Cell::from(name_col).style(Style::default().add_modifier(Modifier::BOLD)),
         Cell::from(format_source_state(&src.state, spin)),
-        Cell::from(Text::from(pushed_total.to_string()).alignment(Alignment::Right)),
+        Cell::from(pushed_cell(pushed_display, any_live)),
         Cell::from(Text::from(pushes_per_min.to_string()).alignment(Alignment::Right)),
         Cell::from(latest.unwrap_or_else(|| "—".into())),
-        Cell::from(latest_ts.map(format_relative).unwrap_or_else(|| "—".into())),
+        Cell::from(latest_ts.map(format_local_ts).unwrap_or_else(|| "—".into())),
     ]);
     if selected {
         row.style(Style::default().add_modifier(Modifier::REVERSED))
@@ -120,19 +140,22 @@ fn source_row(src: &SourceView, collapsed: bool, selected: bool, spin: char) -> 
     }
 }
 
-fn subsource_row(sub: &SubsourceView, selected: bool, spin: char) -> Row<'static> {
+fn subsource_row(sub: &SubsourceView, selected: bool, spin: char, now: Instant) -> Row<'static> {
     let name_col = format!("    {name}", name = sub.key);
-    let pushes_per_min: u64 = sub.push_throughput.samples().iter().sum();
+    let pushes_per_min = sub.push_throughput.per_minute_at(now);
     let latest_id = sub.last_pushed_id.as_deref().unwrap_or("—").to_string();
     let pushed_at = sub
         .last_pushed_at
-        .map(format_relative)
+        .map(format_local_ts)
         .unwrap_or_else(|| "—".into());
 
     let row = Row::new(vec![
         Cell::from(name_col),
         Cell::from(format_subsource_stage(&sub.state, &sub.stage, spin)),
-        Cell::from(Text::from(sub.pushed_total.to_string()).alignment(Alignment::Right)),
+        Cell::from(pushed_cell(
+            sub.displayed_pushed().to_string(),
+            sub.is_live(),
+        )),
         Cell::from(Text::from(pushes_per_min.to_string()).alignment(Alignment::Right)),
         Cell::from(latest_id),
         Cell::from(pushed_at),
@@ -144,8 +167,20 @@ fn subsource_row(sub: &SubsourceView, selected: bool, spin: char) -> Row<'static
     }
 }
 
-/// Source-level status. Aggregate of its subsource states — no per-batch
-/// stage detail at this level (would flicker too fast to be readable).
+/// Right-aligned "N" with a trailing green `●` when the row is in the push
+/// pipeline. The dot is the "live" badge — signals that the displayed
+/// number is authoritative + in-flight (not a stale snapshot).
+fn pushed_cell(value: String, live: bool) -> Text<'static> {
+    if live {
+        Text::from(Line::from(vec![
+            Span::styled(format!("{value:>8} "), Style::default().fg(Color::White)),
+            Span::styled("●", Style::default().fg(Color::Green)),
+        ]))
+    } else {
+        Text::from(value).alignment(Alignment::Right)
+    }
+}
+
 fn format_source_state(state: &SourceState, spin: char) -> Text<'static> {
     match state {
         SourceState::Idle => Text::from("● idle").style(Style::default().fg(Color::Green)),
@@ -159,9 +194,6 @@ fn format_source_state(state: &SourceState, spin: char) -> Text<'static> {
     }
 }
 
-/// Subsource-level status. Reflects the current pipeline stage so the
-/// operator can distinguish fetching-from-Jira from embedding from pushing
-/// to Azure — the most common "what is quelch doing right now?" question.
 fn format_subsource_stage(state: &SubsourceState, stage: &Stage, spin: char) -> Text<'static> {
     match state {
         SubsourceState::Error(_) => Text::from("● error").style(Style::default().fg(Color::Red)),
@@ -181,19 +213,11 @@ fn format_subsource_stage(state: &SubsourceState, stage: &Stage, spin: char) -> 
     }
 }
 
-/// Short relative time string — "now", "Ns ago", "Nm ago", "Nh ago".
-/// Used for the "Pushed at" column so the user can see at a glance whether
-/// items are currently landing or whether the source has gone quiet.
-fn format_relative(ts: chrono::DateTime<Utc>) -> String {
-    let diff = Utc::now().signed_duration_since(ts);
-    let secs = diff.num_seconds();
-    if secs < 2 {
-        "now".into()
-    } else if secs < 60 {
-        format!("{secs}s ago")
-    } else if secs < 3600 {
-        format!("{}m ago", secs / 60)
-    } else {
-        format!("{}h ago", secs / 3600)
-    }
+/// Format a UTC instant in local time as `YYYY-MM-DD HH:MM:SS`. One
+/// format used everywhere in the TUI so the operator never has to decode
+/// mixed 24h-only / ISO-8601 / UTC-vs-local across columns.
+pub fn format_local_ts(ts: DateTime<Utc>) -> String {
+    ts.with_timezone(&Local)
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string()
 }

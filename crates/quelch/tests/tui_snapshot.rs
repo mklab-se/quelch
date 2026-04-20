@@ -38,7 +38,14 @@ fn tui_snapshot_contains_spec_mandated_content() {
     assert!(snap.contains("quelch"), "header: quelch banner missing");
 
     // Sources pane: destination-side column headings.
-    for heading in ["Source", "Stage", "Pushed", "Per min", "Latest ID", "Pushed at"] {
+    for heading in [
+        "Source",
+        "Stage",
+        "Pushed",
+        "Per min",
+        "Latest ID",
+        "Pushed at",
+    ] {
         assert!(
             snap.contains(heading),
             "sources heading missing: {heading}\n{snap}"
@@ -47,7 +54,10 @@ fn tui_snapshot_contains_spec_mandated_content() {
 
     // Subsource rows for the sim's configured projects/spaces.
     for expected in ["sim-jira", "sim-confluence", "QUELCH", "INFRA"] {
-        assert!(snap.contains(expected), "expected subsource row: {expected}");
+        assert!(
+            snap.contains(expected),
+            "expected subsource row: {expected}"
+        );
     }
 
     // Live feed pane — the user's explicit ask: show what's been pushed.
@@ -57,7 +67,14 @@ fn tui_snapshot_contains_spec_mandated_content() {
     );
 
     // Azure panel: destination-side labels. No "Total requests", no "Latency".
-    for label in ["Total pushed", "Per minute", "4xx", "5xx", "Throttled", "Dropped"] {
+    for label in [
+        "Total pushed",
+        "Per minute",
+        "4xx",
+        "5xx",
+        "Throttled",
+        "Dropped",
+    ] {
         assert!(snap.contains(label), "azure label missing: {label}");
     }
     assert!(

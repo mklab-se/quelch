@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-04-19
+
+### Changed — Pushed counts are now authoritative
+
+- **Cross-session cumulative "Pushed" counts.** Values shown in the Pushed column are now queried from Azure AI Search via `GET /docs/$count` — source-level uses the index-wide count, subsource-level uses `$filter=project eq 'X'` (Jira) or `$filter=space_key eq 'X'` (Confluence). If you've pushed 456 Jira issues across several sessions, that's what you see, not a session-local counter that resets to zero at startup.
+- **Live badge.** A green `●` appears next to the Pushed cell while that subsource is fetching / embedding / pushing. Signals "authoritative + in-flight" rather than "frozen snapshot."
+- **Batch-grouped live feed.** The "Pushed to Azure AI Search" pane no longer shows one row per document (noise: many rows per second with identical timestamps). Each successful push emits one row: `HH:MM:SS source/sub · batch of N · ID1, ID2, ID3, ID4, ID5, … (M more)`. Log mode gets the same payload as a single `phase = "batch_pushed"` event per batch.
+- **All timestamps render in local time as `YYYY-MM-DD HH:MM:SS`.** Applies to the Sources pane's "Pushed at", the live feed, and the drilldown's "Pushed at (local)" / "Source updated (local)" rows. No more mixed 24h-only / ISO / UTC-vs-local across columns.
+
+### Fixed
+
+- **Per-min column decays when a subsource goes idle.** v0.7.0 summed the throughput ring without pruning, so an idle row kept showing its last-active number indefinitely. A non-mutating `per_minute_at(now)` / `chart_points_at(now)` path runs every render tick and drops samples older than the window.
+
+### Added
+
+- **`count_documents(index_name, filter)` on the Azure client** — thin wrapper over `GET /indexes/{name}/docs/$count?api-version=...` with optional `$filter`.
+- **Mock `$count` route** with a tiny OData subset parser (`field eq 'value'` clauses joined by ` and `), mirroring Azure's contract so `quelch sim` exercises the same code path.
+- **`phase = "batch_pushed"` / `"index_count"` / `"subsource_count"` tracing events** from the engine, replacing per-doc noise in structured output.
+
 ## [0.7.0] - 2026-04-20
 
 ### Changed — TUI semantic rework

@@ -40,6 +40,11 @@ pub struct SourceView {
     pub kind: String,
     pub state: SourceState,
     pub subsources: Vec<SubsourceView>,
+    /// Authoritative total doc count in this source's Azure index,
+    /// refreshed at each cycle start. `None` until the first successful
+    /// count query — in that interim window the TUI falls back to
+    /// summing per-subsource counts.
+    pub index_count: Option<u64>,
 }
 
 pub struct SubsourceView {
@@ -54,8 +59,14 @@ pub struct SubsourceView {
     pub last_pushed_id: Option<String>,
     /// When we last observed a push confirmation for this subsource.
     pub last_pushed_at: Option<DateTime<Utc>>,
-    /// Cumulative count of docs confirmed in Azure for this subsource.
-    pub pushed_total: u64,
+    /// Authoritative count for this subsource (from Azure `$count?$filter`).
+    /// `None` until the first successful count query.
+    pub azure_count: Option<u64>,
+    /// Session-local counter of docs this subsource has pushed since the
+    /// last authoritative-count refresh. Added to `azure_count` in the
+    /// Pushed column so the display ticks up in real time during a cycle
+    /// even though the authoritative refresh only happens at cycle boundaries.
+    pub session_pushed_delta: u64,
     pub last_errors: VecDeque<String>,
     /// Rolling pushes/min throughput (destination-side).
     pub push_throughput: Throughput,
@@ -64,10 +75,37 @@ pub struct SubsourceView {
     pub recent_pushes: VecDeque<RecentPush>,
 }
 
+impl SubsourceView {
+    /// Display value for the "Pushed" column: authoritative Azure count
+    /// plus anything we've pushed since the last refresh.
+    pub fn displayed_pushed(&self) -> u64 {
+        self.azure_count.unwrap_or(0) + self.session_pushed_delta
+    }
+
+    /// Is this subsource actively in the push pipeline? Used by the TUI to
+    /// draw the "● live" badge next to its Pushed cell.
+    pub fn is_live(&self) -> bool {
+        !matches!(self.stage, crate::tui::events::Stage::Idle)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct RecentPush {
     pub ts: DateTime<Utc>,
     pub id: String,
+}
+
+/// One batch shown in the TUI's live feed. A batch corresponds to one
+/// successful `push_documents` call — typically up to `sync.batch_size`
+/// documents at once. We keep the first few IDs verbatim and a tail count
+/// so the feed reads like "DO-1, DO-2, DO-3, DO-4, DO-5, ... (87 more)".
+#[derive(Debug, Clone)]
+pub struct BatchEntry {
+    pub ts: DateTime<Utc>,
+    pub source: String,
+    pub subsource: String,
+    pub count: u64,
+    pub sample_ids: Vec<String>,
 }
 
 const RECENT_PUSHES_CAP: usize = 10;
@@ -87,25 +125,16 @@ pub struct App {
     pub drilldown_open: bool,
     pub backoff_reason: Option<String>,
     pub backoff_until: Option<DateTime<Utc>>,
-    /// Global "live feed" of the last N docs pushed across all subsources,
-    /// most-recent-first. This is the one widget the user asked for
-    /// specifically: "I want to see Jira issues flicker by on screen so I
-    /// know things are working."
-    pub live_feed: VecDeque<LiveFeedEntry>,
+    /// Global "live feed" — one entry per pushed batch, newest first. Each
+    /// entry carries the batch size + a sample of the first few IDs so the
+    /// operator can read what's flowing without drowning in per-doc noise.
+    pub live_feed: VecDeque<BatchEntry>,
     /// Cumulative count of docs confirmed in Azure across all subsources.
     pub pushed_total: u64,
     /// Rolling per-second pushes (destination-side). Drives the Azure
     /// panel's chart — what the user asked for instead of
     /// "Azure requests per second" (which had max 1 and was meaningless).
     pub pushes_per_sec: Throughput,
-}
-
-#[derive(Debug, Clone)]
-pub struct LiveFeedEntry {
-    pub ts: DateTime<Utc>,
-    pub source: String,
-    pub subsource: String,
-    pub id: String,
 }
 
 pub struct LogLine {
@@ -133,6 +162,7 @@ impl App {
                     name: sc.name().to_string(),
                     kind,
                     state: SourceState::Idle,
+                    index_count: None,
                     subsources: subs
                         .into_iter()
                         .map(|k| SubsourceView {
@@ -142,7 +172,8 @@ impl App {
                             last_pushed_item_at: None,
                             last_pushed_id: None,
                             last_pushed_at: None,
-                            pushed_total: 0,
+                            azure_count: None,
+                            session_pushed_delta: 0,
                             last_errors: VecDeque::new(),
                             push_throughput: Throughput::default(),
                             recent_pushes: VecDeque::new(),
@@ -320,36 +351,78 @@ impl App {
                 id,
                 updated,
             } => {
+                // Lightweight per-doc bookkeeping: latest ID / pushed-at /
+                // drilldown recent list. Volume counters now move via
+                // BatchPushed to avoid double-counting.
                 let now = Utc::now();
-                // Per-subsource push tracking: this is what every "Pushed",
-                // "Latest ID", "Per min" and "Pushed at" column reads from.
                 if let Some(sub) = self.find_subsource_mut(&source, &subsource) {
-                    sub.pushed_total += 1;
                     sub.last_pushed_id = Some(id.clone());
                     sub.last_pushed_at = Some(now);
                     sub.last_pushed_item_at = Some(updated);
-                    sub.push_throughput.add(Instant::now(), 1);
                     if sub.recent_pushes.len() >= RECENT_PUSHES_CAP {
                         sub.recent_pushes.pop_front();
                     }
-                    sub.recent_pushes.push_back(RecentPush {
-                        ts: now,
-                        id: id.clone(),
-                    });
+                    sub.recent_pushes.push_back(RecentPush { ts: now, id });
                 }
-                // Global live-feed + throughput: what the user specifically
-                // asked for — "I want to see items flicker by on screen."
-                self.pushed_total += 1;
-                self.pushes_per_sec.add(Instant::now(), 1);
+            }
+            QuelchEvent::BatchPushed {
+                source,
+                subsource,
+                count,
+                sample_ids,
+                latest_id,
+            } => {
+                let now = Utc::now();
+                if let Some(sub) = self.find_subsource_mut(&source, &subsource) {
+                    sub.session_pushed_delta += count;
+                    sub.last_pushed_at = Some(now);
+                    if !latest_id.is_empty() {
+                        sub.last_pushed_id = Some(latest_id.clone());
+                    }
+                    sub.push_throughput.add(Instant::now(), count);
+                    // Also mirror each sample ID into the drilldown's
+                    // recent_pushes list so the per-subsource detail view
+                    // isn't empty when plain-log mode suppresses DocPushed.
+                    for id in &sample_ids {
+                        if sub.recent_pushes.len() >= RECENT_PUSHES_CAP {
+                            sub.recent_pushes.pop_front();
+                        }
+                        sub.recent_pushes.push_back(RecentPush {
+                            ts: now,
+                            id: id.clone(),
+                        });
+                    }
+                }
+                self.pushed_total += count;
+                self.pushes_per_sec.add(Instant::now(), count);
                 if self.live_feed.len() >= LIVE_FEED_CAP {
                     self.live_feed.pop_back();
                 }
-                self.live_feed.push_front(LiveFeedEntry {
+                self.live_feed.push_front(BatchEntry {
                     ts: now,
                     source,
                     subsource,
-                    id,
+                    count,
+                    sample_ids,
                 });
+            }
+            QuelchEvent::IndexCount { source, count } => {
+                if let Some(src) = self.find_source_mut(&source) {
+                    src.index_count = Some(count);
+                }
+            }
+            QuelchEvent::SubsourceCount {
+                source,
+                subsource,
+                count,
+            } => {
+                if let Some(sub) = self.find_subsource_mut(&source, &subsource) {
+                    sub.azure_count = Some(count);
+                    // Fresh authoritative snapshot — the session delta is
+                    // reset so "authoritative + delta" displays correctly
+                    // until the next refresh.
+                    sub.session_pushed_delta = 0;
+                }
             }
             QuelchEvent::Stage {
                 source,
@@ -364,7 +437,8 @@ impl App {
             | QuelchEvent::DocFailed { .. }
             | QuelchEvent::DocSynced { .. } => {
                 // DocSynced is emitted by older test fixtures but no longer
-                // drives UI state — DocPushed is the source of truth.
+                // drives UI state — BatchPushed/DocPushed are the source
+                // of truth.
             }
         }
 
@@ -377,6 +451,19 @@ impl App {
 
     pub fn tick_spinner(&mut self) {
         self.spinner.tick();
+    }
+
+    /// Per-frame tick of time-sensitive state that widgets read but can't
+    /// mutate. Currently prunes the per-subsource and global push
+    /// throughput buffers so "Per min" decays to zero when activity stops
+    /// — the widgets hold `&self` and can't call `per_minute(&mut self)`.
+    pub fn tick_throughputs(&mut self, now: Instant) {
+        let _ = self.pushes_per_sec.per_minute(now);
+        for source in &mut self.sources {
+            for sub in &mut source.subsources {
+                let _ = sub.push_throughput.per_minute(now);
+            }
+        }
     }
 
     pub fn toggle_drilldown(&mut self) {
@@ -522,7 +609,13 @@ impl App {
         self.sources
             .iter()
             .find(|source| source.name == source_name)
-            .map(|source| source.subsources.iter().map(|sub| sub.pushed_total).sum())
+            .map(|source| {
+                source
+                    .subsources
+                    .iter()
+                    .map(|sub| sub.displayed_pushed())
+                    .sum()
+            })
             .unwrap_or(0)
     }
 
@@ -606,23 +699,62 @@ mod tests {
     }
 
     #[test]
-    fn doc_pushed_populates_counters_and_live_feed() {
+    fn batch_pushed_populates_counters_and_live_feed() {
         let mut a = App::new(&cfg(), Prefs::default());
-        for i in 0..5 {
-            a.apply(QuelchEvent::DocPushed {
-                source: "my-jira".into(),
-                subsource: "DO".into(),
-                id: format!("DO-{i}"),
-                updated: Utc::now(),
-            });
-        }
+        a.apply(QuelchEvent::BatchPushed {
+            source: "my-jira".into(),
+            subsource: "DO".into(),
+            count: 92,
+            sample_ids: vec![
+                "DO-1".into(),
+                "DO-2".into(),
+                "DO-3".into(),
+                "DO-4".into(),
+                "DO-5".into(),
+            ],
+            latest_id: "DO-92".into(),
+        });
         let s = &a.sources[0].subsources[0];
-        assert_eq!(s.pushed_total, 5);
-        assert_eq!(s.last_pushed_id.as_deref(), Some("DO-4"));
-        assert_eq!(a.pushed_total, 5);
-        assert_eq!(a.live_feed.len(), 5);
-        // Newest-first ordering.
-        assert_eq!(a.live_feed.front().unwrap().id, "DO-4");
+        assert_eq!(s.session_pushed_delta, 92);
+        assert_eq!(s.displayed_pushed(), 92);
+        assert_eq!(s.last_pushed_id.as_deref(), Some("DO-92"));
+        assert_eq!(a.pushed_total, 92);
+        assert_eq!(a.live_feed.len(), 1);
+        // Live feed row carries sample + total count so it reads
+        // "batch of 92 · DO-1, DO-2, …" even though only 5 IDs are kept.
+        let entry = a.live_feed.front().unwrap();
+        assert_eq!(entry.count, 92);
+        assert_eq!(entry.sample_ids.len(), 5);
+        assert_eq!(entry.sample_ids[0], "DO-1");
+    }
+
+    #[test]
+    fn subsource_count_is_authoritative_pushed_value() {
+        let mut a = App::new(&cfg(), Prefs::default());
+        // Authoritative count from Azure.
+        a.apply(QuelchEvent::SubsourceCount {
+            source: "my-jira".into(),
+            subsource: "DO".into(),
+            count: 456,
+        });
+        assert_eq!(a.sources[0].subsources[0].azure_count, Some(456));
+        assert_eq!(a.sources[0].subsources[0].displayed_pushed(), 456);
+        // A batch lands during the cycle — delta ticks up on top.
+        a.apply(QuelchEvent::BatchPushed {
+            source: "my-jira".into(),
+            subsource: "DO".into(),
+            count: 10,
+            sample_ids: vec!["DO-x".into()],
+            latest_id: "DO-x".into(),
+        });
+        assert_eq!(a.sources[0].subsources[0].displayed_pushed(), 466);
+        // Next cycle re-queries → delta resets, authoritative count bumps.
+        a.apply(QuelchEvent::SubsourceCount {
+            source: "my-jira".into(),
+            subsource: "DO".into(),
+            count: 466,
+        });
+        assert_eq!(a.sources[0].subsources[0].displayed_pushed(), 466);
     }
 
     #[test]

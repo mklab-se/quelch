@@ -32,10 +32,21 @@ impl Throughput {
         }
     }
 
-    /// Sum across the last 60s.
+    /// Sum across the last 60s. Mutating — prunes stale entries in place.
     pub fn per_minute(&mut self, now: Instant) -> u64 {
         self.prune(now);
         self.buckets.iter().map(|(_, n)| *n).sum()
+    }
+
+    /// Sum across the last 60s. Non-mutating — filters stale entries on
+    /// read so the display decays correctly even when no new events are
+    /// arriving to trigger a prune via `add()`.
+    pub fn per_minute_at(&self, now: Instant) -> u64 {
+        self.buckets
+            .iter()
+            .filter(|(t, _)| now.duration_since(*t) <= Duration::from_secs(60))
+            .map(|(_, n)| *n)
+            .sum()
     }
 
     /// Return up to 60 per-second samples for sparkline rendering, oldest first.
@@ -43,13 +54,40 @@ impl Throughput {
         self.buckets.iter().map(|(_, n)| *n).collect()
     }
 
-    /// Return `(bucket_index, count)` points suitable for `ratatui::Chart`.
+    /// Return `(seconds-ago, count)` points for the last-60s chart,
+    /// oldest-left / newest-right. Non-mutating and filters stale buckets
+    /// so an idle period renders as empty rather than as frozen history.
+    pub fn chart_points_at(&self, now: Instant) -> Vec<(f64, f64)> {
+        self.buckets
+            .iter()
+            .filter(|(t, _)| now.duration_since(*t) <= Duration::from_secs(60))
+            .map(|(t, n)| {
+                let age = now.duration_since(*t).as_secs_f64();
+                // x = 60.0 at now, decreasing toward 0 at 60s ago
+                (60.0 - age, *n as f64)
+            })
+            .collect()
+    }
+
+    /// Deprecated: use `chart_points_at(Instant::now())`. This wrapper
+    /// remains for the one existing unit test; all rendering paths should
+    /// go through the `_at` variant so idle periods decay correctly.
     pub fn chart_points(&self) -> Vec<(f64, f64)> {
         self.buckets
             .iter()
             .enumerate()
             .map(|(i, (_, n))| (i as f64, *n as f64))
             .collect()
+    }
+
+    /// Peak value in the last 60 seconds (non-mutating).
+    pub fn max_at(&self, now: Instant) -> u64 {
+        self.buckets
+            .iter()
+            .filter(|(t, _)| now.duration_since(*t) <= Duration::from_secs(60))
+            .map(|(_, n)| *n)
+            .max()
+            .unwrap_or(0)
     }
 }
 

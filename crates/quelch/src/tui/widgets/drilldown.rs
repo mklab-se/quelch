@@ -62,20 +62,24 @@ impl Widget for Drilldown<'_> {
         let last_id = sub.last_pushed_id.as_deref().unwrap_or("—");
         let last_pushed_at = sub
             .last_pushed_at
-            .map(|t| t.format("%H:%M:%S").to_string())
+            .map(crate::tui::widgets::source_table::format_local_ts)
             .unwrap_or_else(|| "—".into());
         let pushed_item_at = sub
             .last_pushed_item_at
-            .map(|t| t.to_rfc3339())
+            .map(crate::tui::widgets::source_table::format_local_ts)
             .unwrap_or_else(|| "—".into());
-        let rate: u64 = sub.push_throughput.samples().iter().sum();
+        let rate: u64 = sub.push_throughput.per_minute_at(std::time::Instant::now());
+        // Pushed total prefers the authoritative Azure count (+ session
+        // delta between refreshes). Falls back to 0 before the first
+        // successful count query.
+        let pushed_display = sub.displayed_pushed();
         let summary = vec![
-            label_line("Status           ", status.0, status.1),
-            plain_line("Pushed to Azure  ", &format!("{} docs", sub.pushed_total)),
-            plain_line("Push rate (60s)  ", &format!("{rate}/min")),
-            plain_line("Latest ID        ", last_id),
-            plain_line("Pushed at        ", &last_pushed_at),
-            plain_line("Source updated   ", &pushed_item_at),
+            label_line("Status              ", status.0, status.1),
+            plain_line("Pushed to Azure     ", &format!("{pushed_display} docs")),
+            plain_line("Push rate (60s)     ", &format!("{rate}/min")),
+            plain_line("Latest ID           ", last_id),
+            plain_line("Pushed at (local)   ", &last_pushed_at),
+            plain_line("Source updated (loc)", &pushed_item_at),
             Line::from(""),
         ];
         Paragraph::new(summary).render(chunks[0], buf);
@@ -94,7 +98,7 @@ impl Widget for Drilldown<'_> {
             )));
         } else {
             for doc in sub.recent_pushes.iter().rev() {
-                let time = doc.ts.format("%H:%M:%S").to_string();
+                let time = crate::tui::widgets::source_table::format_local_ts(doc.ts);
                 lines.push(Line::from(vec![
                     Span::styled("  ● ", Style::default().fg(Color::Green)),
                     Span::styled(time, Style::default().fg(Color::DarkGray)),

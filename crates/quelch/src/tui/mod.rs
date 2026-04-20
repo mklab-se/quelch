@@ -88,6 +88,7 @@ pub async fn run(
                     app.apply(ev);
                 }
                 app.tick_spinner();
+                app.tick_throughputs(std::time::Instant::now());
                 app.drops = drops_counter.load(Ordering::Relaxed);
                 terminal.draw(|f| {
                     crate::tui::layout::draw(f, &app, start.elapsed(), input_state.help_open());

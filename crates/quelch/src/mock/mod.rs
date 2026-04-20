@@ -79,8 +79,9 @@ pub(super) fn check_auth(headers: &HeaderMap) -> Result<(), (StatusCode, Json<Va
 /// tests outside this module can spin up an in-process instance.
 pub fn build_router() -> Router {
     use azure::{
-        azure_fault_post, azure_index_delete, azure_index_docs_list, azure_index_docs_post,
-        azure_index_get, azure_index_put, azure_index_search_post, azure_indexes_collection_post,
+        azure_fault_post, azure_index_delete, azure_index_docs_count, azure_index_docs_list,
+        azure_index_docs_post, azure_index_get, azure_index_put, azure_index_search_post,
+        azure_indexes_collection_post,
     };
     use confluence::confluence_search;
     use jira::jira_search;
@@ -113,6 +114,10 @@ pub fn build_router() -> Router {
             post(azure_index_search_post),
         )
         .route("/azure/indexes/{name}/docs", get(azure_index_docs_list))
+        .route(
+            "/azure/indexes/{name}/docs/$count",
+            get(azure_index_docs_count),
+        )
         .route("/azure/_fault", post(azure_fault_post))
         // Simulator mutation endpoints:
         .route("/_sim/jira/upsert_issue", post(sim_upsert_issue))

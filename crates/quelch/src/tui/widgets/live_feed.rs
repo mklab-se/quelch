@@ -1,6 +1,7 @@
-//! Live feed — the ticker the user explicitly asked for: a scrolling list
-//! of the most recently pushed documents, newest first. Every entry here
-//! means "this item is confirmed in Azure AI Search right now."
+//! Live feed — one row per pushed batch, newest first. Each row shows the
+//! batch size, the first few doc IDs verbatim, and a tail count so the
+//! operator reads "batch of 92 · DO-1, DO-2, DO-3, DO-4, DO-5, ... (87 more)"
+//! rather than 92 near-identical rows with the same timestamp.
 
 use ratatui::{
     buffer::Buffer,
@@ -11,6 +12,7 @@ use ratatui::{
 };
 
 use crate::tui::app::App;
+use crate::tui::widgets::source_table::format_local_ts;
 
 pub struct LiveFeed<'a> {
     pub app: &'a App,
@@ -21,7 +23,7 @@ impl Widget for LiveFeed<'_> {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::DarkGray))
-            .title("Pushed to Azure AI Search (newest first)");
+            .title("Pushed to Azure AI Search (newest first, local time)");
         let inner = block.inner(area);
         block.render(area, buf);
 
@@ -40,26 +42,33 @@ impl Widget for LiveFeed<'_> {
             .live_feed
             .iter()
             .take(rows_visible)
-            .enumerate()
-            .map(|(i, entry)| {
-                // Brightest at the top (most recent), fading to dim deeper in
-                // the list so the eye naturally tracks what's new.
-                let fade = match i {
-                    0 => Color::White,
-                    1..=2 => Color::Gray,
-                    _ => Color::DarkGray,
+            .map(|batch| {
+                let time = format_local_ts(batch.ts);
+                let shown = batch.sample_ids.len() as u64;
+                let tail = batch.count.saturating_sub(shown);
+                let samples = batch.sample_ids.join(", ");
+                let items = if tail > 0 {
+                    format!("{samples}, … ({tail} more)")
+                } else {
+                    samples
                 };
-                let time = entry.ts.format("%H:%M:%S").to_string();
                 Line::from(vec![
                     Span::styled(" ● ", Style::default().fg(Color::Green)),
                     Span::styled(time, Style::default().fg(Color::DarkGray)),
                     Span::raw("  "),
                     Span::styled(
-                        format!("{}/{}", entry.source, entry.subsource),
+                        format!("{}/{}", batch.source, batch.subsource),
                         Style::default().fg(Color::DarkGray),
                     ),
                     Span::raw("  "),
-                    Span::styled(entry.id.clone(), Style::default().fg(fade)),
+                    Span::styled(
+                        format!("batch of {}", batch.count),
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(ratatui::style::Modifier::BOLD),
+                    ),
+                    Span::raw("  "),
+                    Span::raw(items),
                 ])
             })
             .collect();

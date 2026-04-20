@@ -17,6 +17,19 @@ pub const DOC_SYNCED: &str = "doc_synced";
 /// `push_documents` returns success. This — not `doc_synced` — is the event
 /// the TUI's "recent pushes" and "latest ID" readouts must listen to.
 pub const DOC_PUSHED: &str = "doc_pushed";
+/// An entire batch was just confirmed in Azure. Payload carries a `count`
+/// field (batch size) plus a `sample_ids` comma-separated string of the
+/// first few doc IDs. This is the unit of push — not per-doc — so the TUI
+/// live feed and plain-log line both show "batch of 92 · DO-1, DO-2, ..."
+/// rather than 92 near-identical lines.
+pub const BATCH_PUSHED: &str = "batch_pushed";
+/// Authoritative count of documents currently in a source's Azure index.
+/// Payload: `source`, `count`. Queried at the start of each sync cycle.
+pub const INDEX_COUNT: &str = "index_count";
+/// Authoritative count of documents for a specific subsource within the
+/// source's index (via `$filter=project eq 'X'` for Jira / `space_key eq
+/// 'X'` for Confluence). Payload: `source`, `subsource`, `count`.
+pub const SUBSOURCE_COUNT: &str = "subsource_count";
 /// Current stage of a subsource's in-flight batch. Payload carries a `stage`
 /// field with one of: "fetching", "embedding", "pushing", "idle".
 pub const STAGE: &str = "stage";

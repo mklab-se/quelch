@@ -37,8 +37,8 @@ impl Widget for AzurePanelWidget<'_> {
 
         // Row 1 — either the chart subtitle, or an attention-grabbing backoff
         // banner. Backoff takes precedence because it's actionable.
-        let panel = &self.app.pushes_per_sec;
-        let max_per_sec = panel.samples().iter().copied().max().unwrap_or(0);
+        let now = std::time::Instant::now();
+        let max_per_sec = self.app.pushes_per_sec.max_at(now);
         let subtitle = if let Some(reason) = self.app.backoff_reason.as_deref() {
             Paragraph::new(Line::from(vec![
                 Span::styled("◉ Azure backing off", Style::default().fg(Color::Yellow)),
@@ -62,7 +62,7 @@ impl Widget for AzurePanelWidget<'_> {
 
         // Row 2 — braille-rendered line chart of pushes/sec. Y-axis auto-scales
         // to the observed peak (min 1 so a flat zero-line still draws).
-        let points: Vec<(f64, f64)> = self.app.pushes_per_sec.chart_points();
+        let points: Vec<(f64, f64)> = self.app.pushes_per_sec.chart_points_at(now);
         let y_max = (max_per_sec as f64).max(1.0);
         let dataset = Dataset::default()
             .marker(symbols::Marker::Braille)
@@ -90,7 +90,7 @@ impl Widget for AzurePanelWidget<'_> {
         // operator question:
         //   "How much has landed?" → Total pushed + Per min
         //   "Is it still working?" → Fail counts and drops (non-zero = red)
-        let pushes_per_min: u64 = self.app.pushes_per_sec.samples().iter().sum();
+        let pushes_per_min: u64 = self.app.pushes_per_sec.per_minute_at(now);
         let bad = |n: u64, bad_colour: Color| {
             if n == 0 { Color::DarkGray } else { bad_colour }
         };

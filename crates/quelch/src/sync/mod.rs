@@ -273,6 +273,39 @@ pub async fn run_sync_with(
         "Cycle starting"
     );
 
+    // Query authoritative counts from Azure — source-level (total docs in
+    // the source's index) and per-subsource (filtered by project/space). The
+    // TUI displays these as its Pushed column so the number is correct
+    // across sessions rather than "since this process started". A failed
+    // count query is non-fatal (e.g., index doesn't exist yet on a fresh
+    // setup); we just skip emitting.
+    for source_config in &config.sources {
+        let source_name = source_config.name().to_string();
+        let index_name = source_config.index();
+        if let Ok(total) = azure.count_documents(index_name, None).await {
+            info!(
+                phase = phases::INDEX_COUNT,
+                source = %source_name,
+                count = total,
+            );
+        }
+        let (filter_field, subkeys): (&'static str, Vec<String>) = match source_config {
+            SourceConfig::Jira(j) => ("project", j.projects.clone()),
+            SourceConfig::Confluence(c) => ("space_key", c.spaces.clone()),
+        };
+        for subkey in subkeys {
+            let filter = format!("{filter_field} eq '{subkey}'");
+            if let Ok(count) = azure.count_documents(index_name, Some(&filter)).await {
+                info!(
+                    phase = phases::SUBSOURCE_COUNT,
+                    source = %source_name,
+                    subsource = %subkey,
+                    count = count,
+                );
+            }
+        }
+    }
+
     for source_config in &config.sources {
         if let EngineOutcome::Shutdown = poll_commands(cmd_rx, &mut paused).await {
             tracing::info!(
@@ -789,25 +822,30 @@ async fn sync_single_subsource<C: SourceConnector>(
             .await
             .context("failed to push documents to Azure AI Search")?;
 
-        // Each doc is now confirmed in Azure. Emit a `doc_pushed` event per
-        // doc so the TUI's live feed + drilldown + "latest ID" readouts show
-        // what actually landed in the destination index. Debug level keeps
-        // plain-log output readable at default verbosity.
-        for doc in &new_docs {
-            let id = doc.fields.get("id").and_then(|v| v.as_str()).unwrap_or("?");
-            let updated = doc
-                .fields
-                .get("updated_at")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
-            debug!(
-                phase = phases::DOC_PUSHED,
-                source = source_name,
-                subsource = subsource,
-                doc_id = id,
-                updated = updated,
-            );
-        }
+        // Docs are confirmed in Azure. Emit a single `batch_pushed` event
+        // with a handful of sample IDs — one line in plain-log output, one
+        // row in the TUI live feed. Much more readable than N per-doc
+        // lines (the engine always pushes in batches, so per-doc noise
+        // was misleading).
+        const SAMPLE_IDS_PER_BATCH: usize = 5;
+        let sample_ids: Vec<&str> = new_docs
+            .iter()
+            .take(SAMPLE_IDS_PER_BATCH)
+            .map(|d| d.fields.get("id").and_then(|v| v.as_str()).unwrap_or("?"))
+            .collect();
+        let latest_id = new_docs
+            .last()
+            .and_then(|d| d.fields.get("id"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("?");
+        info!(
+            phase = phases::BATCH_PUSHED,
+            source = source_name,
+            subsource = subsource,
+            count = doc_count,
+            sample_ids = sample_ids.join(","),
+            latest_id = latest_id,
+        );
 
         total_synced += doc_count;
 

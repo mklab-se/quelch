@@ -112,6 +112,9 @@ struct FieldVisitor {
     stage: Option<String>,
     done: Option<u64>,
     total: Option<u64>,
+    count: Option<u64>,
+    sample_ids: Option<String>,
+    latest_id: Option<String>,
 }
 
 impl tracing::field::Visit for FieldVisitor {
@@ -129,6 +132,8 @@ impl tracing::field::Visit for FieldVisitor {
             "error" => self.error = Some(v),
             "reason" => self.reason = Some(v),
             "stage" => self.stage = Some(v),
+            "sample_ids" => self.sample_ids = Some(v),
+            "latest_id" => self.latest_id = Some(v),
             _ => {}
         }
     }
@@ -145,6 +150,7 @@ impl tracing::field::Visit for FieldVisitor {
             "delay_ms" => self.delay_ms = Some(value),
             "done" => self.done = Some(value),
             "total" => self.total = Some(value),
+            "count" => self.count = Some(value),
             _ => {}
         }
     }
@@ -261,6 +267,46 @@ where
                     id,
                     updated: Utc::now(),
                 }),
+            Some(p) if p == phases::BATCH_PUSHED => {
+                v.source.clone().zip(v.subsource.clone()).map(|(s, ss)| {
+                    let sample_ids = v
+                        .sample_ids
+                        .as_deref()
+                        .map(|csv| {
+                            csv.split(',')
+                                .map(|part| part.trim().to_string())
+                                .filter(|p| !p.is_empty())
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    let latest_id = v
+                        .latest_id
+                        .clone()
+                        .unwrap_or_else(|| sample_ids.last().cloned().unwrap_or_default());
+                    QuelchEvent::BatchPushed {
+                        source: s,
+                        subsource: ss,
+                        count: v.count.unwrap_or(0),
+                        sample_ids,
+                        latest_id,
+                    }
+                })
+            }
+            Some(p) if p == phases::INDEX_COUNT => {
+                v.source.clone().map(|s| QuelchEvent::IndexCount {
+                    source: s,
+                    count: v.count.unwrap_or(0),
+                })
+            }
+            Some(p) if p == phases::SUBSOURCE_COUNT => {
+                v.source.clone().zip(v.subsource.clone()).map(|(s, ss)| {
+                    QuelchEvent::SubsourceCount {
+                        source: s,
+                        subsource: ss,
+                        count: v.count.unwrap_or(0),
+                    }
+                })
+            }
             Some(p) if p == phases::STAGE => v.source.clone().zip(v.subsource.clone()).and_then(
                 |(s, ss)| -> Option<QuelchEvent> {
                     let stage = match v.stage.as_deref()? {

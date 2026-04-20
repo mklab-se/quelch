@@ -87,6 +87,30 @@ pub enum QuelchEvent {
         id: String,
         updated: DateTime<Utc>,
     },
+    /// A whole batch has landed in Azure. This is the coarser-grained
+    /// companion to `DocPushed` — one event per successful push, carrying
+    /// the batch size plus a sample of the first few IDs. The TUI live feed
+    /// renders one row per batch (readable) rather than one row per doc
+    /// (92 rows all with the same timestamp = noise).
+    BatchPushed {
+        source: SourceId,
+        subsource: SubsourceId,
+        count: u64,
+        sample_ids: Vec<String>,
+        latest_id: String,
+    },
+    /// Authoritative total doc count in the source's Azure index.
+    IndexCount {
+        source: SourceId,
+        count: u64,
+    },
+    /// Authoritative doc count for a specific subsource within its source's
+    /// index (filtered by project/space).
+    SubsourceCount {
+        source: SourceId,
+        subsource: SubsourceId,
+        count: u64,
+    },
     /// What a subsource is doing RIGHT NOW inside its current batch.
     Stage {
         source: SourceId,

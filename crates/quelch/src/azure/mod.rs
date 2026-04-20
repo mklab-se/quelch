@@ -282,6 +282,51 @@ impl SearchClient {
         }
     }
 
+    /// Count documents in an index, optionally restricted by an OData
+    /// `$filter`. Returns 0 if the index doesn't exist (treating a missing
+    /// index as "empty" is what the TUI wants; it avoids surfacing a
+    /// temporary 404 during initial setup as an error).
+    pub async fn count_documents(
+        &self,
+        index_name: &str,
+        filter: Option<&str>,
+    ) -> Result<u64, AzureError> {
+        let mut url = format!(
+            "{}/indexes/{}/docs/$count?api-version={}",
+            self.endpoint, index_name, API_VERSION
+        );
+        if let Some(f) = filter {
+            // URL-encode the OData expression. Spaces → %20, apostrophes stay
+            // as-is inside the quoted value (Azure accepts them raw).
+            let encoded = f.replace(' ', "%20");
+            url.push_str("&$filter=");
+            url.push_str(&encoded);
+        }
+        let resp = self
+            .client
+            .get(&url)
+            .header("api-key", &self.api_key)
+            .send()
+            .await?;
+        match resp.status().as_u16() {
+            200 => {
+                let body = resp.text().await.unwrap_or_default();
+                // Azure returns the count as a bare integer in the body
+                // (no JSON envelope). Trim trailing whitespace / BOM.
+                let trimmed = body.trim().trim_start_matches('\u{feff}');
+                Ok(trimmed.parse::<u64>().unwrap_or(0))
+            }
+            404 => Ok(0),
+            status => {
+                let body = resp.text().await.unwrap_or_default();
+                Err(AzureError::Api {
+                    status,
+                    message: body,
+                })
+            }
+        }
+    }
+
     /// Fetch all document IDs from an index (for delete detection).
     pub async fn fetch_all_ids(&self, index_name: &str) -> Result<Vec<String>, AzureError> {
         let mut ids = Vec::new();
