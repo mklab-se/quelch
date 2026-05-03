@@ -96,8 +96,29 @@ pub enum Commands {
         /// Name of the deployment to slice for
         name: String,
     },
-    /// Generate a starter quelch.yaml config
-    Init,
+    /// Interactive wizard to scaffold a quelch.yaml config
+    Init {
+        /// Skip all prompts and write a template directly.
+        #[arg(long)]
+        non_interactive: bool,
+        /// Template name to use in non-interactive mode (minimal, multi-source, distributed).
+        #[arg(long)]
+        from_template: Option<String>,
+        /// Overwrite an existing quelch.yaml without asking.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Generate ready-to-run on-prem deployment artefacts
+    GenerateDeployment {
+        /// Deployment name from quelch.yaml (should be target: onprem).
+        name: String,
+        /// Output target: docker, systemd, or k8s.
+        #[arg(long, value_enum)]
+        target: OnpremTargetArg,
+        /// Output directory for generated artefacts.
+        #[arg(long, default_value = "./deploy")]
+        output: PathBuf,
+    },
     /// Start a local mock Jira and Confluence server for testing
     Mock {
         /// Port to listen on
@@ -261,6 +282,17 @@ pub enum Commands {
         #[arg(long)]
         api_key: Option<String>,
     },
+}
+
+/// On-prem target for `quelch generate-deployment`.
+#[derive(Clone, clap::ValueEnum)]
+pub enum OnpremTargetArg {
+    /// Docker Compose.
+    Docker,
+    /// systemd unit file.
+    Systemd,
+    /// Kubernetes manifests.
+    K8s,
 }
 
 /// Top-level `quelch azure` subcommands.

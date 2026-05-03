@@ -14,7 +14,9 @@ use quelch::config::DeploymentTarget;
 use std::path::{Path, PathBuf};
 use tracing_subscriber::EnvFilter;
 
-use cli::{AgentCommands, AgentTarget, AzureCommands, Cli, Commands, IndexerCommands};
+use cli::{
+    AgentCommands, AgentTarget, AzureCommands, Cli, Commands, IndexerCommands, OnpremTargetArg,
+};
 
 // Suppress `set_var` deprecation on Rust 1.80+ (we only use it for env var
 // passthrough at process startup, never in multi-threaded context).
@@ -30,7 +32,27 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Validate => cmd_validate(&cli.config),
         Commands::EffectiveConfig { name } => cmd_effective_config(&cli.config, &name),
-        Commands::Init => cmd_init(),
+        Commands::Init {
+            non_interactive,
+            from_template,
+            force,
+        } => {
+            let path = std::path::PathBuf::from("quelch.yaml");
+            quelch::init::run(
+                &path,
+                quelch::init::InitOptions {
+                    non_interactive,
+                    from_template,
+                    force,
+                },
+            )
+            .await
+        }
+        Commands::GenerateDeployment {
+            name,
+            target,
+            output,
+        } => cmd_generate_deployment(&cli.config, &name, target, &output),
         Commands::Mock { port } => quelch::mock::run_mock_server(port).await,
         Commands::Ai { command } => quelch::ai::run(command).await,
         // TODO(quelch v2 phase 3+): wire up remaining commands
@@ -286,72 +308,31 @@ fn cmd_effective_config(config_path: &Path, name: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_init() -> Result<()> {
-    let path = Path::new("quelch.yaml");
-    if path.exists() {
-        anyhow::bail!("quelch.yaml already exists — remove it first or edit it directly");
+// ---------------------------------------------------------------------------
+// quelch generate-deployment
+// ---------------------------------------------------------------------------
+
+fn cmd_generate_deployment(
+    config_path: &Path,
+    name: &str,
+    target: OnpremTargetArg,
+    output: &Path,
+) -> Result<()> {
+    let config = config::load_config(config_path)?;
+    let onprem_target = match target {
+        OnpremTargetArg::Docker => quelch::onprem::OnpremTarget::Docker,
+        OnpremTargetArg::Systemd => quelch::onprem::OnpremTarget::Systemd,
+        OnpremTargetArg::K8s => quelch::onprem::OnpremTarget::K8s,
+    };
+    let outcome = quelch::onprem::generate(&config, name, onprem_target, output)?;
+    println!(
+        "Generated {} artefact(s) in {}:",
+        outcome.written.len(),
+        output.display()
+    );
+    for p in &outcome.written {
+        println!("  {}", p.display());
     }
-
-    let template = r#"# quelch.yaml — v2 configuration
-
-azure:
-  subscription_id: "${AZURE_SUBSCRIPTION_ID}"
-  resource_group: "rg-quelch-prod"
-  region: "swedencentral"
-  naming:
-    prefix: "quelch"
-    environment: "prod"
-
-cosmos:
-  database: "quelch"
-  throughput:
-    mode: "serverless"
-
-search:
-  sku: "basic"
-
-openai:
-  endpoint: "https://${AOI_ACCOUNT}.openai.azure.com"
-  embedding_deployment: "text-embedding-3-large"
-  embedding_dimensions: 3072
-
-sources:
-  - type: jira
-    name: my-jira
-    url: "https://your-company.atlassian.net"
-    auth:
-      email: "${JIRA_EMAIL}"
-      api_token: "${JIRA_API_TOKEN}"
-    projects: ["PROJ"]
-
-deployments:
-  - name: ingest
-    role: ingest
-    target: azure
-    azure:
-      container_app: { cpu: 0.5, memory: "1.0Gi" }
-    sources:
-      - source: my-jira
-  - name: mcp
-    role: mcp
-    target: azure
-    azure:
-      container_app: { cpu: 1.0, memory: "2.0Gi", min_replicas: 0 }
-    expose:
-      - jira_issues
-    auth:
-      mode: "api_key"
-
-mcp:
-  data_sources:
-    jira_issues:
-      kind: jira_issue
-      backed_by:
-        - container: jira-issues
-"#;
-
-    std::fs::write(path, template)?;
-    println!("Created quelch.yaml — edit it with your Azure and source credentials");
     Ok(())
 }
 
