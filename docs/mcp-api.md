@@ -109,9 +109,33 @@ arguments:
     type: string
     required: false
     description: Continuation token from a previous response.
+  include_content:
+    type: string
+    required: false
+    default: "snippet"
+    description: |
+      How much per-hit content to return:
+
+      - "snippet"        — short excerpt around the match (default).
+                           Cheap. Use this when you'll then call `get`
+                           on a small subset, or just present a list.
+      - "full"           — full document body for every hit. Use this
+                           for "summarise everything about X" patterns
+                           so you don't need a follow-up `get` per hit.
+                           Larger payload; respects `top` so be careful.
+      - "agentic_answer" — ask the Knowledge Base for a synthesised
+                           answer with citations. Returns an extra
+                           `answer` field. Use only when the user wants
+                           a quick paragraph and is OK with KB-style
+                           synthesis (not the calling agent's voice).
+                           Cheaper than fetching full content for many
+                           hits; less flexible than synthesising yourself.
 returns:
   items:
     - id, score, data_source, source_link, snippet, fields
+      # plus `body` when include_content=full
+  answer: string|null            # populated only when include_content=agentic_answer
+  citations: array|null          # populated only when include_content=agentic_answer
   next_cursor: string|null
   total_estimate: integer
 ```
@@ -121,6 +145,7 @@ Notes:
 - `total_estimate` is approximate. For exact counts, use `aggregate` or `query` with `count_only: true`.
 - Iterate with `cursor` until `next_cursor` is `null` if the user asked for "all".
 - Each returned item carries the `data_source` it came from, so an agent searching multiple sources can present results grouped or distinguished.
+- For "summarise everything about X" patterns, prefer `include_content: "full"` over a search-then-fetch loop. One round-trip; the calling agent does the synthesis with all content in hand. See [examples.md](examples.md#11-summarize-what-is-written-about-connection-problems-in-jira-and-confluence).
 
 ### `query`
 

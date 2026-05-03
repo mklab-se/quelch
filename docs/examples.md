@@ -322,13 +322,54 @@ search({
 
 ---
 
+## 11. "Summarize what is written about connection problems in Jira and Confluence"
+
+**User expects:** a coherent summary that pulls from *all* relevant material across both systems, written in the agent's voice, with citations.
+
+**Agent's plan:** one `search` call across both data sources with `include_content: "full"` so the whole document body of each hit comes back in a single round-trip. Then synthesise locally — the calling agent's strength is exactly this kind of synthesis, and it has the user's conversational context to tailor the answer.
+
+**MCP calls:**
+
+```jsonc
+search({
+  query: "connection problems camera disconnects wifi offline",
+  data_sources: ["jira_issues", "confluence_pages"],
+  where: { "status": { "not": "Done" } },   // optional — bias toward live material
+  top: 30,
+  include_content: "full"                    // <-- key: full body per hit, no follow-up get's
+})
+// → { items: [{ id, score, data_source, source_link, snippet, body, fields }, ...],
+//     next_cursor: "...",
+//     total_estimate: 78 }
+```
+
+**Response:** "Across roughly 78 Jira issues and Confluence pages discussing connection problems, three themes emerge: (a) **Wi-Fi / cellular handoff regressions** in the iXX firmware family — see DO-1199, DO-1182; the architecture rationale is on the *Camera Connectivity Pipeline* page; (b) **Power-state handling during sleep** causing dropped sessions, with a workaround documented on *iXX Power Management*; (c) **NTP drift** as a downstream symptom rather than a root cause — covered briefly on *Field Diagnostics Playbook*. Most active investigation is in DO-1210. [links to all referenced issues and pages]"
+
+The agent reads each `body` and writes a tailored summary. No `get` round-trips, no `summarise` MCP tool, no Layer-2 synthesis-in-MCP — the calling agent does what calling agents are good at: synthesis with audience awareness.
+
+**Alternative (cheap, less control):** if the user wants a quick paragraph and is happy with the Knowledge Base's own synthesis voice:
+
+```jsonc
+search({
+  query: "connection problems camera disconnects wifi offline",
+  data_sources: ["jira_issues", "confluence_pages"],
+  include_content: "agentic_answer"
+})
+// → { answer: "Most discussion of camera connection issues...", citations: [...], items: [...] }
+```
+
+Use this when the answer doesn't need to fit the conversation's tone; surface the `answer` and the `citations` directly.
+
+---
+
 ## Pattern summary
 
-If you read all ten, the patterns repeat:
+If you read all eleven, the patterns repeat:
 
 - **Exhaustive listing** → `query` with cursor pagination.
 - **Counts and totals** → `aggregate`.
 - **Fuzzy / cross-document themes** → `search`.
+- **Summarise across many documents** → `search` with `include_content: "full"`; agent synthesises.
 - **Domain concepts (sprints, fix versions, spaces)** → `query` against the companion data source first, then a follow-up call.
 - **Two-step "resolve then fetch"** is the most common shape.
 - **Always include `source_link`s** in the answer.

@@ -103,6 +103,8 @@ The backend each tool uses is a property of the tool's **semantics**, not user c
 
 The only operator knob is `mcp.search.disable_agentic` (cost opt-out — falls back to direct hybrid search). Agent's view doesn't change.
 
+`search` accepts an `include_content` argument — `"snippet"` (default), `"full"`, or `"agentic_answer"` — which controls how much per-hit material comes back. `"full"` eliminates the search-then-fetch loop for "summarise across many documents" use cases (one round-trip, agent synthesises with all content in hand). `"agentic_answer"` returns a Knowledge-Base-synthesised paragraph plus citations, for quick-answer cases where calling-agent voice doesn't matter. We do *not* add a separate `summarise` MCP tool — synthesis is the calling agent's strength, and putting it in the MCP would couple us to a synthesis style we have no context for.
+
 A full Foundry agent in front of the MCP (Layer 2) is explicitly out of scope: it duplicates the calling agent's reasoning, breaks MCP contract semantics (latency, determinism), and adds cost without clear benefit. If a user wants a hosted Foundry agent that uses Quelch, they point one at Quelch's MCP — they don't bake one in.
 
 See [/docs/mcp-api.md](../../../docs/mcp-api.md) and [/docs/architecture.md](../../../docs/architecture.md#two-layers-of-names).

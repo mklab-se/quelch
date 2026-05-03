@@ -137,6 +137,7 @@ Patterns that recur in real questions:
 
 - **"All matching X" — exhaustive results.** Always paginate with `cursor` until `next_cursor` is null. Surface `total` from the response so the user knows how many.
 - **"Counts and totals."** Use `aggregate`, not pagination + client-side counting.
+- **"Summarise / tell me what's written about X."** Call `search` once with `include_content: "full"` so every hit's full body comes back in one round-trip — then write the summary yourself, in the conversation's voice. Do *not* loop `search` → `get` per hit. Reach for `include_content: "agentic_answer"` only when the user wants a quick paragraph and is happy with KB-style synthesis (less tailored).
 - **"The next sprint" / "the current sprint."** First `query(data_source="jira_sprints", where={ project_key:X, state:"active"|"future" }, order_by=[{field:"start_date", dir:"asc"}], top=1)`. Then use the returned id in a second tool call.
 - **"Planned in a sprint" — issue type filtering.** Default to Stories, Tasks, Bugs. Exclude Epics and Sub-tasks unless the user asks.
 - **"Release notes for version X."** First `query(data_source="jira_fix_versions", where={ name:"X" })` to confirm the version exists, then `search(data_sources=["confluence_pages"], query="release notes <X>")`.
