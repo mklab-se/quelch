@@ -1,0 +1,27 @@
+# Build artefacts — largest directory, never needed for Docker build context.
+target/
+
+# Git history and worktree metadata.
+.git/
+.gitignore
+.gitattributes
+
+# Developer tooling.
+.claude/
+.vscode/
+.idea/
+
+# Test fixtures and documentation (not needed in the image).
+docs/
+media/
+hello.md
+README.md
+CHANGELOG.md
+LICENSE
+
+# CI/CD configuration.
+.github/
+
+# Environment files that must not be baked into images.
+.env
+*.env
