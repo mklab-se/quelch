@@ -3,8 +3,9 @@
 /// Three invariants are checked:
 /// 1. Every source referenced in a deployment exists in `sources`.
 /// 2. Every `(source, subsource)` pair appears in at most one ingest deployment.
-/// 3. Every name in any `expose:` list is defined in `mcp.data_sources`.
-use super::{Config, ConfigError, DeploymentRole, SourceConfig};
+/// 3. Every name in any `expose:` list is defined in `mcp.data_sources` (explicit
+///    or auto-derived via [`super::data_sources::resolve`]).
+use super::{data_sources, Config, ConfigError, DeploymentRole, SourceConfig};
 use std::collections::{HashMap, HashSet};
 
 /// Run all validation rules against `config`.
@@ -95,29 +96,21 @@ fn validate_disjoint_subsources(config: &Config) -> Result<(), ConfigError> {
     Ok(())
 }
 
-/// Every name in any `expose:` list must be defined in `mcp.data_sources`.
-///
-/// Per the task spec: if `mcp.data_sources` is empty AND something is exposed,
-/// reject.  Task 1.4 will relax this when auto-derivation lands.
+/// Every name in any `expose:` list must be resolvable — either explicitly
+/// defined in `mcp.data_sources` or auto-derivable from the configured sources.
 fn validate_expose_resolves(config: &Config) -> Result<(), ConfigError> {
+    // Compute the full resolved set once (explicit overrides OR auto-derived).
+    let resolved = data_sources::resolve(config);
+
     for deployment in &config.deployments {
         let Some(ref expose) = deployment.expose else {
             continue;
         };
-        if expose.is_empty() {
-            continue;
-        }
-        if config.mcp.data_sources.is_empty() {
-            return Err(ConfigError::Validation(format!(
-                "deployment '{}' exposes data sources {:?} but mcp.data_sources is empty — \
-                 define mcp.data_sources or omit expose",
-                deployment.name, expose
-            )));
-        }
         for name in expose {
-            if !config.mcp.data_sources.contains_key(name) {
+            if !resolved.contains_key(name) {
                 return Err(ConfigError::Validation(format!(
-                    "deployment '{}' exposes '{}' which is not defined in mcp.data_sources",
+                    "deployment '{}' exposes '{}' which is not defined in mcp.data_sources \
+                     and cannot be auto-derived from the configured sources",
                     deployment.name, name
                 )));
             }
@@ -173,5 +166,47 @@ mod tests {
         let yaml = include_str!("../../tests/fixtures/quelch.minimal.yaml");
         let cfg: Config = serde_yaml::from_str(yaml).unwrap();
         run(&cfg).expect("valid config should pass validation");
+    }
+
+    /// Regression test: a config with `expose: [jira_issues]` and no explicit
+    /// `mcp.data_sources` must pass validation (relies on auto-derivation).
+    #[test]
+    fn accepts_expose_with_auto_derived_data_sources() {
+        let yaml = r#"
+azure:
+  subscription_id: "sub-test"
+  resource_group: "rg-test"
+  region: "swedencentral"
+cosmos:
+  database: "quelch"
+openai:
+  endpoint: "https://test.openai.azure.com"
+  embedding_deployment: "text-embedding-3-large"
+  embedding_dimensions: 3072
+sources:
+  - type: jira
+    name: jira-cloud
+    url: "https://cloud.atlassian.net"
+    auth:
+      email: "u@example.com"
+      api_token: "tok"
+    projects: ["DO"]
+deployments:
+  - name: ingest
+    role: ingest
+    target: azure
+    sources:
+      - source: jira-cloud
+  - name: mcp
+    role: mcp
+    target: azure
+    expose:
+      - jira_issues
+    auth:
+      mode: "api_key"
+# No mcp.data_sources — relies on auto-derivation.
+"#;
+        let cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        run(&cfg).expect("expose with auto-derived data sources should pass validation");
     }
 }

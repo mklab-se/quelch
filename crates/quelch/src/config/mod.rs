@@ -1,8 +1,10 @@
 /// Quelch v2 configuration: schema, loader, and validation.
 ///
 /// Entry point: [`load_config`].
+pub mod data_sources;
 pub mod env;
 pub mod schema;
+pub mod slice;
 pub mod validate;
 
 pub use schema::*;
@@ -27,6 +29,10 @@ pub enum ConfigError {
 
     #[error("validation: {0}")]
     Validation(String),
+
+    /// The named deployment does not exist in the config.
+    #[error("deployment '{0}' not found in config")]
+    DeploymentNotFound(String),
 }
 
 /// Load, env-substitute, and validate a `quelch.yaml` file.

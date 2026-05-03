@@ -525,7 +525,7 @@ pub struct McpDataSourceSpec {
 }
 
 /// A physical Cosmos container backing a logical data source.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct BackedBy {
     pub container: String,
 }
