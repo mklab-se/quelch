@@ -62,15 +62,11 @@ mod tests {
     use chrono::TimeZone;
 
     fn ts(h: u32, m: u32) -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2024, 6, 1, h, m, 0)
-            .single()
-            .unwrap()
+        Utc.with_ymd_and_hms(2024, 6, 1, h, m, 0).single().unwrap()
     }
 
     fn ts_secs(h: u32, m: u32, s: u32) -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2024, 6, 1, h, m, s)
-            .single()
-            .unwrap()
+        Utc.with_ymd_and_hms(2024, 6, 1, h, m, s).single().unwrap()
     }
 
     // --- floor_to_minute ---
