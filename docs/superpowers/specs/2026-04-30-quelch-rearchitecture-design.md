@@ -242,6 +242,26 @@ A doc set under `/docs/`, plus this spec. Eight files:
 - Schema migrations in Cosmos DB — out of scope for v1; documents are append-only and the indexer can be reset.
 - Multi-region — explicitly out of scope; single-region deployments only in v1.
 
+### Deferred: queue-based ingestion
+
+**Decision:** v1 ingest is a direct loop — `SourceConnector → in-process channel → CosmosWriter`. No external queue (Service Bus, Storage Queue, Event Hubs).
+
+**Why deferred, not declined:** the wins of a queue (decoupled producer/consumer rates, parallel writers, native retry/DLQ, fan-out, webhook path) are real, but none apply to v1's scope:
+
+- Source APIs (Jira, Confluence) already serve as durable, replayable change logs — cursor-based incremental sync gives us at-least-once delivery for free, with simpler semantics than queue-with-ack.
+- Workers are designed disjoint by config (Jira A–K vs L–Z), so parallelism inside one subsource isn't a goal.
+- Modest event rates from Jira/Confluence; one worker keeps up.
+- Adding a queue means another Azure resource, another set of role assignments, another permission flow, another section in deployment.md — real user-facing complexity.
+- Inserting a queue would split cursor-advance semantics (advance on enqueue vs advance on durable write); not impossible to handle, but not free.
+
+**Design constraint to preserve future-insertability:** the ingest implementation must keep a clean seam between source-pull and Cosmos-write. Both sides communicate via `SourceDocument` (already defined in `sources/mod.rs`); the in-process `mpsc` channel between them must be the only point of contact. The day we want a queue, only the channel changes — neither side moves.
+
+**Trigger conditions to revisit (any one is sufficient):**
+
+1. We add webhook ingestion (push from source). A queue between the HTTP receiver and the writer becomes essentially mandatory at that point.
+2. A single source produces more change-events per second than one worker can write to Cosmos. Unlikely for Jira/Confluence; conceivable for higher-volume sources we add later.
+3. A genuine fan-out need emerges (e.g. ingest also feeds an audit pipeline or a notification stream).
+
 ## Implementation sequencing — preview only
 
 This spec covers vision and architecture. The implementation plan (forthcoming) will sequence the work; rough phasing:
