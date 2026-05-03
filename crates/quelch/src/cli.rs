@@ -227,6 +227,27 @@ pub enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// All-in-one local development mode (sim + ingest + MCP in one process).
+    ///
+    /// Starts a mock Jira/Confluence server, an in-memory Cosmos backend, an
+    /// ingest worker, and an embedded MCP server — no cloud accounts needed.
+    Dev {
+        /// Use the real Azure AI Search adapter (requires Azure credentials).
+        #[arg(long)]
+        use_real_search: bool,
+        /// Use the Cosmos emulator at https://localhost:8081 instead of in-memory.
+        #[arg(long)]
+        use_cosmos_emulator: bool,
+        /// Port for the embedded MCP server.
+        #[arg(long, default_value = "8080")]
+        mcp_port: u16,
+        /// Seed the fixture data generator (reserved for future use).
+        #[arg(long)]
+        seed: Option<u64>,
+        /// Scale activity rate (reserved for future use).
+        #[arg(long, default_value = "1.0")]
+        rate_multiplier: f64,
+    },
     /// Manage AI embedding configuration
     Ai {
         #[command(subcommand)]

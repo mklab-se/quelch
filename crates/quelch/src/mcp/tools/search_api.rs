@@ -416,6 +416,58 @@ fn strip_system_fields(item: &Value) -> Value {
 }
 
 // ---------------------------------------------------------------------------
+// No-op adapter (for `quelch dev` and tests that don't care about search)
+// ---------------------------------------------------------------------------
+
+/// A [`SearchApiAdapter`] that always returns empty results.
+///
+/// Used by [`crate::mcp::run_server_in_memory`] so `quelch dev` can serve
+/// MCP tool calls without any Azure credentials.  The `query`, `get`, and
+/// `aggregate` tools still work normally via the Cosmos backend; only the
+/// `search` tool will return an empty result set.
+pub struct NoOpSearch;
+
+#[async_trait]
+impl SearchApiAdapter for NoOpSearch {
+    async fn search_knowledge_base(
+        &self,
+        _knowledge_base_name: &str,
+        _query: &str,
+        _odata_filter: Option<&str>,
+        _top: usize,
+        _cursor: Option<&str>,
+        _include_synthesis: bool,
+        _include_full_body: bool,
+    ) -> Result<RawSearchResponse, McpError> {
+        Ok(RawSearchResponse {
+            hits: vec![],
+            answer: None,
+            citations: None,
+            next_cursor: None,
+            total_estimate: 0,
+        })
+    }
+
+    async fn search_index(
+        &self,
+        _index_name: &str,
+        _query: &str,
+        _odata_filter: Option<&str>,
+        _top: usize,
+        _cursor: Option<&str>,
+        _include_full_body: bool,
+    ) -> Result<RawSearchResponse, McpError> {
+        Ok(RawSearchResponse {
+            hits: vec![],
+            answer: None,
+            citations: None,
+            next_cursor: None,
+            total_estimate: 0,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Mock (for unit tests)
 // ---------------------------------------------------------------------------
 

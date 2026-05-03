@@ -108,6 +108,63 @@ pub async fn run_server(
     server::serve(state, bind_addr).await
 }
 
+/// Build the `ServerState` from an in-memory Cosmos backend and start the MCP server.
+///
+/// This is the entry point used by `quelch dev`. It uses a caller-supplied
+/// `CosmosBackend` (typically [`InMemoryCosmos`][crate::cosmos::InMemoryCosmos])
+/// and a no-op search adapter, so no Azure credentials are required.
+pub async fn run_server_in_memory(
+    config: &crate::config::Config,
+    deployment_name: &str,
+    bind_addr: &str,
+    cosmos: std::sync::Arc<dyn crate::cosmos::CosmosBackend>,
+) -> anyhow::Result<()> {
+    use std::sync::Arc;
+
+    use crate::config::DeploymentRole;
+
+    let sliced = crate::config::slice::for_deployment(config, deployment_name)?;
+
+    // Validate the deployment is an MCP role.
+    let dep = sliced.deployments.first().ok_or_else(|| {
+        anyhow::anyhow!("no deployment found after slicing for '{deployment_name}'")
+    })?;
+    if dep.role != DeploymentRole::Mcp {
+        anyhow::bail!(
+            "run_server_in_memory requires a deployment with role=mcp, got '{:?}' for '{deployment_name}'",
+            dep.role
+        );
+    }
+
+    // No-op search adapter — returns empty results.
+    let search: Arc<dyn tools::search_api::SearchApiAdapter> =
+        Arc::new(tools::search_api::NoOpSearch);
+
+    let expose = Arc::new(
+        expose::ExposeResolver::from_sliced(&sliced, deployment_name)
+            .map_err(|e| anyhow::anyhow!("expose resolver: {e}"))?,
+    );
+
+    let schema = Arc::new(schema::SchemaCatalog::default());
+
+    let search_config = Arc::new(tools::search::SearchToolConfig {
+        disable_agentic: true, // no real KB in dev mode
+        knowledge_base_name: "dev-kb".into(),
+        default_top: sliced.mcp.default_top as usize,
+        max_top: sliced.mcp.max_top as usize,
+    });
+
+    let state = server::ServerState {
+        cosmos,
+        search,
+        expose,
+        schema,
+        search_config,
+    };
+
+    server::serve(state, bind_addr).await
+}
+
 /// Construct a [`CosmosBackend`][crate::cosmos::CosmosBackend] from the sliced config.
 async fn build_cosmos(
     config: &crate::config::Config,

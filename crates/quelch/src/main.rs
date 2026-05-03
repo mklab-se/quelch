@@ -217,6 +217,24 @@ async fn main() -> Result<()> {
             )
             .await
         }
+        Commands::Dev {
+            use_real_search,
+            use_cosmos_emulator,
+            mcp_port,
+            seed,
+            rate_multiplier,
+        } => {
+            quelch::dev::run(quelch::dev::DevOptions {
+                use_real_search,
+                use_cosmos_emulator,
+                mcp_port,
+                seed,
+                rate_multiplier,
+                no_tui: cli.no_tui,
+                once: false,
+            })
+            .await
+        }
         Commands::Mcp {
             deployment,
             port,
