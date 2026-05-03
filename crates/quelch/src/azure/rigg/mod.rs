@@ -8,6 +8,13 @@
 ///
 /// - `generate` — converts a [`Config`] into in-memory YAML strings grouped by
 ///   resource type.
+/// - `ownership` — checks whether a file carries the `# rigg:managed-by-user`
+///   hand-takeover marker.
+/// - `write` — persists [`GeneratedRiggFiles`] to disk, respecting ownership
+///   markers and the global `RiggConfig::ownership` setting.
 pub mod generate;
+pub mod ownership;
+pub mod write;
 
 pub use generate::{GenerateError, GeneratedRiggFiles, all};
+pub use write::{WriteError, WriteOutcome, write_to_disk};
