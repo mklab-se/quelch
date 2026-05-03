@@ -12,6 +12,7 @@ cosmos:       { ... }   # account, database, default container names
 search:       { ... }   # AI Search service shell (name, SKU). Internals are rigg-managed.
 openai:       { ... }   # endpoint and embedding deployment used by the rigg-managed skillsets
 sources:      [ ... ]   # named source instances (Jira, Confluence)
+ingest:       { ... }   # global ingest worker behaviour (poll cadence, safety lag, reconcile)
 deployments:  [ ... ]   # named workers — each is a slice of `sources` with a target host
 mcp:          { ... }   # MCP service config (exposed data sources, auth, search backend)
 rigg:         { ... }   # where Quelch writes generated rigg files
@@ -161,6 +162,29 @@ sources:
 | `container` | Override default Cosmos container for primary entities (issues / pages). |
 | `companion_containers` | Per-companion overrides. Defaults from `cosmos.containers`. |
 | `fields` | Source-specific extras (e.g. Jira custom fields). |
+
+## `ingest`
+
+Global defaults for ingest worker behaviour. These knobs directly affect the [sync correctness algorithm](sync.md) — read that document before changing them.
+
+```yaml
+ingest:
+  poll_interval: "300s"        # how often a worker tries to advance its window
+  safety_lag_minutes: 2        # window upper bound = (now floored to minute) - this many minutes
+  batch_size: 100              # page size for source API calls
+  reconcile_every: 12          # full deletion-reconciliation runs every Nth cycle
+  max_cycle_duration: "30m"    # warn if a cycle takes longer than this; doesn't abort
+```
+
+| Knob | Default | What it controls |
+|---|---|---|
+| `poll_interval` | `300s` | Cycle cadence — how often a worker tries to advance its window. Shorter = fresher data, more API quota used. |
+| `safety_lag_minutes` | `2` | How far behind real time the per-cycle window's upper bound stays. Absorbs Atlassian indexing lag. Increase if you see edge-of-minute drops; decrease for fresher data. Safe to change live. |
+| `batch_size` | `100` | Page size for source API calls (`maxResults` for Jira, `limit` for Confluence). |
+| `reconcile_every` | `12` | Full reconciliation pass every Nth cycle. With default `poll_interval` of 300s, that's ~60 minutes. Increase for large projects with low delete rates. |
+| `max_cycle_duration` | `30m` | Logged warning threshold — long cycles are valid for big windows, this just flags them. |
+
+These are global defaults. Future versions may allow per-source overrides; v1 keeps it global to make the system easier to reason about.
 
 ## `deployments`
 

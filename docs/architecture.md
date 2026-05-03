@@ -250,6 +250,21 @@ For `quelch dev` (no Cosmos), a local-file backend implements the same trait.
 
 Distributed ingest workers are designed to be **disjoint by config**, not coordinated at runtime. If you want to split Jira projects across workers, you do so in the config (`projects: [A,B,...,K]` vs `projects: [L,...,Z]`). Quelch validates that each `(source, subsource)` pair is owned by exactly one deployment.
 
+## Sync correctness
+
+Incremental sync against Atlassian APIs is the most error-prone part of the system. Atlassian's filter precision is per-minute, the document `updated` field is per-second, and Atlassian's own indexes lag — the obvious naive algorithm ("remember the latest `updated` seen, query everything ≥ that") is wrong on every one of those mismatches and was a real source of v1 bugs.
+
+The v2 algorithm is:
+
+- **Cursor at exact-minute resolution** (`last_complete_minute`), with the semantic "every change with `updated <= last_complete_minute` is durably in Cosmos".
+- **Sync in closed minute-resolution intervals** with a fixed safety lag (default 2 minutes) behind real time.
+- **Idempotent upserts** to Cosmos so repeating any window is harmless.
+- **Crash-safe.** The cursor advances only on full window success; a crashed worker re-runs its current window from scratch.
+- **Backfill resumes** from a `(updated, key)` checkpoint with a fixed `backfill_target`, so the result set walked across a resume is stable.
+- **Deletions detected** via periodic full reconciliation against the source; soft-deleted in Cosmos via a `_deleted` flag that the AI Search Indexer's soft-delete column policy honours.
+
+The full algorithm — including JQL/CQL formats, field semantics, the per-cycle pseudocode, the backfill resume protocol, and operator FAQs — is in [sync.md](sync.md). Read that document before debugging anything sync-related.
+
 ## Deployment topology
 
 A single Quelch installation typically looks like:

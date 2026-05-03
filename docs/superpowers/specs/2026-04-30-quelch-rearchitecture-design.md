@@ -185,7 +185,22 @@ Rationale:
 - Quelch already has the deployment metadata; not generating it would be a wasted asset.
 - Repurposes the existing `copilot.rs` work as one target.
 
-### 12. Rigg as embedded library for AI Search and Foundry configuration
+### 12. Sync correctness — minute-resolution intervals with safety lag
+
+Decision: incremental sync uses closed minute-resolution intervals with a fixed safety lag (default 2 minutes). The cursor `last_complete_minute` advances atomically only on full window success. Backfill resumes via a `(updated, key)` checkpoint with a fixed `backfill_target`. Deletions detected by periodic full reconciliation; soft-deleted in Cosmos via a `_deleted` flag honoured by the AI Search Indexer's soft-delete column policy.
+
+Rationale:
+
+- Atlassian APIs filter at minute resolution but emit per-second timestamps; Atlassian indexes lag — naive "remember the latest seen, query ≥" algorithms are wrong on every one of these mismatches and were a real source of v1 bugs.
+- Closed minute intervals are symmetric with the filter precision: never advance past a minute we haven't fully covered.
+- Safety lag absorbs Atlassian-side indexing lag and clock drift.
+- Idempotent upserts mean repeated coverage of the same window is harmless.
+- Full reconciliation is the only way to detect deletes (Atlassian doesn't surface them in the change feed).
+- Soft delete via `_deleted` flag matches the canonical Azure Cosmos → AI Search Indexer pattern and gives auditability + recovery.
+
+Full algorithm — JQL/CQL formats, per-cycle pseudocode, backfill resume protocol, operator FAQs — documented in [/docs/sync.md](../../../docs/sync.md).
+
+### 13. Rigg as embedded library for AI Search and Foundry configuration
 
 Decision: Quelch depends on `rigg-core` and `rigg-client` as Cargo workspace dependencies. AI Search index/skillset/indexer/data-source/synonym-map/alias/knowledge-source/knowledge-base configuration and Microsoft Foundry agents are managed by rigg, not by Bicep. Quelch generates rigg files under `rigg/` from `quelch.yaml`, then plans/pushes them via the embedded library. Users can hand-take-over individual rigg files (`# rigg:managed-by-user` marker) for fine-grained tuning while keeping the rest generated.
 
@@ -221,7 +236,7 @@ Rationale:
 
 ## Documentation deliverables
 
-A doc set under `/docs/`, plus this spec. Eight files:
+A doc set under `/docs/`, plus this spec:
 
 | File | Purpose |
 |---|---|
@@ -229,10 +244,11 @@ A doc set under `/docs/`, plus this spec. Eight files:
 | [architecture.md](../../../docs/architecture.md) | Components, data flow, document model, state, topology, what changes. |
 | [configuration.md](../../../docs/configuration.md) | `quelch.yaml` reference, every section. |
 | [cli.md](../../../docs/cli.md) | Every command + flag with examples. |
+| [sync.md](../../../docs/sync.md) | Sync correctness — minute-resolution algorithm, backfill, deletions, operator FAQ. |
 | [mcp-api.md](../../../docs/mcp-api.md) | The five tools, schemas, pagination, expose filter. |
 | [deployment.md](../../../docs/deployment.md) | Azure plan/deploy + on-prem generated artefacts. |
-| [agents.md](../../../docs/agents.md) | `quelch agent generate`, targets, bundle contents. |
-| [examples.md](../../../docs/examples.md) | Ten end-to-end walkthroughs. |
+| [agent-generation.md](../../../docs/agent-generation.md) | `quelch agent generate`, targets, bundle contents (agent + skill forms). |
+| [examples.md](../../../docs/examples.md) | End-to-end walkthroughs of real user questions. |
 
 ## Open items deferred to implementation planning
 

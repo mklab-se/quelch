@@ -29,6 +29,7 @@ Result: agents can answer both "find issues that talk about camera connection pr
 | Understand how Quelch fits together | [architecture.md](architecture.md) |
 | Write or edit the config file | [configuration.md](configuration.md) |
 | Look up a specific command | [cli.md](cli.md) |
+| Understand or debug incremental sync | [sync.md](sync.md) |
 | Build an agent or skill that talks to Quelch | [mcp-api.md](mcp-api.md) and [agent-generation.md](agent-generation.md) |
 | Deploy Quelch to Azure or on-prem | [deployment.md](deployment.md) |
 | See real questions answered end-to-end | [examples.md](examples.md) |
