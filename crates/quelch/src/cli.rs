@@ -217,6 +217,11 @@ pub enum Commands {
         #[arg(short, long, default_value = "copilot-studio")]
         output: PathBuf,
     },
+    /// Generate an agent or skill bundle for a specific platform
+    Agent {
+        #[command(subcommand)]
+        command: AgentCommands,
+    },
     /// Run the continuous ingest worker for a deployment
     Ingest {
         /// Deployment name — which slice of the config this worker owns.
@@ -318,6 +323,63 @@ pub enum AzureCommands {
         #[arg(long)]
         yes: bool,
     },
+}
+
+/// `quelch agent` subcommands.
+#[derive(clap::Subcommand)]
+pub enum AgentCommands {
+    /// Generate an agent or skill bundle for the given target platform.
+    Generate {
+        /// Target platform to generate the bundle for.
+        #[arg(long, value_enum)]
+        target: AgentTarget,
+
+        /// Output format: agent, skill, or both (where supported).
+        #[arg(long, value_enum)]
+        format: Option<AgentFormat>,
+
+        /// Output directory for the generated bundle.
+        #[arg(long, default_value = "./agent-bundle")]
+        output: PathBuf,
+
+        /// MCP deployment name (defaults to the first MCP deployment in config).
+        #[arg(long)]
+        deployment: Option<String>,
+
+        /// Override the public URL of the MCP server.
+        ///
+        /// Required when the URL is not derivable from config (e.g. custom domain).
+        #[arg(long)]
+        url: Option<String>,
+    },
+}
+
+/// Target platform for `quelch agent generate`.
+#[derive(Clone, clap::ValueEnum)]
+pub enum AgentTarget {
+    /// Microsoft Copilot Studio (agent form).
+    CopilotStudio,
+    /// Anthropic Claude Code (skill form).
+    ClaudeCode,
+    /// GitHub Copilot CLI (skill form).
+    CopilotCli,
+    /// VS Code GitHub Copilot (skill form).
+    VscodeCopilot,
+    /// OpenAI Codex CLI (skill form).
+    Codex,
+    /// Generic markdown — both agent and skill forms.
+    Markdown,
+}
+
+/// Output format override for `quelch agent generate`.
+#[derive(Clone, clap::ValueEnum)]
+pub enum AgentFormat {
+    /// Generate agent-form output only.
+    Agent,
+    /// Generate skill-form output only.
+    Skill,
+    /// Generate both agent and skill forms.
+    Both,
 }
 
 /// `quelch azure indexer` subcommands.

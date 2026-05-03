@@ -14,7 +14,7 @@ use quelch::config::DeploymentTarget;
 use std::path::{Path, PathBuf};
 use tracing_subscriber::EnvFilter;
 
-use cli::{AzureCommands, Cli, Commands, IndexerCommands};
+use cli::{AgentCommands, AgentTarget, AzureCommands, Cli, Commands, IndexerCommands};
 
 // Suppress `set_var` deprecation on Rust 1.80+ (we only use it for env var
 // passthrough at process startup, never in multi-threaded context).
@@ -169,9 +169,19 @@ async fn main() -> Result<()> {
         }
         Commands::GenerateAgent { .. } => {
             anyhow::bail!(
-                "quelch generate-agent is not available in v2; use `quelch agent generate` (Phase 7)"
+                "quelch generate-agent is not available in v2; use `quelch agent generate` (Phase 8)"
             )
         }
+        Commands::Agent {
+            command:
+                AgentCommands::Generate {
+                    target,
+                    format: _format,
+                    output,
+                    deployment,
+                    url,
+                },
+        } => cmd_agent_generate(&cli.config, target, output, deployment, url),
         Commands::Ingest {
             deployment,
             once,
@@ -718,6 +728,64 @@ async fn cmd_azure_destroy(config_path: &Path, deployment: &str, yes: bool) -> R
     let snapshot_path = PathBuf::from(format!(".quelch/azure/{deployment}.last.json"));
     quelch::azure::deploy::destroy::remove_snapshot(&snapshot_path);
 
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// quelch agent generate
+// ---------------------------------------------------------------------------
+
+fn cmd_agent_generate(
+    config_path: &Path,
+    target: AgentTarget,
+    output: PathBuf,
+    deployment: Option<String>,
+    url: Option<String>,
+) -> Result<()> {
+    let config = quelch::config::load_config(config_path)?;
+
+    // Resolve deployment name: use explicit arg or find the first MCP deployment.
+    let deployment_name = deployment
+        .or_else(|| {
+            config
+                .deployments
+                .iter()
+                .find(|d| d.role == quelch::config::DeploymentRole::Mcp)
+                .map(|d| d.name.clone())
+        })
+        .ok_or_else(|| anyhow::anyhow!("no MCP deployment found in config; use --deployment"))?;
+
+    // Build the bundle.
+    let mut bundle = quelch::agent::bundle::build(&config, &deployment_name)?;
+
+    // Allow URL override.
+    if let Some(explicit_url) = url {
+        bundle.connection.url = explicit_url;
+    }
+
+    // Dispatch to the appropriate target writer.
+    match target {
+        AgentTarget::CopilotStudio => {
+            quelch::agent::targets::copilot_studio::write(&bundle, &output)?;
+        }
+        AgentTarget::ClaudeCode => {
+            quelch::agent::targets::claude_code::write(&bundle, &output)?;
+        }
+        AgentTarget::CopilotCli => {
+            quelch::agent::targets::copilot_cli::write(&bundle, &output)?;
+        }
+        AgentTarget::VscodeCopilot => {
+            quelch::agent::targets::vscode_copilot::write(&bundle, &output)?;
+        }
+        AgentTarget::Codex => {
+            quelch::agent::targets::codex::write(&bundle, &output)?;
+        }
+        AgentTarget::Markdown => {
+            quelch::agent::targets::markdown::write(&bundle, &output)?;
+        }
+    }
+
+    println!("Wrote agent bundle to {}", output.display());
     Ok(())
 }
 
