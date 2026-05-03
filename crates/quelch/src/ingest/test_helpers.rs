@@ -76,6 +76,7 @@ pub enum ListIdsResponse {
 ///
 /// For error injection: set `fetch_window_error_on_page` to return an error
 /// on the Nth `fetch_window` call (0-indexed).
+#[derive(Clone)]
 pub struct MockConnector {
     pub source_name: String,
     pub primary_container: String,

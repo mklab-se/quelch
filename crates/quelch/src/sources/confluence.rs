@@ -26,6 +26,7 @@ use crate::config::ConfluenceSourceConfig;
 /// Implements [`SourceConnector`] for both Confluence Cloud and Data Center.
 /// Constructed via [`ConfluenceConnector::new`]; the HTTP client is injected
 /// (built once by the ingest worker with rate-limit middleware).
+#[derive(Clone)]
 pub struct ConfluenceConnector {
     /// Source name from config — used as the stable identifier in Cosmos IDs.
     source_name: String,

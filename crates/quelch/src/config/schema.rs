@@ -418,7 +418,7 @@ pub struct DeploymentConfig {
 }
 
 /// Runtime role of a deployment.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeploymentRole {
     Ingest,

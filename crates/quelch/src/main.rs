@@ -66,6 +66,19 @@ async fn main() -> Result<()> {
                 "quelch generate-agent is not available in v2; use `quelch agent generate` (Phase 7)"
             )
         }
+        Commands::Ingest {
+            deployment,
+            once,
+            max_docs,
+        } => {
+            let config = quelch::config::load_config(&cli.config)?;
+            quelch::ingest::worker::run(
+                &config,
+                &deployment,
+                quelch::ingest::worker::WorkerOptions { once, max_docs },
+            )
+            .await
+        }
     }
 }
 

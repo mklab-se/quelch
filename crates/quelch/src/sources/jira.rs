@@ -27,6 +27,7 @@ use crate::config::JiraSourceConfig;
 /// Implements [`SourceConnector`] for both Jira Cloud and Data Center.
 /// Constructed via [`JiraConnector::new`]; the HTTP client is injected
 /// (built once by the ingest worker with rate-limit middleware).
+#[derive(Clone)]
 pub struct JiraConnector {
     /// Source name from config — used as the stable identifier in Cosmos IDs.
     source_name: String,

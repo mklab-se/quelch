@@ -146,4 +146,16 @@ pub enum Commands {
         #[arg(short, long, default_value = "copilot-studio")]
         output: PathBuf,
     },
+    /// Run the continuous ingest worker for a deployment
+    Ingest {
+        /// Deployment name — which slice of the config this worker owns.
+        #[arg(long)]
+        deployment: String,
+        /// Run one cycle then exit (useful for debugging and CI).
+        #[arg(long)]
+        once: bool,
+        /// Stop after ingesting N documents (debugging).
+        #[arg(long)]
+        max_docs: Option<u64>,
+    },
 }
