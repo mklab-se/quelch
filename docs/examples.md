@@ -588,9 +588,59 @@ This is the canonical "first-call-of-the-conversation" pattern — the agent cac
 
 ---
 
+## 17. "What Confluence pages have been deleted recently?"
+
+**User expects:** an audit-style list of pages that disappeared from Confluence in some time window — useful for governance ("did anyone delete the API contract page?") and for understanding why search results have changed.
+
+**Agent's plan:** `query` `confluence_pages` with `_deleted=true` and a `_deleted_at` time window. This is one of the rare cases where `include_deleted: true` is the right answer — the whole point of the question is to see soft-deleted records.
+
+**MCP calls:**
+
+```jsonc
+query({
+  data_source: "confluence_pages",
+  where: {
+    "and": [
+      { "_deleted": true },
+      { "_deleted_at": { "gte": "7 days ago" } }
+    ]
+  },
+  order_by: [{ field: "_deleted_at", dir: "desc" }],
+  top: 100,
+  include_deleted: true            // soft-deleted are filtered out by default; opt in
+})
+// → { items: [
+//      {
+//        id: "confluence-internal-ENG-12345",
+//        space_key: "ENG",
+//        title: "Camera Connectivity Pipeline",
+//        source_link: "https://confluence.internal.example/display/ENG/...",
+//        updated: "2026-04-25T16:01:11Z",
+//        updated_by: { name: "Ana Lindqvist", email: "..." },
+//        _deleted: true,
+//        _deleted_at: "2026-04-29T03:14:22Z"
+//      },
+//      ...
+//    ], next_cursor: null, total: 4 }
+```
+
+**Response:** "4 pages have been deleted from Confluence in the last 7 days: (1) *Camera Connectivity Pipeline* (ENG) — last updated by Ana 5 days ago, deleted 2 days ago; (2) *Field Diagnostics — Draft v0* (ENG) — created and deleted within the same day, ... [click any to see the last-known content via the link]"
+
+The `source_link` still points at Confluence even though the page is gone — Confluence Cloud will show a "page not found" or "in trash" page; on Data Center an admin can recover from the trash UI. The Cosmos record retains the last-known content (`body`, `title`, `updated_by`) until compaction.
+
+A few notes on this pattern:
+
+- The `_deleted_at` timestamp is when *Quelch's reconciliation* detected the absence — usually within `reconcile_every × poll_interval` of the actual deletion (default ~60 minutes). Not when Confluence itself logged the delete.
+- A page that moves spaces (ENG → OPS) shows up here under its old space — the ENG record is tombstoned. The page's content is alive in the new space; the agent can find it via a normal `query` over `confluence_pages` with `title: "..."`.
+- Same query shape works for Jira — substitute `data_source: "jira_issues"`. Jira deletes are rare but the mechanism is identical.
+
+This is more of an operator/governance query than an everyday agent question, but the tools support it without any extra surface area.
+
+---
+
 ## Pattern summary
 
-If you read all sixteen, the patterns repeat:
+If you read all seventeen, the patterns repeat:
 
 - **Exhaustive listing** → `query` with cursor pagination.
 - **Counts and totals** → `aggregate`.
@@ -601,6 +651,7 @@ If you read all sixteen, the patterns repeat:
 - **Domain concepts (sprints, fix versions, spaces)** → `query` against the companion data source first, then a follow-up call.
 - **Issue dependencies** → `get` to read `issuelinks`, then `query` with `key: [...]` to enrich.
 - **Discovery / "what's available"** → `list_sources` then `query` the metadata data sources.
+- **Audit / "what was deleted"** → `query` with `_deleted: true` and `include_deleted: true`.
 - **Two-step "resolve then fetch"** is the most common shape.
 - **Always include `source_link`s** in the answer.
 

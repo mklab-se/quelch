@@ -206,7 +206,25 @@ The same algorithm applies to Confluence, with two field renames and one API qui
 - Cursor field is `last_modified_minute` (semantic identical to `last_complete_minute`).
 - Filter language is CQL: `space = "{key}" AND lastmodified >= "{...}" AND lastmodified <= "{...}" ORDER BY lastmodified ASC`.
 - Confluence's CQL doesn't have a stable secondary sort field comparable to Jira's `key ASC`. We use `id ASC` as the secondary sort. Same shape; same correctness story.
-- Confluence pages can be moved between spaces. A page that moves out of an ingested space looks like a delete from the perspective of the source-space subsource — the periodic reconciliation handles it.
+
+### Confluence-specific deletion cases
+
+Confluence pages get deleted, trashed, restored, and moved between spaces. Quelch handles each via the same reconciliation mechanism, but the user-visible outcome differs by case:
+
+| Case | What Confluence does | What Quelch sees | Resulting Cosmos state |
+|---|---|---|---|
+| **Hard delete** (admin-purged or 30 days in trash) | Page gone, irrecoverable | Page disappears from `space=X type=page` listing. | Reconciliation sets `_deleted=true`, `_deleted_at=now` on the existing doc. AI Search Indexer's soft-delete column policy removes from index next run. |
+| **Move to trash** (Cloud has 30-day trash) | Page hidden from default listings; can still be restored | Same as hard delete from our POV — reconciliation tombstones it. | Same as above. The doc is reachable via `query` only with `include_deleted: true`. |
+| **Restore from trash** | Page back; `lastmodified` bumped by the restore | Picked up by the next *normal incremental cycle* (the page now appears in the lastmodified window). | Upsert clears `_deleted: false` and writes fresh content. No reconciliation needed for restoration. |
+| **Move to another space** (e.g. ENG → OPS) | Page id stays the same but `space` changes | From the **old space's** subsource: page disappears from the listing → reconciliation tombstones it. From the **new space's** subsource: page is new (its `lastmodified` was bumped by the move) → incremental ingests it. | Two Cosmos docs: the ENG record (`_deleted=true`) and a fresh OPS record. The page's content lives on under the new-space record. |
+
+The two-records-on-move outcome is intentional — Cosmos partition keys are immutable, so we can't atomically rebrand the existing record. The Confluence page id format includes the space key (`confluence-internal-ENG-12345`) precisely so this works cleanly. The agent doesn't notice — `query` returns the live (OPS) record by default; the tombstoned (ENG) record only surfaces with `include_deleted: true`.
+
+### Reconciliation cost for Confluence
+
+Reconciliation lists every page id in every owned space. With `reconcile_every: 12` and `poll_interval: 300s` (~60-minute reconciliation cadence), a 10K-page space costs ~100 paginated API calls per hour just for delete detection. Tune `reconcile_every` higher for very large spaces with low delete rates — the trade-off is delete-to-tombstone latency.
+
+For a forensic "what was deleted recently?" query, see [examples.md example 17](examples.md#17-what-pages-have-been-deleted-recently).
 
 ## Rate limits and backoff
 

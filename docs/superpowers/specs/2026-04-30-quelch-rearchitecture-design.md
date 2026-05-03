@@ -248,7 +248,7 @@ A doc set under `/docs/`, plus this spec:
 | [mcp-api.md](../../../docs/mcp-api.md) | The five tools, schemas, pagination, expose filter. |
 | [deployment.md](../../../docs/deployment.md) | Azure plan/deploy + on-prem generated artefacts. |
 | [agent-generation.md](../../../docs/agent-generation.md) | `quelch agent generate`, targets, bundle contents (agent + skill forms). |
-| [examples.md](../../../docs/examples.md) | Sixteen end-to-end walkthroughs covering exhaustive listing, counting, hybrid search, summarisation, recency, staleness, sprint planning, release notes, dependency tracing, and discovery. |
+| [examples.md](../../../docs/examples.md) | Seventeen end-to-end walkthroughs covering exhaustive listing, counting, hybrid search, summarisation, recency, staleness, sprint planning, release notes, dependency tracing, discovery, and forensic / audit. |
 
 ## Open items deferred to implementation planning
 

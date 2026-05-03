@@ -312,11 +312,12 @@ These are the fields the ingest worker writes for each source type by default. E
 
 ```json
 {
-  "id":          "confluence-internal-page-12345",
+  "id":          "confluence-internal-ENG-12345",
   "source_name": "confluence-internal",
   "source_link": "https://confluence.internal.example/display/ENG/Camera+Connectivity",
 
   "space_key":   "ENG",
+  "page_id":     "12345",
   "title":       "Camera Connectivity Pipeline",
   "body":        "<rendered storage or view format>",
 
@@ -355,7 +356,7 @@ These are the fields the ingest worker writes for each source type by default. E
 
 #### Common conventions
 
-- `id` is always `{source_name}-{stable-key}` — globally unique across Quelch.
+- `id` is always `{source_name}-{stable-key}` — globally unique across Quelch. For Jira, `stable-key` is the issue key (`DO-1234`), sprint number (`sprint-204`), version name (`fixversion-iXX-2.7.0`), or project key. For Confluence, `stable-key` is `{space_key}-{page_id}` so a page moving between spaces becomes a new record (Cosmos partition keys are immutable; see [sync.md "Confluence-specific deletion cases"](sync.md#confluence-specific-deletion-cases)).
 - `source_name` is the configured source instance (e.g. `jira-internal`, `jira-cloud`). Lets agents filter to "only stuff from cloud Jira" without per-instance MCP calls.
 - `source_link` is mandatory on every document — agents include it in user-facing answers so users can click through.
 - `_partition_key` is set by the ingest worker — project key for Jira, space key for Confluence. It's how Cosmos partitions the container.
