@@ -24,6 +24,7 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Validate => cmd_validate(&cli.config),
+        Commands::EffectiveConfig { name } => cmd_effective_config(&cli.config, &name),
         Commands::Init => cmd_init(),
         Commands::Mock { port } => quelch::mock::run_mock_server(port).await,
         Commands::Ai { command } => quelch::ai::run(command).await,
@@ -82,6 +83,14 @@ fn cmd_validate(config_path: &Path) -> Result<()> {
     for deployment in &config.deployments {
         println!("    - {}", deployment.name);
     }
+    Ok(())
+}
+
+fn cmd_effective_config(config_path: &Path, name: &str) -> Result<()> {
+    let config = config::load_config(config_path)?;
+    let sliced = config::slice::for_deployment(&config, name)?;
+    let yaml = serde_yaml::to_string(&sliced)?;
+    print!("{yaml}");
     Ok(())
 }
 

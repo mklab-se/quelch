@@ -76,6 +76,11 @@ pub enum Commands {
     ResetIndexes,
     /// Validate config file without running
     Validate,
+    /// Print the effective (sliced) config for one deployment
+    EffectiveConfig {
+        /// Name of the deployment to slice for
+        name: String,
+    },
     /// Generate a starter quelch.yaml config
     Init,
     /// Start a local mock Jira and Confluence server for testing
