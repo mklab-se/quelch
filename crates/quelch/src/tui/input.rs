@@ -142,25 +142,42 @@ impl InputState {
 mod tests {
     use super::*;
     use crate::config::{
-        AuthConfig, AzureConfig, Config, JiraSourceConfig, SourceConfig, SyncConfig,
+        AuthConfig, AzureConfig, Config, CosmosConfig, JiraSourceConfig, OpenAiConfig, SourceConfig,
     };
     use crate::tui::app::App;
     use crate::tui::prefs::Prefs;
 
     fn make_app() -> App {
+        // TODO(quelch v2 phase 3+): move to a shared test fixture builder
         let cfg = Config {
             azure: AzureConfig {
-                endpoint: "x".into(),
-                api_key: "k".into(),
+                subscription_id: "sub".into(),
+                resource_group: "rg".into(),
+                region: "swedencentral".into(),
+                naming: Default::default(),
+                skip_role_assignments: false,
+            },
+            cosmos: CosmosConfig::default(),
+            search: Default::default(),
+            openai: OpenAiConfig {
+                endpoint: "https://x.openai.azure.com".into(),
+                embedding_deployment: "te".into(),
+                embedding_dimensions: 1536,
             },
             sources: vec![SourceConfig::Jira(JiraSourceConfig {
                 name: "j".into(),
                 url: "x".into(),
                 auth: AuthConfig::DataCenter { pat: "p".into() },
                 projects: vec!["DO".into()],
-                index: "i".into(),
+                container: None,
+                companion_containers: Default::default(),
+                fields: Default::default(),
             })],
-            sync: SyncConfig::default(),
+            ingest: Default::default(),
+            deployments: vec![],
+            mcp: Default::default(),
+            rigg: Default::default(),
+            state: Default::default(),
         };
         App::new(&cfg, Prefs::default())
     }

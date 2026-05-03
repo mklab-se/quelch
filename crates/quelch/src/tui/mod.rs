@@ -128,29 +128,51 @@ mod smoke_tests {
         drop(g);
     }
 
+    fn minimal_v2_config(source_name: &str, projects: Vec<&str>) -> crate::config::Config {
+        // TODO(quelch v2 phase 3+): move to a shared test fixture builder
+        use crate::config::{
+            AuthConfig, AzureConfig, Config, CosmosConfig, JiraSourceConfig, OpenAiConfig,
+            SourceConfig,
+        };
+        Config {
+            azure: AzureConfig {
+                subscription_id: "sub".into(),
+                resource_group: "rg".into(),
+                region: "swedencentral".into(),
+                naming: Default::default(),
+                skip_role_assignments: false,
+            },
+            cosmos: CosmosConfig::default(),
+            search: Default::default(),
+            openai: OpenAiConfig {
+                endpoint: "https://x.openai.azure.com".into(),
+                embedding_deployment: "te".into(),
+                embedding_dimensions: 1536,
+            },
+            sources: vec![SourceConfig::Jira(JiraSourceConfig {
+                name: source_name.into(),
+                url: "http://x".into(),
+                auth: AuthConfig::DataCenter { pat: "p".into() },
+                projects: projects.into_iter().map(String::from).collect(),
+                container: None,
+                companion_containers: Default::default(),
+                fields: Default::default(),
+            })],
+            ingest: Default::default(),
+            deployments: vec![],
+            mcp: Default::default(),
+            rigg: Default::default(),
+            state: Default::default(),
+        }
+    }
+
     #[test]
     fn layout_draw_on_test_backend_does_not_panic() {
-        use crate::config::{
-            AuthConfig, AzureConfig, Config, JiraSourceConfig, SourceConfig, SyncConfig,
-        };
         use crate::tui::app::App;
         use crate::tui::layout::draw;
         use crate::tui::prefs::Prefs;
 
-        let cfg = Config {
-            azure: AzureConfig {
-                endpoint: "x".into(),
-                api_key: "k".into(),
-            },
-            sources: vec![SourceConfig::Jira(JiraSourceConfig {
-                name: "j".into(),
-                url: "x".into(),
-                auth: AuthConfig::DataCenter { pat: "p".into() },
-                projects: vec!["DO".into(), "HR".into()],
-                index: "i".into(),
-            })],
-            sync: SyncConfig::default(),
-        };
+        let cfg = minimal_v2_config("j", vec!["DO", "HR"]);
         let app = App::new(&cfg, Prefs::default());
         let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
         term.draw(|f| {
@@ -161,27 +183,11 @@ mod smoke_tests {
 
     #[test]
     fn draw_accepts_uptime_and_help_open_flag() {
-        use crate::config::{
-            AuthConfig, AzureConfig, Config, JiraSourceConfig, SourceConfig, SyncConfig,
-        };
         use crate::tui::app::App;
         use crate::tui::layout::draw;
         use crate::tui::prefs::Prefs;
 
-        let cfg = Config {
-            azure: AzureConfig {
-                endpoint: "x".into(),
-                api_key: "k".into(),
-            },
-            sources: vec![SourceConfig::Jira(JiraSourceConfig {
-                name: "j".into(),
-                url: "x".into(),
-                auth: AuthConfig::DataCenter { pat: "p".into() },
-                projects: vec!["DO".into()],
-                index: "i".into(),
-            })],
-            sync: SyncConfig::default(),
-        };
+        let cfg = minimal_v2_config("j", vec!["DO"]);
         let app = App::new(&cfg, Prefs::default());
         let mut term = ratatui::Terminal::new(TestBackend::new(100, 26)).unwrap();
         term.draw(|f| draw(f, &app, std::time::Duration::from_secs(7), true))

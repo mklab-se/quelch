@@ -670,23 +670,40 @@ impl App {
 mod tests {
     use super::*;
     use crate::config::{
-        AuthConfig, AzureConfig, Config, JiraSourceConfig, SourceConfig, SyncConfig,
+        AuthConfig, AzureConfig, Config, CosmosConfig, JiraSourceConfig, OpenAiConfig, SourceConfig,
     };
 
     fn cfg() -> Config {
+        // TODO(quelch v2 phase 3+): replace with a proper fixture builder
         Config {
             azure: AzureConfig {
-                endpoint: "http://x".into(),
-                api_key: "k".into(),
+                subscription_id: "sub".into(),
+                resource_group: "rg".into(),
+                region: "swedencentral".into(),
+                naming: Default::default(),
+                skip_role_assignments: false,
+            },
+            cosmos: CosmosConfig::default(),
+            search: Default::default(),
+            openai: OpenAiConfig {
+                endpoint: "https://x.openai.azure.com".into(),
+                embedding_deployment: "te".into(),
+                embedding_dimensions: 1536,
             },
             sources: vec![SourceConfig::Jira(JiraSourceConfig {
                 name: "my-jira".into(),
                 url: "http://x".into(),
                 auth: AuthConfig::DataCenter { pat: "p".into() },
                 projects: vec!["DO".into(), "HR".into()],
-                index: "idx".into(),
+                container: None,
+                companion_containers: Default::default(),
+                fields: Default::default(),
             })],
-            sync: SyncConfig::default(),
+            ingest: Default::default(),
+            deployments: vec![],
+            mcp: Default::default(),
+            rigg: Default::default(),
+            state: Default::default(),
         }
     }
 
