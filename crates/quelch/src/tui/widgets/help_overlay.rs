@@ -12,8 +12,8 @@ pub struct HelpOverlay;
 
 impl Widget for HelpOverlay {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let modal_w = 52u16.min(area.width.saturating_sub(4));
-        let modal_h = 22u16.min(area.height.saturating_sub(2));
+        let modal_w = 40u16.min(area.width.saturating_sub(4));
+        let modal_h = 10u16.min(area.height.saturating_sub(2));
         let h_pad = (area.width.saturating_sub(modal_w)) / 2;
         let v_pad = (area.height.saturating_sub(modal_h)) / 2;
         let outer = Rect {
@@ -26,7 +26,7 @@ impl Widget for HelpOverlay {
         Clear.render(outer, buf);
         let block = Block::default()
             .borders(Borders::ALL)
-            .title("Keyboard shortcuts")
+            .title("Quelch TUI")
             .border_style(Style::default().fg(Color::Cyan));
         let inner = block.inner(outer);
         block.render(outer, buf);
@@ -37,24 +37,9 @@ impl Widget for HelpOverlay {
             .split(inner);
 
         let body = vec![
-            heading("Navigation"),
-            kv("↑ ↓", "move up / down"),
-            kv("← →", "collapse / expand"),
-            kv("Enter", "open drilldown"),
-            Line::from(""),
-            heading("Actions"),
-            kv("r", "sync now"),
-            kv("p", "pause / resume"),
-            kv("R", "reset cursor (press twice)"),
-            kv("P", "purge source (press twice)"),
-            Line::from(""),
-            heading("View"),
-            kv("s", "toggle log view"),
-            kv("c", "clear footer flash"),
-            Line::from(""),
-            heading("Other"),
-            kv("?", "this help"),
-            kv("q or ^C", "quit"),
+            kv("↑/↓", "navigate"),
+            kv("q/Esc", "quit"),
+            kv("?", "toggle help"),
         ];
         Paragraph::new(body).render(chunks[0], buf);
         Paragraph::new(Line::from(Span::styled(
@@ -65,13 +50,36 @@ impl Widget for HelpOverlay {
     }
 }
 
-fn heading(s: &'static str) -> Line<'static> {
-    Line::from(Span::styled(s, Style::default().fg(Color::Yellow)))
-}
-
 fn kv(k: &'static str, v: &'static str) -> Line<'static> {
     Line::from(vec![
         Span::styled(format!("  {k:<10}"), Style::default().fg(Color::Cyan)),
         Span::raw(v),
     ])
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    #[test]
+    fn help_overlay_lists_key_bindings() {
+        let mut term = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        term.draw(|f| f.render_widget(HelpOverlay, f.area()))
+            .unwrap();
+        let buf = term.backend().buffer();
+        let text: String = (0..buf.area.height)
+            .flat_map(|y| (0..buf.area.width).map(move |x| buf[(x, y)].symbol().to_string()))
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(text.contains("Quelch TUI"), "title missing: {text}");
+        assert!(text.contains("navigate"), "navigate hint missing: {text}");
+        assert!(text.contains("quit"), "quit hint missing: {text}");
+        assert!(text.contains("toggle help"), "help hint missing: {text}");
+    }
 }

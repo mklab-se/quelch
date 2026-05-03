@@ -1,0 +1,37 @@
+# Invalid config: the same (source, subsource) pair "jira-cloud / DO"
+# appears in two separate ingest deployments.
+azure:
+  subscription_id: "sub-test"
+  resource_group: "rg-test"
+  region: "swedencentral"
+
+cosmos:
+  database: "quelch"
+
+openai:
+  endpoint: "https://test.openai.azure.com"
+  embedding_deployment: "text-embedding-3-large"
+  embedding_dimensions: 3072
+
+sources:
+  - type: jira
+    name: jira-cloud
+    url: "https://example.atlassian.net"
+    auth:
+      email: "user@example.com"
+      api_token: "tok"
+    projects: ["DO", "PROD"]
+
+deployments:
+  - name: ingest-a
+    role: ingest
+    target: onprem
+    sources:
+      - source: jira-cloud
+        projects: ["DO"]
+  - name: ingest-b
+    role: ingest
+    target: onprem
+    sources:
+      - source: jira-cloud
+        projects: ["DO", "PROD"]

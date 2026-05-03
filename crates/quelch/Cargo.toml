@@ -44,11 +44,25 @@ futures.workspace = true
 humantime.workspace = true
 rand.workspace = true
 tokio-util.workspace = true
+rigg-core = { workspace = true }
+rigg-client = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+azure_data_cosmos = { workspace = true }
+azure_identity = { workspace = true }
+handlebars = { workspace = true }
+toml = { workspace = true }
+reqwest-retry = { workspace = true }
+reqwest-middleware = { workspace = true }
+schemars = { workspace = true }
+async-trait = { workspace = true }
+dialoguer = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
 wiremock = "0.6"
 assert_cmd.workspace = true
+insta = { workspace = true }
 
 [package.metadata.binstall]
 pkg-url = "{ repo }/releases/download/v{ version }/quelch-v{ version }-{ target }.{ archive-format }"

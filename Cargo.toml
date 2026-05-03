@@ -61,8 +61,42 @@ trait-variant = "0.1"
 # Terminal colors
 colored = "2.1"
 
-# Mock server
-axum = "0.8"
+# rigg as a library — manages Azure AI Search and Foundry config
+# NOTE: rigg-core/rigg-client 0.16.1 is committed in the rigg repo locally but not yet
+# published to crates.io. Use a path dep for now; switch to version dep when rigg is published.
+rigg-core   = { path = "/Users/kristofer/repos/rigg/crates/rigg-core",   version = "0.16.1" }
+rigg-client = { path = "/Users/kristofer/repos/rigg/crates/rigg-client", version = "0.16.1" }
+
+# MCP server transport
+axum = { version = "0.8", features = ["macros"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "cors"] }
+
+# Cosmos DB client (azure_data_cosmos is the official azure-sdk-for-rust crate)
+azure_data_cosmos = "0.21"
+azure_identity = "0.21"
+
+# Templating for Bicep / on-prem artefacts
+handlebars = "6"
+
+# Toml for codex-mcp.toml output
+toml = "0.8"
+
+# Bigger reqwest features for retry/backoff
+reqwest-retry = "0.6"
+reqwest-middleware = "0.3"
+
+# JSON Schema for MCP tool descriptions
+schemars = "1"
+
+# Async traits for object-safe traits
+async-trait = "0.1"
+
+# Snapshot testing
+insta = "1"
+
+# Interactive prompts (for quelch init wizard, later)
+dialoguer = "0.11"
 
 # AI integration
 ailloy = { version = "0.7.2", default-features = false, features = ["config-tui"] }

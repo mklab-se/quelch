@@ -1,0 +1,43 @@
+# Minimal valid quelch.yaml — used by config tests.
+azure:
+  subscription_id: "sub-test-123"
+  resource_group: "rg-quelch-test"
+  region: "swedencentral"
+
+cosmos:
+  database: "quelch"
+
+openai:
+  endpoint: "https://test.openai.azure.com"
+  embedding_deployment: "text-embedding-3-large"
+  embedding_dimensions: 3072
+
+sources:
+  - type: jira
+    name: jira-cloud
+    url: "https://example.atlassian.net"
+    auth:
+      email: "user@example.com"
+      api_token: "test-token"
+    projects: ["DO"]
+
+deployments:
+  - name: ingest
+    role: ingest
+    target: azure
+    sources:
+      - source: jira-cloud
+  - name: mcp
+    role: mcp
+    target: azure
+    expose:
+      - jira_issues
+    auth:
+      mode: "api_key"
+
+mcp:
+  data_sources:
+    jira_issues:
+      kind: jira_issue
+      backed_by:
+        - container: jira-issues

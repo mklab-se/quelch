@@ -5,8 +5,8 @@
 <h1 align="center">Quelch</h1>
 
 <p align="center">
-  Ingest data from Jira, Confluence, and more directly into Azure AI Search.<br>
-  No intermediate storage. Just source-to-index sync.
+  Ingest data from Jira and Confluence into Cosmos DB, serve it through an MCP API,<br>
+  and manage Azure AI Search indexes — all from one declarative config.
 </p>
 
 <p align="center">
@@ -18,6 +18,7 @@
 </p>
 
 <p align="center">
+  <a href="docs/README.md"><strong>Full documentation</strong></a> ·
   <a href="CHANGELOG.md"><strong>Changelog</strong></a>
 </p>
 
@@ -25,19 +26,34 @@
 
 ## What is Quelch?
 
-Quelch is a Rust CLI tool that ingests data from external sources (Jira, Confluence) directly into Azure AI Search indexes — no intermediate storage like Blob Storage or Cosmos DB. It runs as a one-shot sync or a continuous background process, with incremental sync, smart concurrency, and a rich terminal UI.
+Quelch v2 is a knowledge-platform operator tool for teams using Jira and Confluence. It ingests data into **Cosmos DB** as the system of record, uses **Azure AI Search** (via the embedded [rigg](https://github.com/mklab-se/rigg) library) for hybrid semantic retrieval, and exposes a **five-tool MCP API** that agents (Copilot Studio, VS Code Copilot, Claude, Codex) can call directly.
 
-The name "Quelch" evokes quenching a search index's thirst for data.
+One Rust binary, one YAML config file, three runtime roles: `quelch ingest`, `quelch mcp`, and the operator CLI.
+
+## Architecture overview
+
+```
+Sources → quelch ingest → Cosmos DB → AI Search Indexer → AI Search Index
+                              ↑                                ↑
+                              └─ quelch-meta (cursors)         │
+                                                               │
+                       quelch mcp ────────────────────────────┘
+                              ↑
+                       Agent (Copilot Studio / VS Code / Claude / etc.)
+```
+
+See [docs/architecture.md](docs/architecture.md) for details.
 
 ## Features
 
-- **Direct ingest** — Source data goes straight into Azure AI Search indexes
-- **Incremental sync** — Only fetches changes since last sync using high-water marks
-- **Crash-safe** — State persisted after every batch; restart and pick up where you left off
-- **Smart concurrency** — Parallel sync across servers, throttled per credential
-- **Rich TUI** — Live dashboard showing sync status, rates, and logs (via Ratatui)
-- **Multiple sources** — Jira and Confluence connectors, with a clean trait for adding more
-- **Minimal config** — Get started with a 10-line YAML file; smart defaults everywhere
+- **Cosmos DB as system of record** — exact queries, counts, exhaustive listings, and cursor-based pagination without hitting search
+- **Azure AI Search via rigg** — indexes, skillsets, indexers, knowledge sources, and knowledge bases all managed from `quelch.yaml`
+- **Five-tool MCP API** — `search` (Knowledge Base agentic retrieval), `query` (Cosmos SQL), `get` (point-read), `list_sources`, `aggregate`
+- **Incremental sync** — minute-resolution windows with safety lag, backfill resume, soft-delete reconciliation
+- **Agent bundle generator** — `quelch agent generate` produces grounded bundles for Copilot Studio, Claude Code, VS Code Copilot, Copilot CLI, Codex, and Markdown
+- **On-prem artefacts** — `quelch generate-deployment` writes docker-compose, systemd, or Kubernetes manifests; Quelch never SSHes anywhere
+- **Operator CLI** — `azure plan`, `azure deploy`, `azure indexer`, `azure logs` with Bicep + `az` shell-outs
+- **Rich TUI** — fleet dashboard showing live ingest state per worker, polling `quelch-meta`
 
 ## Installation
 
@@ -57,41 +73,76 @@ cargo install quelch
 
 Download pre-built binaries from the [latest release](https://github.com/mklab-se/quelch/releases/latest).
 
-## Quick Start
+## Quick start
 
 ```bash
-# Generate a starter config
+# Generate a starter config interactively
 quelch init
 
-# Edit quelch.yaml with your sources and Azure endpoint
-# Then run a one-shot sync
-quelch sync
+# Validate the generated config
+quelch validate
 
-# Or run continuous sync
-quelch watch
+# Plan Azure resources (Bicep + rigg files) — no Azure calls yet
+quelch azure plan ingest --no-what-if
+
+# Deploy to Azure (calls az + rigg-client)
+quelch azure deploy ingest
+
+# Run the ingest worker
+quelch ingest
+
+# Start the MCP server
+quelch mcp
 ```
 
-## Usage
+## CLI surface
 
 ```
-quelch — Ingest data directly into Azure AI Search
+quelch — Cosmos + AI Search knowledge platform operator
 
 COMMANDS:
-    sync        Run a one-shot sync of all configured sources
-    watch       Run continuous sync (polls at configured interval)
-    status      Show sync status for all sources
-    reset       Reset sync state (force full re-sync on next run)
-    validate    Validate config file without running
-    init        Generate a starter quelch.yaml config
+  validate            Validate config without running
+  effective-config    Print the resolved config for a deployment
+  status              Show live ingest state from quelch-meta
+  ingest              Run the ingest worker
+  mcp                 Start the MCP HTTP server
+  dev                 Run sim + ingest + MCP in one process (no Azure needed)
+  azure plan          Show Bicep + rigg diff against live Azure
+  azure deploy        Apply Bicep + rigg to Azure
+  azure pull          Pull live rigg state to disk
+  azure indexer       Run / reset / status the AI Search Indexer
+  azure logs          Tail Container Apps log stream
+  azure destroy       Tear down all Azure resources for a deployment
+  query               Run a Cosmos SQL query from the CLI
+  search              Run a Knowledge Base search from the CLI
+  get                 Fetch a single document from Cosmos
+  reset               Reset ingest cursors
+  generate-deployment Generate docker-compose / systemd / k8s artefacts
+  agent generate      Generate agent or skill bundles for agent platforms
+  init                Interactive config wizard
+  ai                  Configure AI (ailloy) embedding model
 
 OPTIONS:
-    -c, --config <PATH>    Config file path (default: quelch.yaml)
-    -v, --verbose          Increase verbosity
-    -q, --quiet            Suppress TUI, only log errors
-    --json                 Output logs as JSON
-    --version              Print version
-    --help                 Print help
+  -c, --config <PATH>   Config file (default: quelch.yaml)
+  --help                Print help
+  --version             Print version
 ```
+
+See [docs/cli.md](docs/cli.md) for every command and flag with examples.
+
+## Documentation
+
+| Doc | Purpose |
+|-----|---------|
+| [docs/README.md](docs/README.md) | Vision and 5-minute overview |
+| [docs/architecture.md](docs/architecture.md) | Components, data flow, topology |
+| [docs/configuration.md](docs/configuration.md) | `quelch.yaml` reference |
+| [docs/cli.md](docs/cli.md) | Every command + flag |
+| [docs/sync.md](docs/sync.md) | Sync correctness algorithm |
+| [docs/mcp-api.md](docs/mcp-api.md) | Five MCP tools, schemas, pagination |
+| [docs/deployment.md](docs/deployment.md) | Azure plan/deploy + on-prem artefacts |
+| [docs/agent-generation.md](docs/agent-generation.md) | `quelch agent generate` targets |
+| [docs/examples.md](docs/examples.md) | End-to-end agent usage walkthroughs |
 
 ## License
 

@@ -1,663 +1,892 @@
+// TODO(quelch v2 phase 3+): re-enable v1 commands as they are replaced by v2 equivalents.
+//
+// The v1 CLI commands (sync, watch, setup, reset-indexes, status, search, sim,
+// generate-agent) are stubbed for the v2 config layer work (Phase 1).
+// Each will be replaced by v2 commands in Phases 3–8.
+
 mod cli;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Parser;
-use quelch::{ai, config, copilot, search, sync};
-use std::io::IsTerminal;
-use std::path::Path;
-use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
-use tracing::info;
+use quelch::azure::deploy::whatif::WhatIfReport;
+use quelch::config;
+use quelch::config::DeploymentTarget;
+use std::path::{Path, PathBuf};
 use tracing_subscriber::EnvFilter;
-use tracing_subscriber::prelude::*;
 
-use cli::{Cli, Commands};
-use sync::IndexMode;
+use cli::{
+    AgentCommands, AgentTarget, AzureCommands, Cli, Commands, IndexerCommands, OnpremTargetArg,
+};
 
-enum LogMode {
-    Plain,
-    Tui,
-}
-
-fn decide_mode(cli: &Cli, sub: &Commands) -> LogMode {
-    // Snapshot mode always needs TUI wiring (TuiLayer feeding the TestBackend),
-    // regardless of TTY, --no-tui, or --json. It never enters raw mode, so it's
-    // safe even in CI or from assert_cmd.
-    if matches!(
-        sub,
-        Commands::Sim {
-            snapshot_to: Some(_),
-            ..
-        }
-    ) {
-        return LogMode::Tui;
-    }
-    let watchable = matches!(
-        sub,
-        Commands::Sync { .. } | Commands::Watch { .. } | Commands::Sim { .. }
-    );
-    if cli.no_tui || cli.json || cli.quiet || !std::io::stdout().is_terminal() || !watchable {
-        LogMode::Plain
-    } else {
-        LogMode::Tui
-    }
-}
-
-fn install_plain(verbose: u8, quiet: bool, json: bool, _is_sim: bool) {
-    // Plain-log filter choice is about what a human watching stdout needs to
-    // read to know the engine is doing its job, without drowning them in
-    // per-doc / per-retry noise.
-    //
-    // At default verbosity, `quelch=info` enables the structured lifecycle
-    // events (cycle_started / source_started / subsource_started / *_finished
-    // / backoff_started / backoff_finished) and the sim's one-shot startup
-    // lines, but suppresses the debug-level per-doc stream. `-v` turns the
-    // per-doc stream on for debugging.
-    let filter = match (quiet, verbose) {
-        (true, _) => "error".to_string(),
-        (_, 0) => "quelch=info".to_string(),
-        (_, 1) => "quelch=debug".to_string(),
-        (_, 2) => "quelch=debug,reqwest=debug".to_string(),
-        _ => "trace".to_string(),
-    };
-    let builder = tracing_subscriber::fmt().with_env_filter(EnvFilter::new(&filter));
-    if json {
-        builder.json().init();
-    } else {
-        builder.init();
-    }
-}
-
-fn install_tui() -> (
-    tokio::sync::mpsc::Receiver<quelch::tui::events::QuelchEvent>,
-    Arc<AtomicU64>,
-) {
-    let (layer, rx, drops) = quelch::tui::tracing_layer::layer_and_receiver();
-    // TUI wants debug-level so the drilldown pane's recent-docs ring receives
-    // per-doc events. The dashboard itself filters which events it renders.
-    tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::new("quelch=debug"))
-        .with(layer)
-        .init();
-    (rx, drops)
-}
-
+// Suppress `set_var` deprecation on Rust 1.80+ (we only use it for env var
+// passthrough at process startup, never in multi-threaded context).
+#[allow(deprecated)]
 #[tokio::main]
 async fn main() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::new("quelch=info"))
+        .init();
+
     let cli = Cli::parse();
-    let mode = decide_mode(&cli, &cli.command);
-    let is_sim = matches!(&cli.command, Commands::Sim { .. });
-    let tui_inputs = match mode {
-        LogMode::Plain => {
-            install_plain(cli.verbose, cli.quiet, cli.json, is_sim);
-            None
-        }
-        LogMode::Tui => {
-            let (rx, drops) = install_tui();
-            Some((rx, drops))
-        }
-    };
 
     match cli.command {
-        Commands::Sync {
-            create_indexes,
-            purge,
-            max_docs,
-        } => {
-            if let Some((rx, drops)) = tui_inputs {
-                cmd_sync_tui(&cli.config, create_indexes, purge, max_docs, rx, drops).await
-            } else {
-                cmd_sync(&cli.config, create_indexes, purge, max_docs).await
-            }
-        }
-        Commands::Watch {
-            create_indexes,
-            max_docs,
-        } => {
-            if let Some((rx, drops)) = tui_inputs {
-                cmd_watch_tui(&cli.config, create_indexes, max_docs, rx, drops).await
-            } else {
-                cmd_watch(&cli.config, create_indexes, max_docs).await
-            }
-        }
-        Commands::Setup { yes } => cmd_setup(&cli.config, yes).await,
-        Commands::Status => cmd_status(&cli.config),
-        Commands::Reset { source, subsource } => {
-            cmd_reset(&cli.config, source.as_deref(), subsource.as_deref())
-        }
-        Commands::ResetIndexes => cmd_reset_indexes(&cli.config).await,
         Commands::Validate => cmd_validate(&cli.config),
-        Commands::Init => cmd_init(),
-        Commands::Search {
-            query,
-            index,
+        Commands::EffectiveConfig { name } => cmd_effective_config(&cli.config, &name),
+        Commands::Init {
+            non_interactive,
+            from_template,
+            force,
+        } => {
+            let path = std::path::PathBuf::from("quelch.yaml");
+            quelch::init::run(
+                &path,
+                quelch::init::InitOptions {
+                    non_interactive,
+                    from_template,
+                    force,
+                },
+            )
+            .await
+        }
+        Commands::GenerateDeployment {
+            name,
+            target,
+            output,
+        } => cmd_generate_deployment(&cli.config, &name, target, &output),
+        Commands::Mock { port } => quelch::mock::run_mock_server(port).await,
+        Commands::Ai { command } => quelch::ai::run(command).await,
+        // TODO(quelch v2 phase 3+): wire up remaining commands
+        Commands::Sync { .. } => {
+            anyhow::bail!("quelch sync is not available in v2; use `quelch ingest` (Phase 3)")
+        }
+        Commands::Watch { .. } => {
+            anyhow::bail!("quelch watch is not available in v2; use `quelch ingest` (Phase 3)")
+        }
+        Commands::Setup { .. } => {
+            anyhow::bail!(
+                "quelch setup is not available in v2; use `quelch azure deploy` (Phase 4)"
+            )
+        }
+        Commands::Status {
+            deployment,
+            json,
+            tui,
+        } => {
+            let config = quelch::config::load_config(&cli.config)?;
+            quelch::commands::status::run(
+                &config,
+                quelch::commands::status::StatusOptions {
+                    deployment,
+                    json,
+                    tui,
+                },
+            )
+            .await
+        }
+        Commands::Reset {
+            source,
+            subsource,
+            yes,
+        } => {
+            let config = quelch::config::load_config(&cli.config)?;
+            quelch::commands::reset::run(
+                &config,
+                quelch::commands::reset::ResetOptions {
+                    source,
+                    subsource,
+                    yes,
+                },
+            )
+            .await
+        }
+        Commands::ResetIndexes => {
+            anyhow::bail!(
+                "quelch reset-indexes is not available in v2; use `quelch azure indexer reset` (Phase 4)"
+            )
+        }
+        Commands::Query {
+            data_source,
+            r#where,
+            where_file,
+            order_by,
             top,
+            cursor,
+            count_only,
+            include_deleted,
             json,
         } => {
-            let config = config::load_config(&cli.config)?;
-            search::run_search(&config, &query, index.as_deref(), top, json).await
+            let config = quelch::config::load_config(&cli.config)?;
+            // Parse --where / --where-file into a JSON Value.
+            let where_val = parse_where_arg(r#where.as_deref(), where_file.as_deref())?;
+            // Parse --order-by strings.
+            let order_by_parsed = order_by
+                .iter()
+                .map(|s| quelch::commands::query::parse_order_by(s))
+                .collect::<Result<Vec<_>>>()?;
+            quelch::commands::query::run(
+                &config,
+                quelch::commands::query::QueryOptions {
+                    data_source,
+                    where_: where_val,
+                    order_by: order_by_parsed,
+                    top,
+                    cursor,
+                    count_only,
+                    include_deleted,
+                    json,
+                },
+            )
+            .await
         }
-        Commands::Mock { port } => quelch::mock::run_mock_server(port).await,
-        Commands::Sim {
-            duration,
+        Commands::Search {
+            query,
+            data_sources,
+            r#where,
+            top,
+            cursor,
+            include_content,
+            include_deleted,
+            json,
+        } => {
+            let config = quelch::config::load_config(&cli.config)?;
+            let where_val = parse_where_arg(r#where.as_deref(), None)?;
+            let data_sources_parsed = data_sources
+                .as_deref()
+                .map(|s| s.split(',').map(|p| p.trim().to_string()).collect());
+            quelch::commands::search::run(
+                &config,
+                quelch::commands::search::SearchOptions {
+                    query,
+                    data_sources: data_sources_parsed,
+                    where_: where_val,
+                    top,
+                    cursor,
+                    include_content,
+                    include_deleted,
+                    json,
+                },
+            )
+            .await
+        }
+        Commands::Get {
+            id,
+            data_source,
+            include_deleted,
+            json,
+        } => {
+            let config = quelch::config::load_config(&cli.config)?;
+            quelch::commands::get::run(
+                &config,
+                quelch::commands::get::GetOptions {
+                    id,
+                    data_source,
+                    include_deleted,
+                    json,
+                },
+            )
+            .await
+        }
+        Commands::Sim { .. } => {
+            anyhow::bail!("quelch sim is not available in v2; use `quelch dev` (Phase 3/4)")
+        }
+        Commands::GenerateAgent { .. } => {
+            anyhow::bail!(
+                "quelch generate-agent is not available in v2; use `quelch agent generate` (Phase 8)"
+            )
+        }
+        Commands::Agent {
+            command:
+                AgentCommands::Generate {
+                    target,
+                    format: _format,
+                    output,
+                    deployment,
+                    url,
+                },
+        } => cmd_agent_generate(&cli.config, target, output, deployment, url),
+        Commands::Ingest {
+            deployment,
+            once,
+            max_docs,
+        } => {
+            let config = quelch::config::load_config(&cli.config)?;
+            quelch::ingest::worker::run(
+                &config,
+                &deployment,
+                quelch::ingest::worker::WorkerOptions { once, max_docs },
+            )
+            .await
+        }
+        Commands::Dev {
+            use_real_search,
+            use_cosmos_emulator,
+            mcp_port,
             seed,
             rate_multiplier,
-            fault_rate,
-            assert_docs,
-            snapshot_to,
-            snapshot_frames,
-            snapshot_width,
-            snapshot_height,
         } => {
-            let opts = quelch::sim::SimOpts {
-                duration: duration.map(|d| d.into()),
+            quelch::dev::run(quelch::dev::DevOptions {
+                use_real_search,
+                use_cosmos_emulator,
+                mcp_port,
                 seed,
                 rate_multiplier,
-                fault_rate,
-                assert_docs,
-                mock_port: None,
-                snapshot_to,
-                snapshot_frames,
-                snapshot_width,
-                snapshot_height,
-            };
-            quelch::sim::run(opts, tui_inputs).await
+                no_tui: cli.no_tui,
+                once: false,
+            })
+            .await
         }
-        Commands::Ai { command } => ai::run(command).await,
-        Commands::GenerateAgent { output } => cmd_generate_agent(&cli.config, &output),
-    }
-}
-
-fn cmd_generate_agent(config_path: &Path, output_dir: &Path) -> Result<()> {
-    let config = config::load_config(config_path)?;
-    let output = copilot::generate(&config);
-
-    std::fs::create_dir_all(output_dir).with_context(|| {
-        format!(
-            "failed to create output directory: {}",
-            output_dir.display()
-        )
-    })?;
-
-    let instructions_path = output_dir.join("agent-instructions.md");
-    std::fs::write(&instructions_path, &output.instructions)?;
-    println!("  Wrote {}", instructions_path.display());
-
-    for topic in &output.topics {
-        let topic_path = output_dir.join(&topic.filename);
-        std::fs::write(&topic_path, &topic.yaml)?;
-        println!("  Wrote {}", topic_path.display());
-    }
-
-    let guide_path = output_dir.join("guide.md");
-    std::fs::write(&guide_path, &output.guide)?;
-    println!("  Wrote {}", guide_path.display());
-
-    println!(
-        "\nGenerated {} file(s) in {}",
-        output.topics.len() + 2,
-        output_dir.display()
-    );
-    println!("Read {} to get started.", guide_path.display());
-
-    Ok(())
-}
-
-async fn cmd_sync(
-    config_path: &Path,
-    auto_create: bool,
-    purge: bool,
-    max_docs: Option<u64>,
-) -> Result<()> {
-    let config = config::load_config(config_path)?;
-    let state_path = Path::new(&config.sync.state_file).to_path_buf();
-    let mode = if auto_create {
-        IndexMode::AutoCreate
-    } else {
-        IndexMode::Interactive
-    };
-    let embedding = sync::load_embedding_config()?;
-    let embed_client = ailloy::Client::for_capability("embedding")
-        .context("failed to create embedding client — run 'quelch ai config' to set up")?;
-
-    if let Some(limit) = max_docs {
-        info!(max_docs = limit, "Starting one-shot sync (limited)");
-    } else {
-        info!("Starting one-shot sync");
-    }
-    sync::run_sync(
-        &config,
-        &state_path,
-        &embedding,
-        mode,
-        Some(&embed_client as &dyn sync::embedder::Embedder),
-        max_docs,
-    )
-    .await?;
-
-    if purge {
-        info!("Running orphan purge");
-        sync::run_purge(&config).await?;
-    }
-
-    info!("Sync complete");
-    Ok(())
-}
-
-async fn cmd_watch(config_path: &Path, auto_create: bool, max_docs: Option<u64>) -> Result<()> {
-    let config = config::load_config(config_path)?;
-    let state_path = Path::new(&config.sync.state_file).to_path_buf();
-    let interval = std::time::Duration::from_secs(config.sync.poll_interval);
-
-    let first_mode = if auto_create {
-        IndexMode::AutoCreate
-    } else {
-        IndexMode::Interactive
-    };
-    let embedding = sync::load_embedding_config()?;
-    let embed_client = ailloy::Client::for_capability("embedding")
-        .context("failed to create embedding client — run 'quelch ai config' to set up")?;
-
-    let purge_every = config.sync.purge_every;
-
-    info!(
-        poll_interval = config.sync.poll_interval,
-        purge_every = purge_every,
-        "Starting continuous sync (purge every {} cycles)",
-        purge_every
-    );
-
-    let mut cycle: u64 = 0;
-    loop {
-        cycle += 1;
-        let mode = if cycle == 1 {
-            first_mode
-        } else {
-            IndexMode::RequireExisting
-        };
-
-        if let Err(e) = sync::run_sync(
-            &config,
-            &state_path,
-            &embedding,
-            mode,
-            Some(&embed_client as &dyn sync::embedder::Embedder),
-            max_docs,
-        )
-        .await
-        {
-            tracing::error!(error = %e, "Sync cycle failed");
-        }
-
-        // Run purge every Nth cycle
-        if purge_every > 0 && cycle.is_multiple_of(purge_every) {
-            info!("Running scheduled orphan purge (cycle {})", cycle);
-            if let Err(e) = sync::run_purge(&config).await {
-                tracing::error!(error = %e, "Purge failed");
+        Commands::Mcp {
+            deployment,
+            port,
+            bind,
+            api_key,
+        } => {
+            let config = quelch::config::load_config(&cli.config)?;
+            if let Some(key) = api_key {
+                // SAFETY: called once at process start before spawning async tasks.
+                unsafe { std::env::set_var("QUELCH_MCP_API_KEY", key) };
             }
+            quelch::mcp::run_server(&config, &deployment, &format!("{bind}:{port}")).await
         }
-
-        info!("Next sync in {} seconds", config.sync.poll_interval);
-        tokio::time::sleep(interval).await;
-    }
-}
-
-async fn cmd_setup(config_path: &Path, auto_yes: bool) -> Result<()> {
-    let config = config::load_config(config_path)?;
-    let mode = if auto_yes {
-        IndexMode::AutoCreate
-    } else {
-        IndexMode::Interactive
-    };
-    let embedding = sync::load_embedding_config()?;
-
-    println!("Checking indexes for {} source(s)...", config.sources.len());
-    let created = sync::setup_indexes(&config, &embedding, mode).await?;
-
-    if created.is_empty() {
-        println!("\nAll indexes are ready.");
-    } else {
-        println!("\nCreated {} index(es).", created.len());
-    }
-
-    Ok(())
-}
-
-fn cmd_status(config_path: &Path) -> Result<()> {
-    let config = config::load_config(config_path)?;
-    let state_path = Path::new(&config.sync.state_file);
-    let subsources_by_source: Vec<(String, Vec<String>)> = config
-        .sources
-        .iter()
-        .map(|s| match s {
-            quelch::config::SourceConfig::Jira(j) => (j.name.clone(), j.projects.clone()),
-            quelch::config::SourceConfig::Confluence(c) => (c.name.clone(), c.spaces.clone()),
-        })
-        .collect();
-    let state = sync::state::SyncState::load(state_path, &subsources_by_source)?;
-
-    println!("Quelch Status");
-    println!("{}", "\u{2500}".repeat(50));
-    println!("Config: {}", config_path.display());
-    println!("Sources: {}", config.sources.len());
-    println!();
-
-    for source_config in &config.sources {
-        let name = source_config.name();
-        let source_state = state.get_source(name);
-        println!("  {} ({})", name, source_config.index());
-        println!(
-            "    Last sync:   {}",
-            source_state
-                .last_sync_at
-                .map(|t| t.format("%Y-%m-%d %H:%M:%S UTC").to_string())
-                .unwrap_or_else(|| "never".to_string())
-        );
-        println!("    Sync count:  {}", source_state.sync_count);
-        for (sub_key, sub) in &source_state.subsources {
-            println!(
-                "    • {:12} docs={} last={}",
-                sub_key,
-                sub.documents_synced,
-                sub.last_cursor
-                    .map(|t| t.to_rfc3339())
-                    .unwrap_or_else(|| "never".into())
-            );
-        }
-        println!();
-    }
-
-    Ok(())
-}
-
-async fn cmd_reset_indexes(config_path: &Path) -> Result<()> {
-    let config = config::load_config(config_path)?;
-    let state_path = Path::new(&config.sync.state_file).to_path_buf();
-
-    println!("Deleting indexes and clearing sync state...");
-    let deleted = sync::reset_indexes(&config, &state_path).await?;
-
-    if deleted.is_empty() {
-        println!("\nNo indexes to delete.");
-    } else {
-        println!(
-            "\nDeleted {} index(es). Run 'quelch setup' to recreate.",
-            deleted.len()
-        );
-    }
-
-    Ok(())
-}
-
-fn cmd_reset(config_path: &Path, source: Option<&str>, subsource: Option<&str>) -> Result<()> {
-    let config = config::load_config(config_path)?;
-    let state_path = Path::new(&config.sync.state_file);
-    let subsources_by_source: Vec<(String, Vec<String>)> = config
-        .sources
-        .iter()
-        .map(|s| match s {
-            quelch::config::SourceConfig::Jira(j) => (j.name.clone(), j.projects.clone()),
-            quelch::config::SourceConfig::Confluence(c) => (c.name.clone(), c.spaces.clone()),
-        })
-        .collect();
-    let mut state = sync::state::SyncState::load(state_path, &subsources_by_source)?;
-    match source {
-        Some(name) => {
-            state.reset_source(name, subsource);
-            match subsource {
-                Some(sub) => println!("Reset state for {}:{}", name, sub),
-                None => println!("Reset state for source '{}'", name),
+        Commands::Azure { command } => match command {
+            AzureCommands::Plan {
+                deployment,
+                out,
+                no_what_if,
+            } => cmd_azure_plan(&cli.config, deployment, out, no_what_if).await,
+            AzureCommands::Deploy {
+                deployment,
+                yes,
+                dry_run,
+            } => cmd_azure_deploy(&cli.config, deployment, yes, dry_run).await,
+            AzureCommands::Pull { kind, diff } => cmd_azure_pull(&cli.config, kind, diff).await,
+            AzureCommands::Indexer { command } => cmd_azure_indexer(&cli.config, command).await,
+            AzureCommands::Logs {
+                deployment,
+                tail,
+                follow,
+                since,
+            } => cmd_azure_logs(&cli.config, &deployment, tail, follow, since.as_deref()).await,
+            AzureCommands::Destroy { deployment, yes } => {
+                cmd_azure_destroy(&cli.config, &deployment, yes).await
             }
-        }
-        None => {
-            state.reset_all();
-            println!("Reset state for all sources");
-        }
+        },
     }
-    state.save(state_path)?;
-    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// CLI helpers
+// ---------------------------------------------------------------------------
+
+/// Parse a `--where` JSON string or read JSON from `--where-file`.
+///
+/// Returns `None` if neither argument is provided, or the parsed `Value` on
+/// success.  Returns an error on invalid JSON or file-read failure.
+fn parse_where_arg(
+    where_str: Option<&str>,
+    where_file: Option<&Path>,
+) -> Result<Option<serde_json::Value>> {
+    if let Some(s) = where_str {
+        let v: serde_json::Value = serde_json::from_str(s)
+            .map_err(|e| anyhow::anyhow!("--where is not valid JSON: {e}"))?;
+        return Ok(Some(v));
+    }
+    if let Some(p) = where_file {
+        let s = std::fs::read_to_string(p)
+            .map_err(|e| anyhow::anyhow!("cannot read --where-file '{}': {e}", p.display()))?;
+        let v: serde_json::Value = serde_json::from_str(&s)
+            .map_err(|e| anyhow::anyhow!("--where-file is not valid JSON: {e}"))?;
+        return Ok(Some(v));
+    }
+    Ok(None)
 }
 
 fn cmd_validate(config_path: &Path) -> Result<()> {
     let config = config::load_config(config_path)?;
     println!("Config is valid.");
-    println!("  Azure endpoint: {}", config.azure.endpoint);
-    println!("  Sources: {}", config.sources.len());
+    println!("  Azure subscription: {}", config.azure.subscription_id);
+    println!("  Resource group:     {}", config.azure.resource_group);
+    println!("  Region:             {}", config.azure.region);
+    println!("  Sources:            {}", config.sources.len());
     for source in &config.sources {
-        println!("    - {} -> index '{}'", source.name(), source.index());
+        println!("    - {}", source.name());
+    }
+    println!("  Deployments:        {}", config.deployments.len());
+    for deployment in &config.deployments {
+        println!("    - {}", deployment.name);
     }
     Ok(())
 }
 
-fn cmd_init() -> Result<()> {
-    let template = r#"# quelch.yaml
-
-azure:
-  endpoint: "https://your-search-service.search.windows.net"
-  api_key: "${AZURE_SEARCH_API_KEY}"
-
-sources:
-  # Jira Cloud example (uses email + API token)
-  - type: jira
-    name: "my-jira-cloud"
-    url: "https://your-company.atlassian.net"
-    auth:
-      email: "${JIRA_EMAIL}"
-      api_token: "${JIRA_API_TOKEN}"
-    projects:
-      - "PROJ"
-    index: "jira-issues"
-
-  # Jira Data Center example (uses PAT)
-  # - type: jira
-  #   name: "my-jira-dc"
-  #   url: "https://jira.internal.company.com"
-  #   auth:
-  #     pat: "${JIRA_PAT}"
-  #   projects:
-  #     - "HR"
-  #   index: "jira-issues"
-
-  # Confluence Cloud example
-  # - type: confluence
-  #   name: "my-confluence"
-  #   url: "https://your-company.atlassian.net/wiki"
-  #   auth:
-  #     email: "${CONFLUENCE_EMAIL}"
-  #     api_token: "${CONFLUENCE_API_TOKEN}"
-  #   spaces:
-  #     - "ENG"
-  #   index: "confluence-pages"
-
-# Optional overrides (all have sensible defaults)
-# sync:
-#   poll_interval: 300
-#   batch_size: 100
-#   max_concurrent_per_credential: 3
-#   state_file: ".quelch-state.json"
-"#;
-
-    let path = Path::new("quelch.yaml");
-    if path.exists() {
-        anyhow::bail!("quelch.yaml already exists — remove it first or edit it directly");
-    }
-
-    std::fs::write(path, template)?;
-    println!("Created quelch.yaml — edit it with your Azure and source credentials");
+fn cmd_effective_config(config_path: &Path, name: &str) -> Result<()> {
+    let config = config::load_config(config_path)?;
+    let sliced = config::slice::for_deployment(&config, name)?;
+    let yaml = serde_yaml::to_string(&sliced)?;
+    print!("{yaml}");
     Ok(())
 }
 
-async fn cmd_sync_tui(
+// ---------------------------------------------------------------------------
+// quelch generate-deployment
+// ---------------------------------------------------------------------------
+
+fn cmd_generate_deployment(
     config_path: &Path,
-    auto_create: bool,
-    purge: bool,
-    max_docs: Option<u64>,
-    events_rx: tokio::sync::mpsc::Receiver<quelch::tui::events::QuelchEvent>,
-    drops: Arc<AtomicU64>,
+    name: &str,
+    target: OnpremTargetArg,
+    output: &Path,
 ) -> Result<()> {
-    let config = quelch::config::load_config(config_path)?;
-    let state_path = Path::new(&config.sync.state_file).to_path_buf();
-    let prefs_path = std::path::PathBuf::from(".quelch-tui-state.json");
-    let mode = if auto_create {
-        IndexMode::AutoCreate
-    } else {
-        IndexMode::Interactive
+    let config = config::load_config(config_path)?;
+    let onprem_target = match target {
+        OnpremTargetArg::Docker => quelch::onprem::OnpremTarget::Docker,
+        OnpremTargetArg::Systemd => quelch::onprem::OnpremTarget::Systemd,
+        OnpremTargetArg::K8s => quelch::onprem::OnpremTarget::K8s,
     };
-    let embedding = sync::load_embedding_config()?;
-    let embed_client = ailloy::Client::for_capability("embedding")
-        .context("failed to create embedding client — run 'quelch ai config' to set up")?;
-
-    let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::channel::<sync::UiCommand>(16);
-    let tui_handle = {
-        let config = config.clone();
-        tokio::spawn(
-            async move { quelch::tui::run(config, prefs_path, events_rx, cmd_tx, drops).await },
-        )
-    };
-
-    let res = sync::run_sync_with(
-        &config,
-        &state_path,
-        &embedding,
-        mode,
-        Some(&embed_client as &dyn sync::embedder::Embedder),
-        max_docs,
-        &mut cmd_rx,
-        1,
-    )
-    .await;
-
-    if purge {
-        sync::run_purge(&config).await.ok();
+    let outcome = quelch::onprem::generate(&config, name, onprem_target, output)?;
+    println!(
+        "Generated {} artefact(s) in {}:",
+        outcome.written.len(),
+        output.display()
+    );
+    for p in &outcome.written {
+        println!("  {}", p.display());
     }
-
-    drop(cmd_rx);
-    let _ = tui_handle.await;
-    match res? {
-        sync::EngineOutcome::Shutdown | sync::EngineOutcome::Continue => Ok(()),
-        sync::EngineOutcome::ResetCursor { .. } => Ok(()),
-    }
+    Ok(())
 }
 
-async fn cmd_watch_tui(
+// ---------------------------------------------------------------------------
+// quelch azure plan
+// ---------------------------------------------------------------------------
+
+async fn cmd_azure_plan(
     config_path: &Path,
-    auto_create: bool,
-    max_docs: Option<u64>,
-    events_rx: tokio::sync::mpsc::Receiver<quelch::tui::events::QuelchEvent>,
-    drops: Arc<AtomicU64>,
+    deployment: Option<String>,
+    out: Option<PathBuf>,
+    no_what_if: bool,
 ) -> Result<()> {
     let config = quelch::config::load_config(config_path)?;
-    let state_path = Path::new(&config.sync.state_file).to_path_buf();
-    let prefs_path = std::path::PathBuf::from(".quelch-tui-state.json");
-    let first_mode = if auto_create {
-        IndexMode::AutoCreate
-    } else {
-        IndexMode::Interactive
+
+    let targets: Vec<&quelch::config::DeploymentConfig> = match deployment.as_deref() {
+        Some(name) => vec![
+            config
+                .deployments
+                .iter()
+                .find(|d| d.name == name)
+                .ok_or_else(|| anyhow::anyhow!("deployment '{}' not found", name))?,
+        ],
+        None => config.deployments.iter().collect(),
     };
-    let embedding = sync::load_embedding_config()?;
-    let embed_client = ailloy::Client::for_capability("embedding")
-        .context("failed to create embedding client — run 'quelch ai config' to set up")?;
 
-    let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::channel::<sync::UiCommand>(16);
-    let tui_handle = tokio::spawn({
-        let config = config.clone();
-        async move { quelch::tui::run(config, prefs_path, events_rx, cmd_tx, drops).await }
-    });
+    for dep in targets {
+        plan_one(&config, dep, out.as_deref(), no_what_if).await?;
+    }
+    Ok(())
+}
 
-    let interval = std::time::Duration::from_secs(config.sync.poll_interval);
-    let purge_every = config.sync.purge_every;
-    let mut cycle: u64 = 0;
-    loop {
-        cycle += 1;
-        let mode = if cycle == 1 {
-            first_mode
-        } else {
-            IndexMode::RequireExisting
-        };
-        match sync::run_sync_with(
-            &config,
-            &state_path,
-            &embedding,
-            mode,
-            Some(&embed_client as &dyn sync::embedder::Embedder),
-            max_docs,
-            &mut cmd_rx,
-            cycle,
-        )
-        .await
-        {
-            Ok(sync::EngineOutcome::Shutdown) => break,
-            Ok(sync::EngineOutcome::Continue) | Ok(sync::EngineOutcome::ResetCursor { .. }) => {}
+async fn plan_one(
+    config: &quelch::config::Config,
+    deployment: &quelch::config::DeploymentConfig,
+    out: Option<&Path>,
+    no_what_if: bool,
+) -> Result<()> {
+    println!("Planning deployment '{}'", deployment.name);
+
+    if matches!(deployment.target, DeploymentTarget::Onprem) {
+        println!("  target=onprem; use `quelch generate-deployment` instead");
+        return Ok(());
+    }
+
+    // 1. Synthesise Bicep.
+    let bicep = quelch::azure::deploy::bicep::generate(config, &deployment.name)?;
+    let bicep_path = out
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(format!(".quelch/azure/{}.bicep", deployment.name)));
+    if let Some(parent) = bicep_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&bicep_path, &bicep)?;
+    println!("  Synthesised {}", bicep_path.display());
+
+    // 2. Synthesise rigg files.
+    let sliced = quelch::config::slice::for_deployment(config, &deployment.name)?;
+    let generated = quelch::azure::rigg::generate::all(&sliced)?;
+    let rigg_root = PathBuf::from(&config.rigg.dir);
+    let _write_outcome =
+        quelch::azure::rigg::write::write_to_disk(&generated, &config.rigg, &rigg_root)?;
+    println!("  Synthesised rigg/ files at {}", rigg_root.display());
+
+    // 3. Run Bicep what-if (unless --no-what-if).
+    let bicep_report = if no_what_if {
+        WhatIfReport {
+            creates: vec![],
+            modifies: vec![],
+            deletes: vec![],
+            unchanged: vec![],
+            raw_json: serde_json::Value::Null,
+        }
+    } else {
+        match quelch::azure::deploy::whatif::run(&config.azure.resource_group, &bicep_path) {
+            Ok(r) => r,
             Err(e) => {
-                tracing::error!(error = %e, "Sync cycle failed");
+                eprintln!("  what-if failed: {e}");
+                eprintln!("  (run with --no-what-if to skip)");
+                return Err(anyhow::anyhow!(e));
             }
         }
-        if purge_every > 0
-            && cycle.is_multiple_of(purge_every)
-            && let Err(e) = sync::run_purge(&config).await
-        {
-            tracing::error!(error = %e, "Purge failed");
+    };
+
+    // 4. Run rigg plan (requires Azure access; skipped when what-if also skipped to
+    //    allow full offline use).
+    let rigg_report = if no_what_if {
+        quelch::azure::rigg::plan::PlanReport::default()
+    } else {
+        let service = config
+            .search
+            .service
+            .as_deref()
+            .unwrap_or("quelch-prod-search");
+        let endpoint = format!("https://{service}.search.windows.net");
+        let api_version = "2024-03-01-preview".to_string();
+        let api = quelch::azure::rigg::plan::RiggClientAdapter::new(endpoint, api_version)?;
+        quelch::azure::rigg::plan::run(&rigg_root, &api).await?
+    };
+
+    // 5. Render combined diff.
+    let diff = quelch::azure::deploy::diff_view::render(&bicep_report, &rigg_report);
+    print!("{diff}");
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// quelch azure deploy
+// ---------------------------------------------------------------------------
+
+async fn cmd_azure_deploy(
+    config_path: &Path,
+    deployment: Option<String>,
+    yes: bool,
+    dry_run: bool,
+) -> Result<()> {
+    if dry_run {
+        // --dry-run is equivalent to plan.
+        return cmd_azure_plan(config_path, deployment, None, false).await;
+    }
+
+    let config = quelch::config::load_config(config_path)?;
+
+    let targets: Vec<&quelch::config::DeploymentConfig> = match deployment.as_deref() {
+        Some(name) => vec![
+            config
+                .deployments
+                .iter()
+                .find(|d| d.name == name)
+                .ok_or_else(|| anyhow::anyhow!("deployment '{}' not found", name))?,
+        ],
+        None => config.deployments.iter().collect(),
+    };
+
+    for dep in targets {
+        deploy_one(&config, dep, yes).await?;
+    }
+    Ok(())
+}
+
+async fn deploy_one(
+    config: &quelch::config::Config,
+    deployment: &quelch::config::DeploymentConfig,
+    yes: bool,
+) -> Result<()> {
+    // Show the plan first (with what-if).
+    plan_one(config, deployment, None, false).await?;
+
+    if matches!(deployment.target, DeploymentTarget::Onprem) {
+        return Ok(());
+    }
+
+    // Prompt unless --yes.
+    if !yes {
+        let confirmed = dialoguer::Confirm::new()
+            .with_prompt(format!(
+                "Apply changes to deployment '{}'?",
+                deployment.name
+            ))
+            .default(false)
+            .interact()?;
+        if !confirmed {
+            println!("Aborted.");
+            return Ok(());
         }
-        let sleep = tokio::time::sleep(interval);
-        tokio::pin!(sleep);
-        tokio::select! {
-            _ = &mut sleep => {}
-            Some(cmd) = cmd_rx.recv() => match cmd {
-                sync::UiCommand::Shutdown => break,
-                sync::UiCommand::SyncNow => continue,
-                sync::UiCommand::PurgeNow { source } => {
-                    if let Err(e) = sync::run_purge(&config).await {
-                        tracing::error!(source = source, error = %e, "purge failed");
-                    }
-                    continue;
+    }
+
+    // Apply Bicep.
+    let bicep_path = PathBuf::from(format!(".quelch/azure/{}.bicep", deployment.name));
+    println!("  Applying Bicep for '{}'…", deployment.name);
+    let outcome = quelch::azure::deploy::apply::run(&config.azure.resource_group, &bicep_path)?;
+    println!("  Provisioning state: {}", outcome.provisioning_state);
+
+    // Push rigg resources.
+    let rigg_root = PathBuf::from(&config.rigg.dir);
+    let service = config
+        .search
+        .service
+        .as_deref()
+        .unwrap_or("quelch-prod-search");
+    let endpoint = format!("https://{service}.search.windows.net");
+    let api_version = "2024-03-01-preview".to_string();
+    let api = quelch::azure::rigg::plan::RiggClientAdapter::new(endpoint, api_version)?;
+    let plan = quelch::azure::rigg::plan::run(&rigg_root, &api).await?;
+    let push_outcome = quelch::azure::rigg::push::run(plan, &rigg_root, &api).await?;
+    println!(
+        "  rigg: {} created, {} updated, {} deleted.",
+        push_outcome.created.len(),
+        push_outcome.updated.len(),
+        push_outcome.deleted.len(),
+    );
+
+    // Save last.json snapshot.
+    let snapshot_dir = PathBuf::from(".quelch/azure");
+    std::fs::create_dir_all(&snapshot_dir)?;
+    let snapshot_path = snapshot_dir.join(format!("{}.last.json", deployment.name));
+    std::fs::write(&snapshot_path, serde_json::to_string_pretty(&outcome.raw)?)?;
+    println!("  Saved snapshot to {}", snapshot_path.display());
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// quelch azure pull
+// ---------------------------------------------------------------------------
+
+async fn cmd_azure_pull(config_path: &Path, kind: Option<String>, diff: bool) -> Result<()> {
+    let config = quelch::config::load_config(config_path)?;
+
+    let parsed_kind = kind
+        .as_deref()
+        .map(parse_resource_kind)
+        .transpose()
+        .map_err(|e| anyhow::anyhow!(e))?;
+
+    let service = config
+        .search
+        .service
+        .as_deref()
+        .unwrap_or("quelch-prod-search");
+    let endpoint = format!("https://{service}.search.windows.net");
+    let api_version = "2024-03-01-preview".to_string();
+    let api = quelch::azure::rigg::plan::RiggClientAdapter::new(endpoint, api_version)?;
+
+    let options = quelch::azure::rigg::pull::PullOptions {
+        kind: parsed_kind,
+        diff_only: diff,
+    };
+
+    let rigg_root = PathBuf::from(&config.rigg.dir);
+    let outcome = quelch::azure::rigg::pull::run(&rigg_root, &api, options).await?;
+
+    if diff {
+        println!(
+            "Would write {} file(s); {} skipped (managed-by-user).",
+            outcome.written.len(),
+            outcome.skipped_managed_by_user.len(),
+        );
+        for p in &outcome.written {
+            println!("  {}", p.display());
+        }
+    } else {
+        println!(
+            "Wrote {} file(s); {} skipped (managed-by-user).",
+            outcome.written.len(),
+            outcome.skipped_managed_by_user.len(),
+        );
+    }
+
+    Ok(())
+}
+
+/// Parse a human-friendly resource kind string into a [`rigg_core::resources::ResourceKind`].
+fn parse_resource_kind(s: &str) -> Result<rigg_core::resources::ResourceKind, String> {
+    match s.to_lowercase().replace('-', "_").as_str() {
+        "index" | "indexes" => Ok(rigg_core::resources::ResourceKind::Index),
+        "datasource" | "datasources" | "data_source" | "data_sources" => {
+            Ok(rigg_core::resources::ResourceKind::DataSource)
+        }
+        "skillset" | "skillsets" => Ok(rigg_core::resources::ResourceKind::Skillset),
+        "indexer" | "indexers" => Ok(rigg_core::resources::ResourceKind::Indexer),
+        "knowledge_source" | "knowledge_sources" => {
+            Ok(rigg_core::resources::ResourceKind::KnowledgeSource)
+        }
+        "knowledge_base" | "knowledge_bases" => {
+            Ok(rigg_core::resources::ResourceKind::KnowledgeBase)
+        }
+        "synonym_map" | "synonym_maps" => Ok(rigg_core::resources::ResourceKind::SynonymMap),
+        "alias" | "aliases" => Ok(rigg_core::resources::ResourceKind::Alias),
+        "agent" | "agents" => Ok(rigg_core::resources::ResourceKind::Agent),
+        other => Err(format!("unknown resource kind '{other}'")),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// quelch azure indexer
+// ---------------------------------------------------------------------------
+
+async fn cmd_azure_indexer(config_path: &Path, command: IndexerCommands) -> Result<()> {
+    let config = quelch::config::load_config(config_path)?;
+    let service = config
+        .search
+        .service
+        .as_deref()
+        .unwrap_or("quelch-prod-search");
+
+    match command {
+        IndexerCommands::Run { name } => {
+            quelch::azure::deploy::indexer::run(service, &name)?;
+            println!("Triggered indexer run for '{name}'.");
+        }
+        IndexerCommands::Reset { name } => {
+            quelch::azure::deploy::indexer::reset(service, &name)?;
+            println!("Reset indexer '{name}' — full re-index will run on next schedule.");
+        }
+        IndexerCommands::Status => {
+            let statuses = quelch::azure::deploy::indexer::status(service)?;
+            if statuses.is_empty() {
+                println!("No indexers found in service '{service}'.");
+            } else {
+                println!("{:<40} {:<20} LAST RUN AT", "NAME", "LAST RESULT");
+                println!("{}", "-".repeat(80));
+                for s in &statuses {
+                    println!(
+                        "{:<40} {:<20} {}",
+                        s.name,
+                        s.last_result.as_deref().unwrap_or("—"),
+                        s.last_run_at
+                            .map(|t| t.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+                            .unwrap_or_else(|| "—".to_string()),
+                    );
                 }
-                _ => continue,
             }
         }
     }
-    drop(cmd_rx);
-    let _ = tui_handle.await;
+
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// quelch azure logs
+// ---------------------------------------------------------------------------
+
+async fn cmd_azure_logs(
+    config_path: &Path,
+    deployment: &str,
+    tail: usize,
+    follow: bool,
+    since: Option<&str>,
+) -> Result<()> {
+    let config = quelch::config::load_config(config_path)?;
+    let app_name = quelch::azure::deploy::naming::container_app_name(&config, deployment);
+    quelch::azure::deploy::logs::tail(
+        &app_name,
+        &config.azure.resource_group,
+        tail,
+        follow,
+        since,
+    )?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// quelch azure destroy
+// ---------------------------------------------------------------------------
+
+async fn cmd_azure_destroy(config_path: &Path, deployment: &str, yes: bool) -> Result<()> {
+    let config = quelch::config::load_config(config_path)?;
+    let _dep = config
+        .deployments
+        .iter()
+        .find(|d| d.name == deployment)
+        .ok_or_else(|| anyhow::anyhow!("deployment '{}' not found", deployment))?;
+
+    if !yes {
+        let confirmed = dialoguer::Confirm::new()
+            .with_prompt(format!(
+                "Destroy Container App for deployment '{deployment}'?"
+            ))
+            .default(false)
+            .interact()?;
+        if !confirmed {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
+
+    let app_name = quelch::azure::deploy::naming::container_app_name(&config, deployment);
+    quelch::azure::deploy::destroy::run(&app_name, &config.azure.resource_group)?;
+    println!("Destroyed Container App '{app_name}'.");
+
+    // Clean up the snapshot if it exists.
+    let snapshot_path = PathBuf::from(format!(".quelch/azure/{deployment}.last.json"));
+    quelch::azure::deploy::destroy::remove_snapshot(&snapshot_path);
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// quelch agent generate
+// ---------------------------------------------------------------------------
+
+fn cmd_agent_generate(
+    config_path: &Path,
+    target: AgentTarget,
+    output: PathBuf,
+    deployment: Option<String>,
+    url: Option<String>,
+) -> Result<()> {
+    let config = quelch::config::load_config(config_path)?;
+
+    // Resolve deployment name: use explicit arg or find the first MCP deployment.
+    let deployment_name = deployment
+        .or_else(|| {
+            config
+                .deployments
+                .iter()
+                .find(|d| d.role == quelch::config::DeploymentRole::Mcp)
+                .map(|d| d.name.clone())
+        })
+        .ok_or_else(|| anyhow::anyhow!("no MCP deployment found in config; use --deployment"))?;
+
+    // Build the bundle.
+    let mut bundle = quelch::agent::bundle::build(&config, &deployment_name)?;
+
+    // Allow URL override.
+    if let Some(explicit_url) = url {
+        bundle.connection.url = explicit_url;
+    }
+
+    // Dispatch to the appropriate target writer.
+    match target {
+        AgentTarget::CopilotStudio => {
+            quelch::agent::targets::copilot_studio::write(&bundle, &output)?;
+        }
+        AgentTarget::ClaudeCode => {
+            quelch::agent::targets::claude_code::write(&bundle, &output)?;
+        }
+        AgentTarget::CopilotCli => {
+            quelch::agent::targets::copilot_cli::write(&bundle, &output)?;
+        }
+        AgentTarget::VscodeCopilot => {
+            quelch::agent::targets::vscode_copilot::write(&bundle, &output)?;
+        }
+        AgentTarget::Codex => {
+            quelch::agent::targets::codex::write(&bundle, &output)?;
+        }
+        AgentTarget::Markdown => {
+            quelch::agent::targets::markdown::write(&bundle, &output)?;
+        }
+    }
+
+    println!("Wrote agent bundle to {}", output.display());
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod decide_mode_tests {
     use super::*;
 
-    fn cli_with(no_tui: bool, json: bool, quiet: bool) -> Cli {
-        Cli {
-            config: std::path::PathBuf::from("quelch.yaml"),
-            verbose: 0,
-            quiet,
-            json,
-            no_tui,
-            command: Commands::Sim {
-                duration: None,
-                seed: None,
-                rate_multiplier: 1.0,
-                fault_rate: 0.0,
-                assert_docs: None,
-                snapshot_to: None,
-                snapshot_frames: 0,
-                snapshot_width: 120,
-                snapshot_height: 40,
-            },
+    #[test]
+    fn cli_parses() {
+        // Verify the CLI can be constructed — smoke test only.
+        let cli = Cli::parse_from(["quelch", "validate"]);
+        assert!(matches!(cli.command, Commands::Validate));
+    }
+
+    #[test]
+    fn cli_parses_azure_plan() {
+        let cli = Cli::parse_from(["quelch", "azure", "plan", "ingest", "--no-what-if"]);
+        assert!(matches!(
+            cli.command,
+            Commands::Azure {
+                command: AzureCommands::Plan {
+                    no_what_if: true,
+                    ..
+                }
+            }
+        ));
+    }
+
+    #[test]
+    fn cli_parses_azure_deploy_dry_run() {
+        let cli = Cli::parse_from(["quelch", "azure", "deploy", "--dry-run"]);
+        assert!(matches!(
+            cli.command,
+            Commands::Azure {
+                command: AzureCommands::Deploy { dry_run: true, .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn cli_parses_azure_indexer_status() {
+        let cli = Cli::parse_from(["quelch", "azure", "indexer", "status"]);
+        assert!(matches!(
+            cli.command,
+            Commands::Azure {
+                command: AzureCommands::Indexer {
+                    command: IndexerCommands::Status
+                }
+            }
+        ));
+    }
+
+    #[test]
+    fn cli_parses_azure_indexer_run() {
+        let cli = Cli::parse_from(["quelch", "azure", "indexer", "run", "jira-issues"]);
+        if let Commands::Azure {
+            command:
+                AzureCommands::Indexer {
+                    command: IndexerCommands::Run { name },
+                },
+        } = cli.command
+        {
+            assert_eq!(name, "jira-issues");
+        } else {
+            panic!("expected azure indexer run");
         }
     }
 
     #[test]
-    fn sim_is_tui_capable() {
-        let cli = cli_with(false, false, false);
-        let watchable = matches!(
-            &cli.command,
-            Commands::Sync { .. } | Commands::Watch { .. } | Commands::Sim { .. }
-        );
-        assert!(watchable, "Commands::Sim must be in the tui-capable list");
+    fn cli_parses_azure_logs() {
+        let cli = Cli::parse_from([
+            "quelch", "azure", "logs", "ingest", "--tail", "200", "--follow",
+        ]);
+        if let Commands::Azure {
+            command:
+                AzureCommands::Logs {
+                    deployment,
+                    tail,
+                    follow,
+                    ..
+                },
+        } = cli.command
+        {
+            assert_eq!(deployment, "ingest");
+            assert_eq!(tail, 200);
+            assert!(follow);
+        } else {
+            panic!("expected azure logs");
+        }
     }
 
     #[test]
-    fn no_tui_flag_forces_plain_for_sim() {
-        let cli = cli_with(true, false, false);
-        assert!(matches!(decide_mode(&cli, &cli.command), LogMode::Plain));
+    fn parse_resource_kind_recognises_common_aliases() {
+        assert!(parse_resource_kind("index").is_ok());
+        assert!(parse_resource_kind("indexes").is_ok());
+        assert!(parse_resource_kind("indexer").is_ok());
+        assert!(parse_resource_kind("knowledge_base").is_ok());
+        assert!(parse_resource_kind("knowledge-base").is_ok());
+        assert!(parse_resource_kind("bogus").is_err());
     }
 }

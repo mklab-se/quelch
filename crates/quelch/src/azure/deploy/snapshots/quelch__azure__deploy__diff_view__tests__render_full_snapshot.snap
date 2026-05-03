@@ -1,0 +1,19 @@
+---
+source: crates/quelch/src/azure/deploy/diff_view.rs
+expression: output
+---
+──────────────────────────────────────────────────────────────────
+Bicep (resource shells):
++ Microsoft.App/containerApps/quelch-prod-mcp                  (Create)
+~ Microsoft.DocumentDB/databaseAccounts/quelch-prod-cosmos    
+    properties.throughput.mode: serverless → provisioned
+= Microsoft.Search/searchServices/quelch-prod-search           (Unchanged)
+rigg (resource configuration):
++ index/jira-issues                                            (Create)
++ skillset/jira-issues-vectorise                               (Create)
++ indexer/jira-issues                                          (Create)
++ knowledgesource/jira-issues                                  (Create)
++ knowledgebase/quelch-prod-kb                                 (Create)
+~ index/confluence-pages                                      
+    fields.component_path: null → Edm.String
+2 Bicep changes, 6 rigg changes pending.
