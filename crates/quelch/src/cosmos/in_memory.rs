@@ -8,8 +8,9 @@
 //! - `SELECT * FROM c WHERE c.id = @id`
 //! - `SELECT * FROM c WHERE c._partition_key = @pk`
 //! - `SELECT * FROM c WHERE c._deleted = false`
-//! - AND combinations of any of the above three predicates
-//! - `SELECT VALUE COUNT(1) FROM c`
+//! - `SELECT * FROM c WHERE (NOT IS_DEFINED(c._deleted) OR c._deleted = false)` (soft-delete guard)
+//! - AND combinations of any of the above predicates, including parenthesized groups
+//! - `SELECT VALUE COUNT(1) FROM c [WHERE ...]` (count with optional filter)
 //!
 //! Anything outside this list returns `CosmosError::Unsupported`.
 
@@ -99,9 +100,27 @@ fn execute_sql(
     let normalised = sql.split_whitespace().collect::<Vec<_>>().join(" ");
     let upper = normalised.to_uppercase();
 
-    // `SELECT VALUE COUNT(1) FROM c`
-    if upper == "SELECT VALUE COUNT(1) FROM C" {
-        let count = docs.len() as u64;
+    // `SELECT VALUE COUNT(1) FROM c [WHERE ...]`
+    if let Some(rest_upper) = upper.strip_prefix("SELECT VALUE COUNT(1) FROM C") {
+        let rest_upper = rest_upper.trim();
+        if rest_upper.is_empty() {
+            // No WHERE — count everything
+            let count = docs.len() as u64;
+            return Ok(vec![json!(count)]);
+        }
+        // Count with WHERE clause — work from normalised (preserves case of params)
+        let rest_norm = normalised["SELECT VALUE COUNT(1) FROM c".len()..]
+            .trim()
+            .to_string();
+        let where_clause = strip_prefix_case_insensitive(&rest_norm, "WHERE")
+            .ok_or_else(|| CosmosError::Unsupported(format!("query: {sql}")))?
+            .trim()
+            .to_string();
+        let predicates = parse_predicates(&where_clause, sql)?;
+        let count = docs
+            .into_iter()
+            .filter(|doc| predicates.iter().all(|p| p.matches(doc, params)))
+            .count() as u64;
         return Ok(vec![json!(count)]);
     }
 
@@ -148,7 +167,7 @@ fn strip_prefix_case_insensitive<'a>(s: &'a str, prefix: &str) -> Option<&'a str
 enum Predicate {
     /// `c.<field> = @param`
     ParamEq { field: String, param: String },
-    /// `c._deleted = false`
+    /// `c._deleted = false` or `(NOT IS_DEFINED(c._deleted) OR c._deleted = false)`
     NotDeleted,
 }
 
@@ -173,28 +192,106 @@ impl Predicate {
     }
 }
 
-/// Parse the WHERE clause (after the `WHERE` keyword) into individual predicates.
-/// Supports AND-separated simple expressions only.
-fn parse_predicates(where_clause: &str, original_sql: &str) -> Result<Vec<Predicate>, CosmosError> {
-    let mut predicates = Vec::new();
+/// Split a WHERE clause into top-level AND operands, respecting parentheses.
+///
+/// e.g. `(c.status = @p0) AND (NOT IS_DEFINED(c._deleted) OR c._deleted = false)`
+/// yields `["(c.status = @p0)", "(NOT IS_DEFINED(c._deleted) OR c._deleted = false)"]`.
+fn split_and_top_level(where_clause: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0usize;
+    let chars: Vec<char> = where_clause.chars().collect();
+    let mut i = 0;
 
-    for part in where_clause
+    while i < chars.len() {
+        let c = chars[i];
+        match c {
+            '(' => {
+                depth += 1;
+                current.push(c);
+            }
+            ')' => {
+                depth = depth.saturating_sub(1);
+                current.push(c);
+            }
+            ' ' if depth == 0 => {
+                // Check if we're at an AND keyword
+                let rest: String = chars[i..].iter().collect();
+                let rest_upper = rest.to_uppercase();
+                if rest_upper.starts_with(" AND ") {
+                    parts.push(current.trim().to_string());
+                    current = String::new();
+                    i += 5; // skip " AND "
+                    continue;
+                } else {
+                    current.push(c);
+                }
+            }
+            _ => {
+                current.push(c);
+            }
+        }
+        i += 1;
+    }
+    let trimmed = current.trim().to_string();
+    if !trimmed.is_empty() {
+        parts.push(trimmed);
+    }
+    parts
+}
+
+/// Parse the WHERE clause (after the `WHERE` keyword) into individual predicates.
+/// Supports AND-separated simple expressions, including parenthesized groups.
+fn parse_predicates(where_clause: &str, original_sql: &str) -> Result<Vec<Predicate>, CosmosError> {
+    let normalised = where_clause
         .split_whitespace()
         .collect::<Vec<_>>()
-        .join(" ")
-        .split(" AND ")
-    {
-        let expr = part.trim();
-        let pred = parse_single_predicate(expr, original_sql)?;
+        .join(" ");
+    let parts = split_and_top_level(&normalised);
+
+    let mut predicates = Vec::new();
+    for expr in parts {
+        let pred = parse_single_predicate(&expr, original_sql)?;
         predicates.push(pred);
     }
-
     Ok(predicates)
 }
 
-/// Parse a single predicate expression like `c.id = @id` or `c._deleted = false`.
+/// Parse a single predicate expression.
+///
+/// Recognised forms:
+/// - `c.<field> = @param`
+/// - `c._deleted = false`
+/// - `(c.<field> = @param)` — parenthesized
+/// - `(NOT IS_DEFINED(c._deleted) OR c._deleted = false)` — soft-delete guard
 fn parse_single_predicate(expr: &str, original_sql: &str) -> Result<Predicate, CosmosError> {
-    // Normalise whitespace around `=`
+    let expr = expr.trim();
+
+    // Strip outer parens if present and recurse
+    if expr.starts_with('(') && expr.ends_with(')') {
+        let inner = &expr[1..expr.len() - 1];
+
+        // Recognise soft-delete guard pattern generated by SqlBuilder:
+        // `NOT IS_DEFINED(c._deleted) OR c._deleted = false`
+        let inner_norm = inner.split_whitespace().collect::<Vec<_>>().join(" ");
+        let inner_upper = inner_norm.to_uppercase();
+        if inner_upper == "NOT IS_DEFINED(C._DELETED) OR C._DELETED = FALSE" {
+            return Ok(Predicate::NotDeleted);
+        }
+
+        return parse_single_predicate(inner, original_sql);
+    }
+
+    // `c._deleted = false`
+    {
+        let norm = expr.split_whitespace().collect::<Vec<_>>().join(" ");
+        let upper = norm.to_uppercase();
+        if upper == "C._DELETED = FALSE" {
+            return Ok(Predicate::NotDeleted);
+        }
+    }
+
+    // `c.<field> = @param`
     let parts: Vec<&str> = expr.splitn(2, '=').collect();
     if parts.len() != 2 {
         return Err(CosmosError::Unsupported(format!("query: {original_sql}")));
@@ -206,11 +303,6 @@ fn parse_single_predicate(expr: &str, original_sql: &str) -> Result<Predicate, C
     let field = lhs
         .strip_prefix("c.")
         .ok_or_else(|| CosmosError::Unsupported(format!("query: {original_sql}")))?;
-
-    // rhs is either `@param` or `false`
-    if rhs.eq_ignore_ascii_case("false") && field == "_deleted" {
-        return Ok(Predicate::NotDeleted);
-    }
 
     if let Some(param_name) = rhs.strip_prefix('@') {
         return Ok(Predicate::ParamEq {
