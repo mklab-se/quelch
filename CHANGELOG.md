@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [2.0.0-alpha] - Unreleased
+
+### Breaking
+
+This is a complete re-architecture; v1 configs are not compatible. See
+[/docs/](docs/) for the new architecture and the migration guide
+(forthcoming) for upgrade steps.
+
+### In progress
+
+Implementation in progress; see
+[docs/superpowers/plans/2026-05-03-quelch-v2-implementation.md](docs/superpowers/plans/2026-05-03-quelch-v2-implementation.md)
+for the phase-by-phase plan.
+
 ## [0.8.0] - 2026-04-19
 
 ### Changed — Pushed counts are now authoritative
