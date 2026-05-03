@@ -320,6 +320,24 @@ Every tool that takes a filter (`search`, `query`, `aggregate`) uses the same st
 
 // Existence
 { "fix_versions": { "exists": true } }
+
+// Array-of-strings — equality matches if ANY element equals
+{ "labels": "blocker" }                        // doc.labels contains "blocker"
+{ "labels": ["blocker", "regression"] }        // doc.labels contains any of these (membership)
+
+// Array-of-objects — use `[].field` to project across elements
+{ "fix_versions[].name": "iXX-2.7.0" }                 // any fix_version with name=iXX-2.7.0
+{ "issuelinks[].type": "is blocked by" }               // any issuelink of that type
+{ "issuelinks[].target_key": ["DO-1170", "DO-1175"] }  // any link to one of these
+
+// Combinations work normally
+{
+  "issuelinks[].type": "is blocked by",
+  "issuelinks[].target_key": "DO-1170"
+}
+// Note: this matches if ANY element has type=blocked-by AND ANY element targets DO-1170,
+// not necessarily the same element. For "same element" semantics, use `array_match`:
+{ "issuelinks": { "array_match": { "type": "is blocked by", "target_key": "DO-1170" } } }
 ```
 
 Relative dates supported: `N seconds|minutes|hours|days|weeks|months|years ago`.

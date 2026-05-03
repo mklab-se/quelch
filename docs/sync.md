@@ -208,6 +208,18 @@ The same algorithm applies to Confluence, with two field renames and one API qui
 - Confluence's CQL doesn't have a stable secondary sort field comparable to Jira's `key ASC`. We use `id ASC` as the secondary sort. Same shape; same correctness story.
 - Confluence pages can be moved between spaces. A page that moves out of an ingested space looks like a delete from the perspective of the source-space subsource — the periodic reconciliation handles it.
 
+## Rate limits and backoff
+
+Atlassian rate-limits source APIs aggressively. Jira Cloud especially is unforgiving — sustained 429s can lock an account for minutes. Ingest workers handle this transparently:
+
+- **Honour `Retry-After`.** When the source responds 429 (or 5xx with `Retry-After`), the worker waits exactly that long before retrying. No exponential overshoot.
+- **Exponential backoff for transient 5xx without `Retry-After`.** Starts at 1s, doubles, capped at 60s. Up to 5 retries per request before failing the cycle.
+- **Per-source concurrency cap.** Default 1 concurrent in-flight request per source instance — Atlassian's rate limiter is per-account, so concurrency just makes 429s more likely. Tune via `ingest.max_concurrent_per_source` if your account has high quota.
+- **Cycle is paused, not abandoned, on 429 storms.** A worker that hits a sustained 429 condition logs at `warn` and waits — it does *not* advance the cursor mid-storm and does *not* burn the rest of `poll_interval` retrying. The next cycle starts fresh.
+- **Backfill respects rate limits the same way.** A backfill of a 50K-issue project might genuinely take hours under 429 pressure; `backfill_in_progress` stays true the whole time and the worker survives crashes via `backfill_last_seen`.
+
+If you see your worker stuck in 429 storms, check `quelch azure logs` — every retry is logged at `debug` and every backoff at `info`. Long-term remedies: increase `poll_interval`, narrow `projects:` per worker, or contact Atlassian support to raise quota.
+
 ## Configuration knobs
 
 All defaults live under the global `ingest:` section of `quelch.yaml`; overridable per source if needed. See [configuration.md](configuration.md#ingest):
@@ -219,6 +231,8 @@ All defaults live under the global `ingest:` section of `quelch.yaml`; overridab
 | `ingest.batch_size` | `100` | Page size for source API calls. |
 | `ingest.reconcile_every` | `12` | Reconciliation runs every Nth cycle. With default `poll_interval`, that's ~60 minutes. |
 | `ingest.max_cycle_duration` | `30m` | If a cycle takes longer than this, log a warning. (Won't abort — long cycles are valid for big windows.) |
+| `ingest.max_concurrent_per_source` | `1` | In-flight source-API requests per source instance. Atlassian rate-limits per account, so concurrency rarely helps. |
+| `ingest.max_retries` | `5` | Per-request retry cap for transient 5xx without `Retry-After`. |
 
 ## Operator FAQ
 

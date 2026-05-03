@@ -184,46 +184,207 @@ Jira and Confluence ingest don't just write the obvious entities (issues, pages)
 
 These are populated on the same ingest cycle as the primary entity. Updating a sprint state from `future` → `active` takes the next ingest cycle to surface.
 
-### Document shape (illustrative)
+### Canonical field reference
 
-A Jira issue document in `jira-issues` looks roughly like:
+These are the fields the ingest worker writes for each source type by default. Every field is read by the AI Search Indexer (and surfaced through `list_sources`) unless marked otherwise. Custom fields beyond these are opt-in via `sources[].fields` in the config.
+
+#### Jira issue (`jira_issues`)
 
 ```json
 {
-  "id": "jira-internal-DO-1234",
+  "id": "jira-internal-DO-1234",                          // composite: source_name + key
   "source_name": "jira-internal",
   "source_link": "https://jira.internal.example/browse/DO-1234",
-  "project_key": "DO",
+
   "key": "DO-1234",
-  "type": "Story",
+  "project_key": "DO",
+
+  "type": "Story",                                         // Story|Task|Bug|Epic|Sub-task
   "status": "In Progress",
+  "status_category": "In Progress",                        // To Do | In Progress | Done
+  "priority": "High",                                      // Highest|High|Medium|Low|Lowest
+  "resolution": null,                                      // null while open; e.g. "Done", "Duplicate"
+  "resolved": null,                                        // datetime; null while open
+
   "summary": "Camera disconnects intermittently on WiFi",
-  "description": "...",
-  "assignee": { "id": "...", "name": "Kristofer Liljeblad", "email": "..." },
-  "reporter": { ... },
-  "story_points": 5,
-  "sprint": { "id": "204", "name": "DO Sprint 42", "state": "active" },
-  "fix_versions": [{ "id": "...", "name": "iXX-2.7.0" }],
+  "description": "<rendered HTML or markdown>",
+
+  "assignee":  { "id": "...", "name": "Kristofer Liljeblad", "email": "..." },
+  "reporter":  { "id": "...", "name": "...",                "email": "..." },
+
+  "created":  "2026-04-12T10:21:00Z",
+  "updated":  "2026-04-28T14:02:11Z",
+  "due_date": "2026-05-15",
+
+  "labels":     ["wifi", "regression"],
   "components": ["camera", "firmware"],
-  "labels": ["wifi", "regression"],
-  "created": "2026-04-12T10:21:00Z",
-  "updated": "2026-04-28T14:02:11Z",
-  "comments": [...],
-  "_partition_key": "DO"
+
+  "fix_versions":     [{ "id": "...", "name": "iXX-2.7.0" }],
+  "affects_versions": [{ "id": "...", "name": "iXX-2.6.3" }],
+
+  "sprint": { "id": "204", "name": "DO Sprint 42",
+              "state": "active",
+              "start_date": "...", "end_date": "...", "goal": "..." },
+
+  "parent":     { "id": "...", "key": "DO-1100", "type": "Epic" },   // Sub-task or Epic-child
+  "epic_link":  "DO-1100",                                            // legacy custom field; redundant with parent on new Jira
+
+  "issuelinks": [
+    { "type": "blocks",     "direction": "outward", "target_key": "DO-1180", "target_summary": "..." },
+    { "type": "is blocked by", "direction": "inward", "target_key": "DO-1170", "target_summary": "..." }
+  ],
+
+  "comments": [
+    { "id": "...", "author": { ... }, "body": "...", "created": "...", "updated": "..." }
+  ],
+
+  // configurable (sources[].fields)
+  "story_points": 5,
+
+  // Quelch internals
+  "_partition_key": "DO",                                  // = project_key
+  "_deleted":       false,                                 // set true by reconciliation
+  "_deleted_at":    null
 }
 ```
 
-`_partition_key` is set by the ingest worker (project key for Jira issues, space key for Confluence pages, etc.).
+#### Jira sprint (`jira_sprints`)
 
-`source_link` is mandatory on every document — it's how agents hand the user back to the source system.
+```json
+{
+  "id":           "jira-internal-sprint-204",
+  "source_name":  "jira-internal",
+  "source_link":  "https://jira.internal.example/.../sprints/204",
+  "key":          "204",
+  "name":         "DO Sprint 42",
+  "state":        "active",                  // active | future | closed
+  "start_date":   "2026-04-15T00:00:00Z",
+  "end_date":     "2026-04-29T00:00:00Z",
+  "complete_date": null,                      // datetime once state=closed
+  "goal":         "Stabilise iXX firmware connectivity",
+  "project_keys": ["DO"],                     // sprints are board-level; usually 1 project
+  "board_id":     "12",
+  "created":      "...", "updated": "...",
+  "_partition_key": "DO",
+  "_deleted": false, "_deleted_at": null
+}
+```
 
-The exact field set is defined per source-type and documented in [configuration.md](configuration.md). The MCP `list_sources` tool reflects this schema at runtime — phrased entirely in API-layer terms (data sources, fields, enum values) — so agents don't have to be hard-coded against any storage detail.
+#### Jira fix version (`jira_fix_versions`)
+
+```json
+{
+  "id":           "jira-internal-fixversion-iXX-2.7.0",
+  "source_name":  "jira-internal",
+  "source_link":  "https://jira.internal.example/.../versions/...",
+  "name":         "iXX-2.7.0",
+  "description":  "Quarterly camera firmware release",
+  "released":     true,
+  "release_date": "2026-04-09",
+  "archived":     false,
+  "project_key":  "DO",
+  "created":      "...", "updated": "...",
+  "_partition_key": "DO",
+  "_deleted": false, "_deleted_at": null
+}
+```
+
+#### Jira project (`jira_projects`)
+
+```json
+{
+  "id":          "jira-internal-DO",
+  "source_name": "jira-internal",
+  "source_link": "https://jira.internal.example/projects/DO",
+  "key":         "DO",
+  "name":        "DataOps",
+  "description": "...",
+  "lead":        { "id": "...", "name": "...", "email": "..." },
+  "project_type_key": "software",             // software | business | service_desk
+  "category":    { "id": "...", "name": "Engineering" },
+  "created":     "...", "updated": "...",
+  "_partition_key": "DO",
+  "_deleted": false, "_deleted_at": null
+}
+```
+
+#### Confluence page (`confluence_pages`)
+
+```json
+{
+  "id":          "confluence-internal-page-12345",
+  "source_name": "confluence-internal",
+  "source_link": "https://confluence.internal.example/display/ENG/Camera+Connectivity",
+
+  "space_key":   "ENG",
+  "title":       "Camera Connectivity Pipeline",
+  "body":        "<rendered storage or view format>",
+
+  "version":     { "number": 7, "when": "...", "by": { "id":"...", "name":"...", "email":"..." } },
+  "ancestors":   [ { "id": "...", "title": "Architecture" } ],   // breadcrumbs to root
+
+  "created":     "2026-01-12T10:00:00Z",
+  "created_by":  { "id": "...", "name": "...", "email": "..." },
+  "updated":     "2026-04-28T14:02:11Z",
+  "updated_by":  { "id": "...", "name": "...", "email": "..." },
+
+  "labels":      ["camera", "architecture"],
+
+  "_partition_key": "ENG",
+  "_deleted": false, "_deleted_at": null
+}
+```
+
+#### Confluence space (`confluence_spaces`)
+
+```json
+{
+  "id":          "confluence-internal-space-ENG",
+  "source_name": "confluence-internal",
+  "source_link": "https://confluence.internal.example/display/ENG/",
+  "key":         "ENG",
+  "name":        "Engineering",
+  "description": "...",
+  "type":        "global",                    // global | personal | team
+  "homepage_id": "10001",
+  "created":     "...", "updated": "...",
+  "_partition_key": "ENG",
+  "_deleted": false, "_deleted_at": null
+}
+```
+
+#### Common conventions
+
+- `id` is always `{source_name}-{stable-key}` — globally unique across Quelch.
+- `source_name` is the configured source instance (e.g. `jira-internal`, `jira-cloud`). Lets agents filter to "only stuff from cloud Jira" without per-instance MCP calls.
+- `source_link` is mandatory on every document — agents include it in user-facing answers so users can click through.
+- `_partition_key` is set by the ingest worker — project key for Jira, space key for Confluence. It's how Cosmos partitions the container.
+- `_deleted` / `_deleted_at` participate in the soft-delete column policy of the AI Search Indexer (see [sync.md](sync.md#deletions)).
+- All datetimes are UTC ISO-8601.
+
+The MCP `list_sources` tool surfaces this schema (in API-layer terms) at runtime so agents don't need to be hard-coded against it. Custom fields configured per source appear in `list_sources` automatically.
+
+## Lifecycle of config changes
+
+What happens when you edit `quelch.yaml` and run `quelch azure deploy` again?
+
+| Change | Effect |
+|---|---|
+| Add a new `projects: [..., NEW]` to a Jira source | The new project becomes a new `(source, subsource)` tuple. On its first ingest cycle, `last_complete_minute` is unset so the worker runs an initial backfill of NEW. Existing projects continue normally. |
+| Remove a project from `projects:` | The worker stops syncing that project — it's no longer in its config. The Cosmos data is left in place; reconciliation will not delete it (reconciliation only marks docs missing *from the source*, not docs whose subsource was removed from config). To purge: `quelch azure indexer reset <indexer>` to drop from search, then drop manually from Cosmos if desired. |
+| Add a new source instance (`jira-cloud` next to `jira-internal`) | `quelch azure plan` shows a new container, indexer, knowledge source, etc. Apply, and the new source backfills from scratch on its first cycle. |
+| Add a custom field via `sources[].fields.foo: customfield_X` | Backfill is *not* automatically re-run. New issues / updated issues will include the new field; old ones won't until they're updated in the source. To force a full re-ingest of the field: `quelch reset --source <name>` to wipe cursors and restart backfill. |
+| Add a data source to `mcp.expose:` | Apply triggers `rigg push` of a new knowledge-source / knowledge-base entry. Agent's `list_sources` includes it next call. |
+| Remove a data source from `mcp.expose:` | rigg removes the corresponding knowledge-source / KB entry. The Cosmos container is *not* dropped (data is preserved). |
+| Move an `ingest` deployment from `target: onprem` to `target: azure` (or vice versa) | Quelch validates that no other deployment owns the same `(source, subsource)` tuples. Apply: the new deployment is provisioned; the old `target` is left to you to decommission (Quelch doesn't reach into your on-prem hosts to stop services). |
+| Bump `safety_lag_minutes` | Live-safe; cursor never moves backward. See [sync.md](sync.md#trade-offs). |
+| Change `cosmos.containers.jira_issues` (rename) | This is a **destructive** change — `what-if` will show a `+` new container, `-` old container, all data lost on rename. Avoid renaming containers; use source-level `container:` overrides for new sources instead. |
 
 ## State model
 
 ### Cursors live in `quelch-meta`
 
-The shared `quelch-meta` container is the single source of truth for what each ingest worker has done. One document per `{deployment_name, source_name, subsource}` triple:
+The shared `quelch-meta` container is the single source of truth for what each ingest worker has done. One document per `{deployment_name, source_name, subsource}` triple. The full schema is in [sync.md](sync.md#state-stored-per-source-subsource); the load-bearing summary:
 
 ```json
 {
@@ -231,12 +392,16 @@ The shared `quelch-meta` container is the single source of truth for what each i
   "deployment_name": "ingest-onprem-jira-ak",
   "source_name": "jira-internal",
   "subsource": "DO",
-  "cursor": { "last_updated": "2026-04-30T08:14:22Z" },
-  "documents_synced": 12894,
+  "last_complete_minute": "2026-04-30T08:14:00Z",
+  "documents_synced_total": 12894,
   "last_sync_at": "2026-04-30T08:14:25Z",
-  "last_error": null
+  "last_error": null,
+  "backfill_in_progress": false,
+  "last_reconciliation_at": "2026-04-30T07:30:00Z"
 }
 ```
+
+`last_complete_minute` is at exact-minute resolution and means *"every change with `updated <= this minute` is durably in Cosmos"*. The reasoning is in [sync.md](sync.md).
 
 This means:
 

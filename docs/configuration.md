@@ -169,11 +169,13 @@ Global defaults for ingest worker behaviour. These knobs directly affect the [sy
 
 ```yaml
 ingest:
-  poll_interval: "300s"        # how often a worker tries to advance its window
-  safety_lag_minutes: 2        # window upper bound = (now floored to minute) - this many minutes
-  batch_size: 100              # page size for source API calls
-  reconcile_every: 12          # full deletion-reconciliation runs every Nth cycle
-  max_cycle_duration: "30m"    # warn if a cycle takes longer than this; doesn't abort
+  poll_interval: "300s"           # how often a worker tries to advance its window
+  safety_lag_minutes: 2           # window upper bound = (now floored to minute) - this many minutes
+  batch_size: 100                 # page size for source API calls
+  reconcile_every: 12             # full deletion-reconciliation runs every Nth cycle
+  max_cycle_duration: "30m"       # warn if a cycle takes longer than this; doesn't abort
+  max_concurrent_per_source: 1    # in-flight source-API requests per source instance
+  max_retries: 5                  # per-request retry cap on transient 5xx without Retry-After
 ```
 
 | Knob | Default | What it controls |
@@ -183,6 +185,8 @@ ingest:
 | `batch_size` | `100` | Page size for source API calls (`maxResults` for Jira, `limit` for Confluence). |
 | `reconcile_every` | `12` | Full reconciliation pass every Nth cycle. With default `poll_interval` of 300s, that's ~60 minutes. Increase for large projects with low delete rates. |
 | `max_cycle_duration` | `30m` | Logged warning threshold — long cycles are valid for big windows, this just flags them. |
+| `max_concurrent_per_source` | `1` | Maximum concurrent in-flight requests to a single source instance. Atlassian rate-limits per account; concurrency rarely helps. |
+| `max_retries` | `5` | Retry cap for transient 5xx responses without `Retry-After`. 429s (and 5xx with `Retry-After`) honour the server's value. |
 
 These are global defaults. Future versions may allow per-source overrides; v1 keeps it global to make the system easier to reason about.
 
@@ -451,7 +455,11 @@ deployments:
     target: azure
     azure:
       container_app: { cpu: 1.0, memory: "2.0Gi", min_replicas: 0 }
-    expose: ["jira-issues", "confluence-pages", "jira-sprints", "jira-fix-versions"]
+    expose:
+      - jira_issues
+      - confluence_pages
+      - jira_sprints
+      - jira_fix_versions
     auth:
       mode: "api_key"
 ```

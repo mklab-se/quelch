@@ -362,15 +362,238 @@ Use this when the answer doesn't need to fit the conversation's tone; surface th
 
 ---
 
+## 12. "What changed in the DO project in the last hour?"
+
+**User expects:** every recent update — issues, comments, status changes — over a tight time window. Useful for "catch me up" use cases.
+
+**Agent's plan:** simple `query` with a recency filter on `updated`. Sort descending so the most recent surface first.
+
+**MCP calls:**
+
+```jsonc
+query({
+  data_source: "jira_issues",
+  where: {
+    "project_key": "DO",
+    "updated": { "gte": "1 hour ago" }
+  },
+  order_by: [{ field: "updated", dir: "desc" }],
+  top: 100
+})
+// → { items: [...], next_cursor: "...", total: 17 }
+```
+
+**Response:** "17 issues in DO have been updated in the last hour. Most recent: DO-1234 *Camera disconnects* moved to In Review (5 min ago); DO-1241 *Battery telemetry* commented by Ana (12 min ago); ... [click any to open in Jira]"
+
+The `updated` field is set on any meaningful Jira mutation — status change, assignment change, new comment, edited description. So a filter on `updated >= 1h ago` reliably catches "recent activity" of any kind.
+
+To extend across both source systems:
+
+```jsonc
+search({
+  query: "*",
+  data_sources: ["jira_issues", "confluence_pages"],
+  where: { "updated": { "gte": "1 hour ago" } },
+  top: 50
+})
+```
+
+(Note: empty/wildcard `query` over a knowledge base still respects the `where` filter and ranks by recency-relevance — useful when the user just wants "what changed".)
+
+---
+
+## 13. "Show me issues that have been stuck — In Progress for more than 14 days with no recent updates"
+
+**User expects:** a list of stalled work, ranked oldest-first, that the team can use to unstick or close out.
+
+**Agent's plan:** `query` with two time filters — status is currently In Progress, *and* `updated` hasn't moved in 14 days.
+
+**MCP calls:**
+
+```jsonc
+query({
+  data_source: "jira_issues",
+  where: {
+    "and": [
+      { "project_key": "DO" },
+      { "status_category": "In Progress" },        // covers "In Progress", "In Review", etc.
+      { "updated": { "lt": "14 days ago" } },
+      { "_deleted": { "not": true } }
+    ]
+  },
+  order_by: [{ field: "updated", dir: "asc" }],   // oldest stale first
+  top: 100
+})
+// → { items: [...], next_cursor: null, total: 9 }
+```
+
+**Response:** "9 issues in DO have been In Progress with no activity for 14+ days: (1) DO-1102 *Field diagnostic batching* — 47 days stale, assignee Ana, 5 story points. (2) DO-1131 *Cellular fallback handling* — 28 days stale, unassigned. ... [click any to open]"
+
+The agent uses `status_category` rather than `status` so the query is robust across Jira workflows that rename "In Progress" or add intermediate statuses (`In Review`, `Code Review`, etc.) — they all carry `status_category: "In Progress"`.
+
+Filtering `_deleted` explicitly excludes soft-deleted docs that haven't been compacted yet.
+
+---
+
+## 14. "Generate the release notes for iXX-2.7.0"
+
+**User expects:** a structured changelog grouped by issue type, listing every Jira issue tagged with `fix_versions = iXX-2.7.0`, ready to paste into a release announcement.
+
+**Agent's plan:** `aggregate` to get the breakdown by type, then `query` to list each group's issues. Or do it all in one `query` call grouped client-side.
+
+**MCP calls:**
+
+```jsonc
+// One query — all issues for the version, sorted by type then key
+query({
+  data_source: "jira_issues",
+  where: {
+    "fix_versions[].name": "iXX-2.7.0",
+    "resolution": { "not": null }                  // only resolved issues belong in release notes
+  },
+  order_by: [
+    { field: "type", dir: "asc" },
+    { field: "key",  dir: "asc" }
+  ],
+  top: 500
+})
+// → { items: [...], next_cursor: null, total: 42 }
+```
+
+**Response:** a markdown changelog grouped by type:
+
+```markdown
+# iXX-2.7.0 release notes
+
+## New features (8)
+- DO-1182 — Camera firmware OTA path
+- DO-1199 — Cellular handoff for outdoor cameras
+- ...
+
+## Bug fixes (29)
+- DO-1170 — WiFi reconnect storm after power-cycle
+- DO-1188 — Battery reading drift at low temperatures
+- ...
+
+## Improvements (5)
+- DO-1200 — Faster diagnostic export
+- ...
+```
+
+The filter on `resolution: { not: null }` excludes issues that were tagged for the version but later moved out without being completed — a real Jira-data hazard.
+
+If the user wants more polish, the agent can pair this with Example 8 (`search confluence_pages "release notes iXX 2.7.0"`) to find an existing manual narrative and merge.
+
+---
+
+## 15. "What's blocking DO-1182?"
+
+**User expects:** the dependency chain — issues that must complete before DO-1182 can ship.
+
+**Agent's plan:** `get` DO-1182, read its `issuelinks`, then `get` (or `query`) for the linked issues to enrich with status. Two-step.
+
+**MCP calls:**
+
+```jsonc
+// Step 1: fetch the issue and read its issuelinks
+get({
+  data_source: "jira_issues",
+  id: "jira-internal-DO-1182"
+})
+// → { document: {
+//      key: "DO-1182", summary: "Camera firmware OTA path", ...,
+//      issuelinks: [
+//        { type: "is blocked by", direction: "inward",  target_key: "DO-1170", target_summary: "WiFi reconnect storm" },
+//        { type: "is blocked by", direction: "inward",  target_key: "DO-1175", target_summary: "Battery telemetry contract" },
+//        { type: "blocks",        direction: "outward", target_key: "DO-1199", target_summary: "Cellular handoff" }
+//      ],
+//      ...
+//    } }
+
+// Step 2: fetch each blocker to know its current status
+query({
+  data_source: "jira_issues",
+  where: { "key": ["DO-1170", "DO-1175"] },
+  top: 10
+})
+// → { items: [
+//      { key: "DO-1170", status: "Done",        resolved: "...", assignee: {...} },
+//      { key: "DO-1175", status: "In Progress", resolved: null,  assignee: {...} }
+//    ] }
+```
+
+**Response:** "DO-1182 is blocked by 2 issues: ✅ DO-1170 *WiFi reconnect storm* — Done (resolved 2 days ago); 🔄 DO-1175 *Battery telemetry contract* — In Progress, assigned to Ana, no recent update. The remaining blocker is DO-1175. [links]"
+
+Filtering with `key: [...]` is membership — the agent asks for several specific keys in one call rather than N gets.
+
+To go deeper (transitive blockers — what blocks the blockers), the agent recurses: take DO-1175's `issuelinks`, repeat. Bound the depth (say, 3 levels) to avoid runaway expansion.
+
+---
+
+## 16. "What projects and spaces do we have? What can I ask about?"
+
+**User expects:** an inventory of available data so they know what's actually queryable. Onboarding question; also useful at the start of a new conversation.
+
+**Agent's plan:** `list_sources` first (data-source inventory + schemas), then `query` the metadata data sources (`jira_projects`, `confluence_spaces`) to enumerate concrete projects/spaces.
+
+**MCP calls:**
+
+```jsonc
+list_sources({})
+// → { data_sources: [
+//      { name: "jira_issues",        kind: "jira_issue",        searchable: true,  source_instances: ["jira-internal", "jira-cloud"], schema: [...] },
+//      { name: "jira_sprints",       kind: "jira_sprint",       searchable: false, ... },
+//      { name: "jira_fix_versions",  kind: "jira_fix_version",  searchable: false, ... },
+//      { name: "jira_projects",      kind: "jira_project",      searchable: false, ... },
+//      { name: "confluence_pages",   kind: "confluence_page",   searchable: true,  ... },
+//      { name: "confluence_spaces",  kind: "confluence_space",  searchable: false, ... }
+//    ] }
+
+query({
+  data_source: "jira_projects",
+  order_by: [{ field: "key", dir: "asc" }],
+  top: 100
+})
+// → { items: [
+//      { key: "DO",   name: "DataOps",         project_type_key: "software" },
+//      { key: "INT",  name: "Integrations",    project_type_key: "software" },
+//      { key: "PROD", name: "Product Mgmt",    project_type_key: "business" }
+//    ], total: 3 }
+
+query({
+  data_source: "confluence_spaces",
+  order_by: [{ field: "key", dir: "asc" }],
+  top: 100
+})
+// → { items: [
+//      { key: "ENG", name: "Engineering",       type: "global" },
+//      { key: "OPS", name: "Operations",        type: "global" }
+//    ], total: 2 }
+```
+
+**Response:** "You have access to 3 Jira projects (DO – DataOps, INT – Integrations, PROD – Product Management) and 2 Confluence spaces (ENG – Engineering, OPS – Operations). Try asking things like:
+- 'What's planned for next sprint in DO?'
+- 'Find anything we've documented about WiFi reliability'
+- 'How many issues are open across all projects?'
+- 'Summarise our way-of-working pages'"
+
+This is the canonical "first-call-of-the-conversation" pattern — the agent caches `list_sources` once per session and uses it to ground all subsequent calls. Generated agent bundles ([agent-generation.md](agent-generation.md)) tell the assistant to do this proactively at session start.
+
+---
+
 ## Pattern summary
 
-If you read all eleven, the patterns repeat:
+If you read all sixteen, the patterns repeat:
 
 - **Exhaustive listing** → `query` with cursor pagination.
 - **Counts and totals** → `aggregate`.
 - **Fuzzy / cross-document themes** → `search`.
 - **Summarise across many documents** → `search` with `include_content: "full"`; agent synthesises.
+- **Recency / freshness** → `query` with `updated >= "X ago"`.
+- **Staleness / stuck work** → `query` with `updated < "X ago"` plus a status condition.
 - **Domain concepts (sprints, fix versions, spaces)** → `query` against the companion data source first, then a follow-up call.
+- **Issue dependencies** → `get` to read `issuelinks`, then `query` with `key: [...]` to enrich.
+- **Discovery / "what's available"** → `list_sources` then `query` the metadata data sources.
 - **Two-step "resolve then fetch"** is the most common shape.
 - **Always include `source_link`s** in the answer.
 

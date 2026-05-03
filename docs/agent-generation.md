@@ -135,12 +135,16 @@ Example calls:
 
 Patterns that recur in real questions:
 
+- **Discovery — "what's available?"** Call `list_sources` once at session start and cache it. For "what projects exist?", `query(data_source="jira_projects", ...)`. Same for `confluence_spaces`.
 - **"All matching X" — exhaustive results.** Always paginate with `cursor` until `next_cursor` is null. Surface `total` from the response so the user knows how many.
 - **"Counts and totals."** Use `aggregate`, not pagination + client-side counting.
 - **"Summarise / tell me what's written about X."** Call `search` once with `include_content: "full"` so every hit's full body comes back in one round-trip — then write the summary yourself, in the conversation's voice. Do *not* loop `search` → `get` per hit. Reach for `include_content: "agentic_answer"` only when the user wants a quick paragraph and is happy with KB-style synthesis (less tailored).
+- **"What changed recently" — freshness.** `query` with `where: { updated: { gte: "1 hour ago" } }` and `order_by: updated desc`.
+- **"Stalled / stuck work" — staleness.** `query` with both a status condition and `updated: { lt: "14 days ago" }`. Prefer `status_category: "In Progress"` over specific status names — robust across workflows.
 - **"The next sprint" / "the current sprint."** First `query(data_source="jira_sprints", where={ project_key:X, state:"active"|"future" }, order_by=[{field:"start_date", dir:"asc"}], top=1)`. Then use the returned id in a second tool call.
 - **"Planned in a sprint" — issue type filtering.** Default to Stories, Tasks, Bugs. Exclude Epics and Sub-tasks unless the user asks.
-- **"Release notes for version X."** First `query(data_source="jira_fix_versions", where={ name:"X" })` to confirm the version exists, then `search(data_sources=["confluence_pages"], query="release notes <X>")`.
+- **"Release notes / what's in version X."** Either `query(data_source="jira_fix_versions", where={ name:"X" })` to confirm the version, then `query(jira_issues, where={ "fix_versions[].name": "X", resolution: { not: null } })` for the structured changelog. Or `search(data_sources=["confluence_pages"], query="release notes <X>")` to find a manual narrative.
+- **"What's blocking issue X?"** `get` issue X, read its `issuelinks` (entries with `type: "is blocked by"`), then `query(jira_issues, where={ key: [<blocker keys>] })` to enrich with status. Recurse for transitive dependencies; bound depth to ~3.
 - **"Cross-team / cross-source comparison."** Use `search` over `confluence_pages` for the documents, then summarise.
 
 ### 5. Example prompts

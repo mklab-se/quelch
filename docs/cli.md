@@ -26,6 +26,11 @@ quelch
 ├── status                     Show all deployments' state from quelch-meta
 │   └── --tui                  Live dashboard
 │
+├── reset                      Reset ingest cursors (forces re-sync / re-backfill)
+│   ├── --source <name>         Reset one source instance only
+│   ├── --subsource <key>       Restrict to one project / space within --source
+│   └── --yes                   Skip the confirmation prompt
+│
 ├── ingest                     Run an ingest worker (long-running)
 ├── mcp                        Run the MCP server (long-running)
 ├── dev                        Local dev (sim + mocks + MCP, in one process)
@@ -101,6 +106,27 @@ quelch effective-config mcp-azure
 ```
 
 Useful for understanding exactly what credentials and topology a deployed worker has access to.
+
+### `quelch reset`
+
+Clears ingest cursors so that ingest workers will run a fresh backfill on their next cycle.
+
+```bash
+quelch reset                                          # all (source, subsource) tuples — prompts
+quelch reset --source jira-internal                   # one source — all subsources
+quelch reset --source jira-internal --subsource DO    # one subsource only
+quelch reset --source jira-internal --yes             # skip confirmation
+```
+
+`reset` only touches `quelch-meta`. Cosmos data and the AI Search index are *not* dropped — they're idempotently overwritten as the backfill progresses. To also drop the data, use `quelch azure indexer reset` (clears the AI Search index) and Cosmos `delete container` (drops the raw data).
+
+Flags:
+
+- `--source <name>` — restrict to one configured source.
+- `--subsource <key>` — restrict to one project (Jira) or space (Confluence) within that source.
+- `--yes` — skip the confirmation prompt (CI mode).
+
+See [sync.md](sync.md) for what cursor reset means and when to use it.
 
 ## Status and observability
 
@@ -189,20 +215,23 @@ Flags:
 
 These are convenience wrappers around the MCP tools. They use the same code path as the MCP server, so what you see here is what the agent sees over MCP.
 
+These commands are agent-API-shaped — they speak `data_source`, not physical container names, identical to what the deployed MCP server exposes (see [mcp-api.md](mcp-api.md)).
+
 ### `quelch query "..."`
 
-Runs a structured query.
+Runs a structured query against one data source.
 
 ```bash
-quelch query --container jira-issues \
-  --where 'assignee.email = "kristofer@example.com" and type = "Story" and status != "Done"' \
+quelch query --data-source jira_issues \
+  --where '{"assignee.email": "kristofer@example.com", "type": "Story", "status": {"not": "Done"}}' \
   --top 100
 ```
 
 Flags:
 
-- `--container <name>` — required.
-- `--where <expr>` — structured predicate (see [mcp-api.md](mcp-api.md#filter-grammar)).
+- `--data-source <name>` — required. Logical data-source name (e.g. `jira_issues`, `jira_sprints`).
+- `--where <json>` — structured predicate as JSON, matching the `where` grammar in [mcp-api.md](mcp-api.md#filter-grammar). Pass via shell quoting or `--where-file <path>` for complex predicates.
+- `--where-file <path>` — read the `where` JSON from a file instead of the command line.
 - `--order-by <field:dir>` — repeatable, e.g. `--order-by updated:desc`.
 - `--top <N>` — page size.
 - `--cursor <token>` — continuation token from a previous call.
@@ -211,30 +240,35 @@ Flags:
 
 ### `quelch search "..."`
 
-Runs a hybrid search.
+Runs a hybrid semantic search.
 
 ```bash
-quelch search "camera connection problems" --indexes jira-issues --top 25
+quelch search "camera connection problems" \
+  --data-sources jira_issues,confluence_pages \
+  --top 25
 ```
 
 Flags:
 
-- `--indexes <a,b,c>` — repeatable. Default: every index exposed by the active deployment.
-- `--filters <expr>` — OData filter expression.
+- `--data-sources <a,b,c>` — comma-separated logical data-source names. Default: every searchable data source the active config exposes.
+- `--where <json>` — optional structured filter (same grammar as `query`).
 - `--top <N>` — page size.
 - `--cursor <token>` — continuation.
+- `--include-content [snippet|full|agentic_answer]` — see [mcp-api.md](mcp-api.md#search). Default `snippet`.
 - `--json` — raw JSON.
 
 ### `quelch get <id>`
 
+Point-read a document by id.
+
 ```bash
-quelch get jira-internal-DO-1234
+quelch get --data-source jira_issues jira-internal-DO-1234
 ```
 
 Flags:
 
-- `--container <name>` — required if the id doesn't disambiguate.
-- `--json`.
+- `--data-source <name>` — required.
+- `--json` — raw JSON.
 
 ## Azure provisioning
 
@@ -291,6 +325,23 @@ quelch azure destroy ingest-azure-cloud
 
 To delete the entire resource group, use `az group delete` directly.
 
+### `quelch azure pull`
+
+Pulls live AI Search and Microsoft Foundry configuration back into the local `rigg/` directory. See [deployment.md](deployment.md#quelch-azure-pull) for the full workflow.
+
+```bash
+quelch azure pull                   # all rigg-managed resources
+quelch azure pull index             # only indexes
+quelch azure pull knowledge_base    # only knowledge bases
+quelch azure pull --diff            # show what would change locally without writing
+```
+
+Flags:
+
+- `[<resource>]` — optional positional arg restricting to one resource type (`index`, `indexer`, `skillset`, `knowledge_source`, `knowledge_base`, `agent`, …). Default: all.
+- `--diff` — show what `pull` would do without modifying local files.
+- `--out <dir>` — write to a different directory than `rigg.dir` from the config.
+
 ### `quelch azure indexer`
 
 Operate Azure AI Search Indexers from the CLI.
@@ -301,7 +352,7 @@ quelch azure indexer run jira-issues
 quelch azure indexer reset jira-issues   # forces full re-index next run
 ```
 
-`reset` clears the indexer's high-water mark, so the next run pulls every Cosmos document. Useful after a schema change.
+`reset` clears the indexer's high-water mark, so the next run pulls every Cosmos document. Useful after a schema change. Note: this is the AI-Search-side indexer, not the Quelch ingest cursor — for that, see [`quelch reset`](#quelch-reset).
 
 ## On-prem deployment artefacts
 

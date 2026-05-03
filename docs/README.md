@@ -65,7 +65,7 @@ That spins up the simulator, an in-memory mock for Cosmos and AI Search, and the
 
 - **One binary, one config.** `quelch` is the only thing you install. `quelch.yaml` is the only thing you version-control.
 - **Config is the source of truth.** Quelch reconciles Azure to the config; never the other way around.
-- **Bicep is generated output.** Quelch synthesises Bicep from the config on every plan/deploy. You read the diff and approve. You never hand-edit Bicep.
+- **Bicep and rigg files are generated output.** Quelch synthesises Bicep (Azure resource shells) and rigg files (AI Search / Foundry configuration) from the config on every plan/deploy. You read the diff and approve. Hand-takeover is supported per file via a marker — see [architecture.md](architecture.md#provisioning-split-bicep-vs-rigg).
 - **Workers are stateless.** All cursors live in the shared `quelch-meta` Cosmos container, not on local disk. Redeploys never lose state.
 - **Agents see one API.** The MCP layer hides the Cosmos/AI-Search split. Agents reason about tools, not databases.
 
