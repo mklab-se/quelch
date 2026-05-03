@@ -255,7 +255,7 @@ search({
 // → { items: [{ source_link: "https://confluence.example/.../iXX-2.7.0-release-notes", ... }], ... }
 ```
 
-**Response:** "The last released iXX firmware was 2.7.0 (released 2026-04-09). Release notes: https://confluence.example/.../iXX-2.7.0-release-notes . Top changes: ..."
+**Response:** "The last released iXX firmware was 2.7.0 (released 2026-04-09). Release notes: <https://confluence.example/.../iXX-2.7.0-release-notes>. Top changes: ..."
 
 ---
 
@@ -387,18 +387,25 @@ query({
 
 The `updated` field is set on any meaningful Jira mutation — status change, assignment change, new comment, edited description. So a filter on `updated >= 1h ago` reliably catches "recent activity" of any kind.
 
-To extend across both source systems:
+To extend across both source systems, the agent issues two `query` calls (one per data source) and merges client-side. `query` is single-data-source by design — recency questions are not semantic, so they belong on `query`, not `search`:
 
 ```jsonc
-search({
-  query: "*",
-  data_sources: ["jira_issues", "confluence_pages"],
+query({
+  data_source: "jira_issues",
   where: { "updated": { "gte": "1 hour ago" } },
+  order_by: [{ field: "updated", dir: "desc" }],
+  top: 50
+})
+
+query({
+  data_source: "confluence_pages",
+  where: { "updated": { "gte": "1 hour ago" } },
+  order_by: [{ field: "updated", dir: "desc" }],
   top: 50
 })
 ```
 
-(Note: empty/wildcard `query` over a knowledge base still respects the `where` filter and ranks by recency-relevance — useful when the user just wants "what changed".)
+The agent merges both result sets and presents them sorted by `updated` desc with the `data_source` field as a label. This costs one extra MCP call but produces exact, exhaustive recency results — `search` is the wrong tool here because there's nothing semantic to rank.
 
 ---
 
@@ -417,8 +424,7 @@ query({
     "and": [
       { "project_key": "DO" },
       { "status_category": "In Progress" },        // covers "In Progress", "In Review", etc.
-      { "updated": { "lt": "14 days ago" } },
-      { "_deleted": { "not": true } }
+      { "updated": { "lt": "14 days ago" } }
     ]
   },
   order_by: [{ field: "updated", dir: "asc" }],   // oldest stale first
@@ -431,7 +437,7 @@ query({
 
 The agent uses `status_category` rather than `status` so the query is robust across Jira workflows that rename "In Progress" or add intermediate statuses (`In Review`, `Code Review`, etc.) — they all carry `status_category: "In Progress"`.
 
-Filtering `_deleted` explicitly excludes soft-deleted docs that haven't been compacted yet.
+Soft-deleted docs are excluded by default (see [mcp-api.md "Soft-delete handling"](mcp-api.md#soft-delete-handling)). The agent doesn't need to filter `_deleted` explicitly.
 
 ---
 
@@ -572,6 +578,7 @@ query({
 ```
 
 **Response:** "You have access to 3 Jira projects (DO – DataOps, INT – Integrations, PROD – Product Management) and 2 Confluence spaces (ENG – Engineering, OPS – Operations). Try asking things like:
+
 - 'What's planned for next sprint in DO?'
 - 'Find anything we've documented about WiFi reliability'
 - 'How many issues are open across all projects?'

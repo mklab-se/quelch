@@ -109,6 +109,13 @@ arguments:
     type: string
     required: false
     description: Continuation token from a previous response.
+  include_deleted:
+    type: boolean
+    required: false
+    default: false
+    description: |
+      Include soft-deleted documents (`_deleted = true`). Default: live
+      data only. See "Soft-delete handling" below.
   include_content:
     type: string
     required: false
@@ -180,6 +187,13 @@ arguments:
   count_only:
     type: boolean
     default: false
+  include_deleted:
+    type: boolean
+    required: false
+    default: false
+    description: |
+      Include soft-deleted documents (`_deleted = true`). Default: live
+      data only. See "Soft-delete handling" below.
 returns:
   items:
     - <full document>
@@ -203,6 +217,13 @@ arguments:
   id:
     type: string
     required: true
+  include_deleted:
+    type: boolean
+    required: false
+    default: false
+    description: |
+      If true, return soft-deleted documents too. Default returns null
+      for soft-deleted ids — keeps "does this exist?" answers honest.
 returns:
   document: object|null
 ```
@@ -266,6 +287,13 @@ arguments:
     type: integer
     required: false
     description: When group_by is set, return only the top N groups.
+  include_deleted:
+    type: boolean
+    required: false
+    default: false
+    description: |
+      Include soft-deleted documents (`_deleted = true`). Default: live
+      data only. See "Soft-delete handling" below.
 returns:
   groups:
     - { key: string|null, count: integer, sum: number|null }
@@ -341,6 +369,68 @@ Every tool that takes a filter (`search`, `query`, `aggregate`) uses the same st
 ```
 
 Relative dates supported: `N seconds|minutes|hours|days|weeks|months|years ago`.
+
+## Soft-delete handling
+
+Quelch ingest soft-deletes documents during reconciliation by setting `_deleted: true` on the Cosmos document (see [sync.md](sync.md#deletions)). The MCP layer **filters out `_deleted=true` documents by default** from `query`, `search`, `aggregate`, and `get`. Agents do not need to add a `_deleted` filter — the default behaviour is "live data only".
+
+To include soft-deleted documents (forensic / audit queries), pass `include_deleted: true`:
+
+```jsonc
+query({
+  data_source: "jira_issues",
+  where: { "project_key": "DO" },
+  include_deleted: true     // returns live + soft-deleted; explicitly opt in
+})
+```
+
+`get` follows the same default — calling `get` on a soft-deleted id returns `null` unless `include_deleted: true` is passed. This keeps "did this issue exist?" answers honest by default.
+
+The `_deleted` and `_deleted_at` fields are visible in the returned documents when included, so agents can distinguish live from tombstoned material.
+
+## Aggregation over array fields
+
+When `aggregate.group_by` references an **array field**, the field is fanned out: each array element generates one contribution to its group. An issue with `labels: ["wifi", "regression"]` contributes 1 to `count(wifi)` and 1 to `count(regression)`. The grand `total.count` still reflects the document count (not element count), so `sum(group counts) >= total.count` is normal for array group_by.
+
+```jsonc
+aggregate({
+  data_source: "jira_issues",
+  where: { "project_key": "DO" },
+  group_by: "labels",          // array field
+  top_groups: 10
+})
+// → {
+//     total: { count: 1842, sum: null },                 // 1,842 issues
+//     groups: [                                          // sum(group counts) > 1,842 because issues
+//       { key: "regression", count: 412, sum: null },    // can have multiple labels
+//       { key: "wifi",       count: 287, sum: null },
+//       ...
+//     ]
+//   }
+```
+
+For object-array fields, project to a leaf with `field[].subfield`:
+
+```jsonc
+group_by: "fix_versions[].name"      // one group per distinct fix-version name
+group_by: "issuelinks[].type"        // one group per link type
+```
+
+Scalar `group_by` (e.g. `status`, `assignee.email`) behaves the obvious way — one document, one group contribution.
+
+## Multi-data-source workflow
+
+`query`, `get`, and `aggregate` operate on a single `data_source` per call. `search` is the only tool that fans out across multiple data sources natively — because semantic ranking benefits from a unified scoring pass.
+
+For non-semantic cross-data-source questions (e.g. "what changed in the last hour across both Jira and Confluence?"), the recommended pattern is **two `query` calls + client-side merge**:
+
+1. `query(data_source: "jira_issues", where: {updated: {gte: "1h ago"}}, ...)`.
+2. `query(data_source: "confluence_pages", where: {updated: {gte: "1h ago"}}, ...)`.
+3. Agent merges the two result sets, sorted by `updated`, presents with the `data_source` field as a label.
+
+Why not put this on `search` with a wildcard query? Because `search` routes through a Knowledge Base whose value is *semantic ranking*. A wildcard query loses that — you get a worse answer at higher cost than two simple `query` calls.
+
+Why not a single multi-data-source `query`? Because each data source can have a different schema, sort field, and partition strategy. Forcing a unified result requires either client-side merging (which `query` could do, but adds cost and surprise) or a rigid common-field shape that constrains future schemas. Two explicit `query` calls keep the semantics simple and the cost predictable.
 
 ## Pagination
 
