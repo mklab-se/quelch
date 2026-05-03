@@ -1,0 +1,62 @@
+{
+  "status": "Succeeded",
+  "changes": [
+    {
+      "changeType": "Create",
+      "resourceId": "/subscriptions/sub-test/resourceGroups/rg-test/providers/Microsoft.App/containerApps/quelch-prod-mcp",
+      "after": {
+        "name": "quelch-prod-mcp",
+        "location": "swedencentral",
+        "type": "Microsoft.App/containerApps"
+      }
+    },
+    {
+      "changeType": "Modify",
+      "resourceId": "/subscriptions/sub-test/resourceGroups/rg-test/providers/Microsoft.DocumentDB/databaseAccounts/quelch-prod-cosmos",
+      "before": {
+        "name": "quelch-prod-cosmos",
+        "properties": {
+          "throughput": {
+            "mode": "serverless"
+          }
+        }
+      },
+      "after": {
+        "name": "quelch-prod-cosmos",
+        "properties": {
+          "throughput": {
+            "mode": "provisioned"
+          }
+        }
+      },
+      "delta": [
+        {
+          "path": "properties.throughput.mode",
+          "propertyChangeType": "Modify",
+          "before": "serverless",
+          "after": "provisioned"
+        }
+      ]
+    },
+    {
+      "changeType": "Delete",
+      "resourceId": "/subscriptions/sub-test/resourceGroups/rg-test/providers/Microsoft.DocumentDB/databaseAccounts/quelch-old-cosmos",
+      "before": {
+        "name": "quelch-old-cosmos",
+        "location": "westeurope"
+      }
+    },
+    {
+      "changeType": "NoChange",
+      "resourceId": "/subscriptions/sub-test/resourceGroups/rg-test/providers/Microsoft.Search/searchServices/quelch-prod-search",
+      "before": {
+        "name": "quelch-prod-search",
+        "sku": { "name": "basic" }
+      },
+      "after": {
+        "name": "quelch-prod-search",
+        "sku": { "name": "basic" }
+      }
+    }
+  ]
+}
