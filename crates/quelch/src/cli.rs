@@ -158,4 +158,88 @@ pub enum Commands {
         #[arg(long)]
         max_docs: Option<u64>,
     },
+    /// Azure resource management commands (plan, deploy, pull, indexer, logs, destroy).
+    Azure {
+        #[command(subcommand)]
+        command: AzureCommands,
+    },
+}
+
+/// Top-level `quelch azure` subcommands.
+#[derive(clap::Subcommand)]
+pub enum AzureCommands {
+    /// Synthesise Bicep + rigg files; show the combined diff. No changes applied.
+    Plan {
+        /// Deployment name (omit to plan all).
+        deployment: Option<String>,
+        /// Write Bicep to a custom location (default .quelch/azure/<name>.bicep).
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Synthesise only; skip the `az deployment group what-if` call.
+        #[arg(long)]
+        no_what_if: bool,
+    },
+    /// Plan + apply the deployment to Azure.
+    Deploy {
+        /// Deployment name (omit to deploy all).
+        deployment: Option<String>,
+        /// Skip the interactive confirmation prompt.
+        #[arg(long)]
+        yes: bool,
+        /// Equivalent to `quelch azure plan` — show the diff but don't apply.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Pull live AI Search/Foundry config back into rigg/.
+    Pull {
+        /// Optional resource type filter (e.g. "index", "indexer").
+        kind: Option<String>,
+        /// Show what would change without writing.
+        #[arg(long)]
+        diff: bool,
+    },
+    /// Operate Azure AI Search Indexers.
+    Indexer {
+        #[command(subcommand)]
+        command: IndexerCommands,
+    },
+    /// Tail logs from a deployed Container App.
+    Logs {
+        /// Deployment name.
+        deployment: String,
+        /// Number of log lines to show.
+        #[arg(long, default_value = "100")]
+        tail: usize,
+        /// Stream logs continuously (Ctrl-C to stop).
+        #[arg(long)]
+        follow: bool,
+        /// Only show logs since this time (e.g. "1h", "30m").
+        #[arg(long)]
+        since: Option<String>,
+    },
+    /// Remove a single deployment's Container App from Azure.
+    Destroy {
+        /// Deployment name.
+        deployment: String,
+        /// Skip the interactive confirmation prompt.
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+/// `quelch azure indexer` subcommands.
+#[derive(clap::Subcommand)]
+pub enum IndexerCommands {
+    /// Trigger an immediate indexer run.
+    Run {
+        /// Indexer name.
+        name: String,
+    },
+    /// Reset the indexer (forces full re-index on next run).
+    Reset {
+        /// Indexer name.
+        name: String,
+    },
+    /// Show all indexers and their current state.
+    Status,
 }
