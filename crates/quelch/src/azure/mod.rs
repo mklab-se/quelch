@@ -1,3 +1,4 @@
+pub mod rigg;
 pub mod schema;
 
 use reqwest::Client;
