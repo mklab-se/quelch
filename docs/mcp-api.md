@@ -68,13 +68,18 @@ Each tool has a single, clearly described purpose. Agents pick the right one bas
 
 ### `search`
 
+`search` is the smart-semantic tool. It routes through an Azure AI Search **Knowledge Base** (the Agentic Retrieval feature) which decomposes the question into sub-queries, runs them in parallel, reranks across results, and returns an agent-friendly merged answer. This is invisible to the agent — same MCP tool, same arguments, same result shape — but produces materially better answers for fuzzy questions than a raw index query.
+
+For cost-sensitive deployments, an operator can set `mcp.search.disable_agentic: true` to fall back to direct hybrid search against the underlying index. Result quality drops; the API surface is unchanged.
+
 ```yaml
 name: search
 description: |
-  Hybrid semantic + keyword search across one or more data sources.
-  Use this when the user's question contains natural-language concepts
-  that may be expressed differently across documents (e.g. "connection
-  problems" matching "wifi issues" and "camera disconnects").
+  Hybrid semantic + keyword search across one or more data sources, with
+  built-in question decomposition and reranking. Use this when the user's
+  question contains natural-language concepts that may be expressed
+  differently across documents (e.g. "connection problems" matching
+  "wifi issues" and "camera disconnects").
 
   Returns ranked results with deep links back to the source system. Call
   list_sources first if you don't yet know which data sources to search.

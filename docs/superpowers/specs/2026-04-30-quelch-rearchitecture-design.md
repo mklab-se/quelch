@@ -76,20 +76,36 @@ Rationale:
 - Override unlocks multi-instance setups (`jira-issues-internal` vs `jira-issues-cloud`) without forcing them.
 - Companion containers exist so agents can resolve domain concepts ("next sprint", "last fix version") with a query rather than out-of-band knowledge.
 
-### 3. The config is the source of truth; Bicep is generated output
+### 3. The config is the source of truth; Bicep + rigg are generated output
 
-Decision: a single `quelch.yaml` (version-controlled) describes the entire solution. Quelch synthesises Bicep from it on every plan/deploy. Generated Bicep lives at `.quelch/azure/<deployment>.bicep` (also committed). Drift detection uses `az deployment group what-if`.
+Decision: a single `quelch.yaml` (version-controlled) describes the entire solution. From it Quelch generates two artefacts:
+
+1. **Bicep** for Azure resource shells (Cosmos, AI Search service, Container Apps, Key Vault, OpenAI references). Lives at `.quelch/azure/<deployment>.bicep`, applied via `az deployment group create`. Drift detected via `az deployment group what-if`.
+2. **rigg files** for AI Search and Microsoft Foundry *configuration* (indexes, skillsets, indexers, knowledge sources, knowledge bases, Foundry agents). Lives under `rigg/`, applied via the embedded `rigg-client` library. Drift detected via `rigg diff`.
+
+`quelch azure plan` shows a combined diff of both halves; `quelch azure deploy` applies both. See [/docs/architecture.md](../../../docs/architecture.md#provisioning-split-bicep-vs-rigg).
 
 Rationale:
 
 - Single source of truth = no out-of-band tribal knowledge.
-- Bicep is reviewable in PRs.
+- Bicep is reviewable in PRs; so are rigg files.
 - `what-if` is Azure-native dry-run; no need to reinvent.
 - Hand-editing Bicep is forbidden; it's regenerated every plan.
 
-### 4. The MCP API is five tools, and it speaks data sources, not containers
+### 4. The MCP API is five tools, speaks data sources, and routes per-tool
 
-Decision: `search`, `query`, `get`, `list_sources`, `aggregate`. Tools take `data_source` (or `data_sources`) as the addressable unit — a logical name like `jira_issues`, `jira_sprints`. The MCP server resolves each logical data source to one-or-more physical Cosmos containers (and matching AI Search indexes) per the `mcp.data_sources` config. See [/docs/mcp-api.md](../../../docs/mcp-api.md) and [/docs/architecture.md](../../../docs/architecture.md#two-layers-of-names).
+Decision: `search`, `query`, `get`, `list_sources`, `aggregate`. Tools take `data_source` (or `data_sources`) as the addressable unit — a logical name like `jira_issues`, `jira_sprints`. The MCP server resolves each logical data source to one-or-more physical Cosmos containers (and matching AI Search indexes/knowledge sources) per the `mcp.data_sources` config.
+
+The backend each tool uses is a property of the tool's **semantics**, not user config:
+
+- `search` → Azure AI Search **Knowledge Base** (Agentic Retrieval — Layer 1). Built-in question decomposition, sub-query planning, reranking. Materially better answers for fuzzy questions.
+- `query`, `get`, `aggregate`, `list_sources` → direct backend (Cosmos SQL / point-read / cached metadata — Layer 0). Exact, exhaustive, structured.
+
+The only operator knob is `mcp.search.disable_agentic` (cost opt-out — falls back to direct hybrid search). Agent's view doesn't change.
+
+A full Foundry agent in front of the MCP (Layer 2) is explicitly out of scope: it duplicates the calling agent's reasoning, breaks MCP contract semantics (latency, determinism), and adds cost without clear benefit. If a user wants a hosted Foundry agent that uses Quelch, they point one at Quelch's MCP — they don't bake one in.
+
+See [/docs/mcp-api.md](../../../docs/mcp-api.md) and [/docs/architecture.md](../../../docs/architecture.md#two-layers-of-names).
 
 Rationale:
 
@@ -167,25 +183,39 @@ Rationale:
 - Quelch already has the deployment metadata; not generating it would be a wasted asset.
 - Repurposes the existing `copilot.rs` work as one target.
 
+### 12. Rigg as embedded library for AI Search and Foundry configuration
+
+Decision: Quelch depends on `rigg-core` and `rigg-client` as Cargo workspace dependencies. AI Search index/skillset/indexer/data-source/synonym-map/alias/knowledge-source/knowledge-base configuration and Microsoft Foundry agents are managed by rigg, not by Bicep. Quelch generates rigg files under `rigg/` from `quelch.yaml`, then plans/pushes them via the embedded library. Users can hand-take-over individual rigg files (`# rigg:managed-by-user` marker) for fine-grained tuning while keeping the rest generated.
+
+Rationale:
+
+- AI Search internals are iterated frequently (analyzers, scoring profiles, knowledge-base rerankers); Bicep is the wrong tool for fast iteration.
+- Rigg already models all of these resources, ships an MCP server for AI-tool integration, and supports pull/push/diff against live Azure.
+- Embedding rigg as a library means users install only `quelch`. No second tool, no version-skew between operator tooling.
+- Same author (MKLab) for rigg, ailloy, and quelch — version bumps coordinated; no compatibility burden.
+
 ## Modules — keep, replace, new
 
 | Module | Fate |
 |---|---|
 | `sources/jira.rs`, `sources/confluence.rs`, `sources/mod.rs` | **Keep & extend.** Add companion-container fetches (sprints, fix versions, spaces). |
-| `config/` | **Keep & extend.** Add `cosmos`, `openai`, `deployments`, `mcp`, `state` sections. |
+| `config/` | **Keep & extend.** Add `cosmos`, `openai`, `deployments`, `mcp`, `rigg`, `state` sections. |
 | `tui/` | **Keep, refocus.** Default UX of `quelch dev`; powers `quelch status --tui`. |
 | `sim/`, `mock/` | **Keep.** Drive `quelch dev` and CI. |
 | `ai.rs` (ailloy) | **Keep as dep.** Reserved for future AI features. Not on v2 ingest path. |
 | `copilot.rs` | **Keep, refactor.** Becomes the `copilot-studio` target of `quelch agent generate`. |
-| `azure/mod.rs` | **Gut.** Most of the AI Search write client goes; small read-side client survives for the `search` MCP tool. |
+| `azure/mod.rs` | **Remove entirely.** AI Search reads/writes go through `rigg-client` (config) and the MCP `search` tool. |
 | `sync/mod.rs` | **Replace.** New `ingest/` module: pull → write Cosmos → write cursor. |
-| `sync/embedder.rs` | **Remove.** AI Search owns embeddings. |
+| `sync/embedder.rs` | **Remove.** AI Search owns embeddings (managed via rigg-generated skillsets). |
 | Commands `sync`, `watch`, `setup`, `reset-indexes`, `search`, `generate-agent` | **Replace.** New command tree per [/docs/cli.md](../../../docs/cli.md). |
 | **New** `cosmos/` | Cosmos DB client (writes, point-reads, SQL queries). |
-| **New** `mcp/` | Streamable HTTP server, five tool implementations, expose filter, pagination. |
-| **New** `azure/deploy/` | Bicep generator + `az` shell-outs + `what-if` parser. |
-| **New** `agent/` | Agent-bundle generators per target. |
+| **New** `mcp/` | Streamable HTTP server, five tool implementations, expose filter, pagination, knowledge-base routing for `search`. |
+| **New** `azure/deploy/` | Bicep generator + `az` shell-outs + `what-if` parser, for the resource-shell layer. |
+| **New** `azure/rigg/` | Generates `rigg/` files from `quelch.yaml`; thin wrapper around `rigg-core` + `rigg-client` for plan/diff/push. |
+| **New** `agent/` | Agent and skill bundle generators per target. |
 | **New** `config/deployments.rs` | Slicing logic — full config → per-deployment effective config. |
+| **External lib** `rigg-core` + `rigg-client` | AI Search and Foundry resource models, REST clients, diff. |
+| **External lib** `ailloy` | Reserved for future AI features in Quelch. |
 
 ## Documentation deliverables
 

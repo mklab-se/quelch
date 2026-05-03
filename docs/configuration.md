@@ -9,11 +9,12 @@ This document describes every section of the file.
 ```yaml
 azure:        { ... }   # subscription, resource group, region, naming
 cosmos:       { ... }   # account, database, default container names
-search:       { ... }   # AI Search service name, indexer schedule, semantic config
-openai:       { ... }   # endpoint and embedding deployment used by AI Search vectoriser
+search:       { ... }   # AI Search service shell (name, SKU). Internals are rigg-managed.
+openai:       { ... }   # endpoint and embedding deployment used by the rigg-managed skillsets
 sources:      [ ... ]   # named source instances (Jira, Confluence)
 deployments:  [ ... ]   # named workers — each is a slice of `sources` with a target host
-mcp:          { ... }   # MCP service config (exposed indexes, auth, scaling)
+mcp:          { ... }   # MCP service config (exposed data sources, auth, search backend)
+rigg:         { ... }   # where Quelch writes generated rigg files
 state:        { ... }   # where ingest cursors live
 ```
 
@@ -68,14 +69,11 @@ search:
     schedule:
       interval: "PT15M"               # ISO 8601 duration; Indexer runs at this cadence
     high_water_mark_field: "updated"  # Cosmos field used by the indexer for incremental sync
-  semantic:
-    enabled: true
-    configuration_name: "default"
-  vector_search:
-    profile: "quelch-default"         # auto-generated if absent
 ```
 
-`search.indexer.schedule.interval` controls how often Azure AI Search pulls from Cosmos DB. The Indexer is incremental — it uses the field named in `high_water_mark_field` (defaults to `updated`) on each Cosmos document. Quelch ingest is responsible for keeping that field current.
+`search` only configures the **AI Search service shell** that Bicep provisions — its name and SKU, plus the high-water-mark field convention used by the indexers. Everything *inside* the AI Search service (index schemas, skillsets, the indexer specs themselves, knowledge sources, knowledge bases) is managed by [rigg](https://github.com/mklab-se/rigg) — see the `rigg:` section below and [architecture.md](architecture.md#provisioning-split-bicep-vs-rigg).
+
+`search.indexer.schedule.interval` is the cadence Quelch writes into the *generated* rigg indexer files. You can override per-indexer by hand-editing the rigg file once it's generated.
 
 ## `openai`
 
@@ -86,7 +84,19 @@ openai:
   embedding_dimensions: 3072
 ```
 
-This is consumed by the AI Search skillset that Quelch generates — it's how the integrated vectoriser computes embeddings. Quelch ingest does not call OpenAI itself in v2.
+This is consumed by the rigg-managed skillsets — it's how the integrated vectoriser computes embeddings during indexing. Quelch ingest does not call OpenAI itself.
+
+## `rigg`
+
+```yaml
+rigg:
+  dir: "./rigg"                       # default; where Quelch writes generated rigg files
+  ownership: "generated"              # "generated" (default) | "managed-by-user"
+```
+
+Quelch embeds the `rigg-core` and `rigg-client` crates directly — there's no separate `rigg` CLI to install. From `quelch.yaml`, Quelch generates a `rigg/` directory with files for every AI Search index, indexer, skillset, knowledge source, and knowledge base implied by the config. `quelch azure plan` and `quelch azure deploy` then plan and push them via the rigg library.
+
+`ownership: "generated"` means Quelch overwrites the directory on each plan. `ownership: "managed-by-user"` means Quelch will only *generate* missing files; existing files are left alone for hand-tuning. You can also mix: a per-file marker comment (`# rigg:managed-by-user`) on a single file pins just that one to user ownership while the rest stay generated.
 
 ## `sources`
 
@@ -274,12 +284,31 @@ mcp:
         - container: confluence-spaces-internal
         - container: confluence-spaces-cloud
 
+  # The `search` MCP tool routes through an Azure AI Search Knowledge Base
+  # (Agentic Retrieval) by default — better semantic results, built-in
+  # query decomposition and reranking. Opt out per deployment for cost.
+  search:
+    disable_agentic: false        # default; set true to use direct hybrid search instead
+    knowledge_base: "quelch-prod-kb"   # default name; rigg generates this
+
   # Global server defaults — overridden per deployment when relevant.
   default_top: 25
   max_top: 100
   query_timeout: "30s"
   search_timeout: "20s"
 ```
+
+### Per-tool backend choice (not configurable)
+
+The mapping between MCP tools and backends is fixed by the tool's *semantics*, not by config:
+
+| Tool | Backend | Why |
+|---|---|---|
+| `search` | Azure AI Search **Knowledge Base** (Agentic Retrieval) | Tool exists for fuzzy semantic questions; decomposition + reranking are exactly what helps. |
+| `query`, `get`, `aggregate` | Cosmos DB direct | Exact, exhaustive, structured — agentic retrieval would just add cost. |
+| `list_sources` | Cached metadata | Static. |
+
+The only knob is `mcp.search.disable_agentic` for cost-sensitive deployments — when set, `search` queries the underlying index directly instead of going through the knowledge base. The agent's view doesn't change; result quality drops.
 
 ### Auto-derived `data_sources`
 

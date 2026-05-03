@@ -35,8 +35,9 @@ quelch
 ├── get <id>                   Point-read a document
 │
 ├── azure
-│   ├── plan [<deployment>]    Synthesise Bicep + run what-if
-│   ├── deploy [<deployment>]  Plan + apply
+│   ├── plan [<deployment>]    Synthesise Bicep + rigg files; show combined diff
+│   ├── deploy [<deployment>]  Plan + apply (Bicep + rigg)
+│   ├── pull [<resource>]      Pull live AI Search/Foundry config into local rigg/ files
 │   ├── destroy <deployment>   Remove a deployment from Azure
 │   ├── indexer
 │   │   ├── run <name>          Trigger an indexer run

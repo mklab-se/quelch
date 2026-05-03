@@ -9,13 +9,17 @@ Quelch deploys itself in two flavours:
 
 ### Mental model
 
+Azure footprint splits into two layers, managed by two mechanisms (see [architecture.md](architecture.md#provisioning-split-bicep-vs-rigg)):
+
 ```
-quelch.yaml                          ─┐
-.quelch/azure/<deployment>.bicep    ─┼─►  az deployment group create  ─►  Azure
-.quelch/azure/<deployment>.last.json ─┘    (or what-if for plan)
+quelch.yaml ──┬──►  generated .quelch/azure/<deployment>.bicep  ──►  az deployment group  (resource shells)
+              │
+              └──►  generated rigg/                              ──►  rigg-client push    (resource configuration)
 ```
 
-The full config is the source of truth. Quelch generates Bicep from it. The Bicep files are committed to your config repo so they're reviewable in PRs and auditable in version control. They are **generated output** — never hand-edited; the next `quelch azure plan` regenerates them.
+Both layers are reconciled by one operator command. `quelch azure plan` shows the combined diff (Bicep `what-if` + rigg diff). `quelch azure deploy` applies both. You read one diff and approve once.
+
+The Bicep files at `.quelch/azure/<deployment>.bicep` and the rigg files under `rigg/` are committed to your config repo. They are **generated output** — never hand-edited (rigg files have an explicit hand-takeover model; see below).
 
 ### Two commands: `plan` and `deploy`
 
@@ -26,55 +30,105 @@ Both commands:
 1. Load `quelch.yaml`, validate.
 2. Compute the **effective config** for each deployment.
 3. Synthesise Bicep at `.quelch/azure/<deployment>.bicep`.
-4. Run `az deployment group what-if --resource-group <rg> --template-file <bicep>`.
-5. Display the diff.
+4. Generate / refresh `rigg/` files for indexes, indexers, skillsets, knowledge sources, knowledge bases, Foundry agents.
+5. Run `az deployment group what-if` for the Bicep half.
+6. Run `rigg diff` (via the embedded library) for the rigg half.
+7. Display a single combined diff.
 
 `deploy` adds:
 
-6. Prompt for confirmation (skip with `--yes`).
-7. Run `az deployment group create` with the same template.
-8. Wait for completion.
-9. Save a `last.json` snapshot for later diffing.
+8. Prompt for confirmation (skip with `--yes`).
+9. Run `az deployment group create` to apply Bicep.
+10. Run `rigg push` to apply rigg files.
+11. Wait for completion.
+12. Save a `last.json` snapshot for later diffing.
 
-### Reading a `what-if` diff
+### Reading a combined diff
 
-Quelch translates the raw `what-if` JSON into a human-readable diff:
+Quelch shows Bicep and rigg changes in one view:
 
 ```
 Plan for deployment 'mcp-azure'
 ───────────────────────────────────────────────────────────
+Bicep (resource shells):
 + Microsoft.App/containerApps/quelch-prod-mcp           (Create)
     image: ghcr.io/mklab-se/quelch:0.9.0
-    cpu: 1.0    memory: 2.0Gi
-    min_replicas: 0    max_replicas: 5
-
+    cpu: 1.0    memory: 2.0Gi    min_replicas: 0    max_replicas: 5
 ~ Microsoft.DocumentDB/databaseAccounts/quelch-prod-cosmos
     throughput.mode:  serverless → provisioned
-    throughput.ru:    -          → 1000
-
 = Microsoft.Search/searchServices/quelch-prod-search    (Unchanged)
 
-3 changes pending. Continue?  [y/N]
+rigg (resource configuration):
++ index/jira-issues                                     (Create)
++ skillset/jira-issues-vectorise                        (Create)
++ indexer/jira-issues                                   (Create)
++ knowledge_source/jira-issues                          (Create)
++ knowledge_base/quelch-prod-kb                         (Create)
+~ index/confluence-pages
+    fields.+ component_path: Edm.String                 (Add field)
+
+3 Bicep changes, 6 rigg changes pending. Continue?  [y/N]
 ```
 
-`+` means create, `~` means modify, `-` means delete, `=` means unchanged. Drift caused by manual portal edits surfaces as `~` — applying reconciles to the config.
+`+` create, `~` modify, `-` delete, `=` unchanged. Drift from manual portal edits surfaces in either half — applying reconciles back to the config.
 
 ### What gets created
 
 A typical `quelch.yaml` materialises into:
+
+**Bicep-managed (resource shells):**
 
 | Azure resource | Purpose | Created when |
 |---|---|---|
 | Resource group | Holds everything | If missing |
 | Cosmos DB account + database | Document store | First deploy |
 | Cosmos containers (`jira-issues`, `confluence-pages`, `quelch-meta`, ...) | Per `cosmos.containers` and source overrides | First deploy |
-| Azure AI Search service | Search backend | First deploy |
-| AI Search Indexers + Indexes + Skillsets | One per Cosmos container that has a deployed `mcp` exposing it | First deploy |
+| Azure AI Search service | The shell (no internal config; that's rigg's job) | First deploy |
 | Azure OpenAI account + embedding deployment | Vectoriser model | Optional — you typically point at an existing AOAI |
 | Key Vault | Stores MCP API key, source credentials | First deploy |
 | Managed identities | One per Container App, with role assignments to Cosmos / AI Search / OpenAI / Key Vault | Per deployment |
 | Container Apps environment | Hosts ingest and mcp deployments | First deploy |
 | Container Apps | One per deployment with `target: azure` | Per deployment |
+
+**rigg-managed (resource configuration inside AI Search and Foundry):**
+
+| Resource | Purpose | Created when |
+|---|---|---|
+| AI Search Index | One per Cosmos container exposed via `mcp.expose` | First deploy or container added |
+| AI Search Skillset | Vectorisation pipeline (calls Azure OpenAI) | One per index |
+| AI Search Indexer | Pulls from Cosmos to the index on schedule | One per index |
+| AI Search Data Source | The Cosmos pointer the indexer reads from | One per index |
+| Knowledge Source | Wraps an index for Agentic Retrieval | One per searchable data source |
+| Knowledge Base | Groups knowledge sources for Agentic Retrieval | One per `mcp` deployment |
+| Foundry agent | Optional — only when you want a hosted Foundry agent that uses the KB | On request |
+
+### Hand-takeover of rigg files
+
+Quelch generates rigg files from `quelch.yaml` on every plan. By default it overwrites them — `rigg.ownership: "generated"` in the config.
+
+When you want fine-grained control over an index analyzer, a scoring profile, or a knowledge-base reranker, you can take ownership of a specific rigg file:
+
+1. Add the marker comment as the first line: `# rigg:managed-by-user`.
+2. Edit the file freely.
+3. The next `quelch azure plan` skips that file (the rest of `rigg/` is regenerated as usual).
+
+Or set `rigg.ownership: "managed-by-user"` globally to flip the default — Quelch then only generates *missing* files.
+
+This is the "we use rigg as a library, but rigg's pull/edit/push loop is still available to you" story. You can also run `quelch azure pull` (see below) to bring portal edits back into local files.
+
+### `quelch azure pull`
+
+Pulls live AI Search / Foundry configuration back into the local `rigg/` directory. Useful when:
+
+- You want to bootstrap from an existing AI Search service.
+- Someone made portal edits and you want to capture them in git.
+- You want to inspect what's actually deployed without redeploying.
+
+```bash
+quelch azure pull                   # all rigg-managed resources
+quelch azure pull index             # only indexes
+quelch azure pull --diff            # show what would change locally without applying
+```
 
 ### Container image
 
