@@ -3,6 +3,7 @@ pub mod azure;
 pub mod config;
 pub mod copilot;
 pub mod cosmos;
+pub mod ingest;
 pub mod mock;
 pub mod search;
 pub mod sim;
