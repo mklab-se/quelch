@@ -22,6 +22,7 @@
 
 use std::collections::HashMap;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -32,7 +33,7 @@ use crate::mcp::filter::{cosmos_sql::SqlBuilder, parse};
 use crate::mcp::schema::SchemaCatalog;
 
 /// Request parameters for the `aggregate` tool.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct AggregateRequest {
     /// Logical data-source name.
     pub data_source: String,

@@ -3,6 +3,7 @@
 //! Agents should call `list_sources` first to discover what data sources exist,
 //! what fields they have, and what example queries they can use.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::mcp::error::McpError;
@@ -10,7 +11,7 @@ use crate::mcp::expose::ExposeResolver;
 use crate::mcp::schema::{ExampleCall, FieldInfo, SchemaCatalog};
 
 /// Request parameters for `list_sources` (currently empty).
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct ListSourcesRequest {}
 
 /// Response from `list_sources`.

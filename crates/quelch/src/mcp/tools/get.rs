@@ -12,6 +12,7 @@
 //! deployments with high throughput may want to encode the partition key into
 //! the ID and parse it back, but that optimisation is out of scope for v2.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -20,7 +21,7 @@ use crate::mcp::error::McpError;
 use crate::mcp::expose::ExposeResolver;
 
 /// Request parameters for the `get` tool.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct GetRequest {
     /// Logical data-source name.
     pub data_source: String,

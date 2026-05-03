@@ -7,10 +7,11 @@ pub mod query;
 pub mod search;
 pub mod search_api;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Ordering direction.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum SortDir {
     Asc,
@@ -18,7 +19,7 @@ pub enum SortDir {
 }
 
 /// A single `ORDER BY` clause field + direction.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct OrderBy {
     pub field: String,
     pub dir: SortDir,

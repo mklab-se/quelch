@@ -163,6 +163,28 @@ pub enum Commands {
         #[command(subcommand)]
         command: AzureCommands,
     },
+    /// Start the MCP HTTP server for a deployment.
+    ///
+    /// Agents (GitHub Copilot, Claude, etc.) connect to this server to query
+    /// indexed data via the Model Context Protocol.
+    ///
+    /// Example: quelch mcp --deployment mcp --port 8080
+    Mcp {
+        /// Deployment name (required). Tells the server which slice of the
+        /// config it owns and which data sources it exposes.
+        #[arg(long)]
+        deployment: String,
+        /// Port to listen on.
+        #[arg(short, long, default_value = "8080")]
+        port: u16,
+        /// Bind address.
+        #[arg(long, default_value = "0.0.0.0")]
+        bind: String,
+        /// Override the API key (default: read from QUELCH_MCP_API_KEY env var).
+        /// When neither is set the server runs in unauthenticated dev mode.
+        #[arg(long)]
+        api_key: Option<String>,
+    },
 }
 
 /// Top-level `quelch azure` subcommands.

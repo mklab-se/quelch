@@ -16,6 +16,9 @@ use tracing_subscriber::EnvFilter;
 
 use cli::{AzureCommands, Cli, Commands, IndexerCommands};
 
+// Suppress `set_var` deprecation on Rust 1.80+ (we only use it for env var
+// passthrough at process startup, never in multi-threaded context).
+#[allow(deprecated)]
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -80,6 +83,19 @@ async fn main() -> Result<()> {
                 quelch::ingest::worker::WorkerOptions { once, max_docs },
             )
             .await
+        }
+        Commands::Mcp {
+            deployment,
+            port,
+            bind,
+            api_key,
+        } => {
+            let config = quelch::config::load_config(&cli.config)?;
+            if let Some(key) = api_key {
+                // SAFETY: called once at process start before spawning async tasks.
+                unsafe { std::env::set_var("QUELCH_MCP_API_KEY", key) };
+            }
+            quelch::mcp::run_server(&config, &deployment, &format!("{bind}:{port}")).await
         }
         Commands::Azure { command } => match command {
             AzureCommands::Plan {

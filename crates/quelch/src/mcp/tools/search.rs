@@ -33,6 +33,7 @@
 //!
 //! TODO(v2-follow-up): parallel fan-out with merged cursor for multi-index.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -47,7 +48,7 @@ use super::search_api::{RawHit, SearchApiAdapter};
 // ---------------------------------------------------------------------------
 
 /// How much content to return in search results.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum IncludeContent {
     /// Return a snippet / highlight extracted by Azure (default).
@@ -61,7 +62,7 @@ pub enum IncludeContent {
 }
 
 /// Request parameters for the `search` tool.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct SearchRequest {
     /// Free-text search query.
     pub query: String,

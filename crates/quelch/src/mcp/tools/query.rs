@@ -19,6 +19,7 @@
 //! TODO(quelch v2 follow-up): implement proper multi-container fan-out with
 //! merged cursors. Currently only the first backing container is queried.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -30,7 +31,7 @@ use crate::mcp::filter::{cosmos_sql::SqlBuilder, parse};
 use super::{OrderBy, SortDir};
 
 /// Request parameters for the `query` tool.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct QueryRequest {
     /// Logical data-source name (as exposed by the deployment).
     pub data_source: String,
