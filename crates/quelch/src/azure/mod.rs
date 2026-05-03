@@ -1,3 +1,4 @@
+pub mod deploy;
 pub mod rigg;
 pub mod schema;
 
