@@ -12,9 +12,22 @@
 ///   hand-takeover marker.
 /// - `write` — persists [`GeneratedRiggFiles`] to disk, respecting ownership
 ///   markers and the global `RiggConfig::ownership` setting.
+/// - `plan` — diffs local files against live Azure resources; produces a
+///   [`plan::PlanReport`].
+/// - `push` — applies a [`plan::PlanReport`] to Azure in dependency order.
+/// - `pull` — fetches live Azure resources back to local files, respecting
+///   ownership markers.
 pub mod generate;
 pub mod ownership;
+pub mod plan;
+pub mod pull;
+pub mod push;
 pub mod write;
 
 pub use generate::{GenerateError, GeneratedRiggFiles, all};
+pub use plan::{
+    PlanError, PlanReport, ResourceDiff, ResourceRef, RiggApiAdapter, RiggClientAdapter,
+};
+pub use pull::{PullError, PullOptions, PullOutcome};
+pub use push::{PushError, PushOutcome};
 pub use write::{WriteError, WriteOutcome, write_to_disk};
