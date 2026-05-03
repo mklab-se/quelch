@@ -9,15 +9,16 @@
 //!   `quelch dev`.
 //! - `meta` — cursor state CRUD stored in the `quelch-meta` container.
 //!
-//! The real `azure_data_cosmos`-backed client (Task 2.4) lives in `client.rs`,
-//! which is not yet part of this module.
+//! The real `azure_data_cosmos`-backed client lives in `client.rs`.
 
+pub mod client;
 pub mod document;
 pub mod error;
 pub mod in_memory;
 pub mod meta;
 pub(crate) mod query_stream;
 
+pub use client::CosmosClient;
 pub use document::CosmosDocument;
 pub use error::CosmosError;
 pub use in_memory::InMemoryCosmos;
