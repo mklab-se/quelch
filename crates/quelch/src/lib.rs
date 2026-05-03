@@ -12,5 +12,4 @@ pub mod mock;
 pub mod onprem;
 pub mod sim;
 pub mod sources;
-pub mod sync;
 pub mod tui;

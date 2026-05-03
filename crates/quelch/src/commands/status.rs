@@ -3,6 +3,8 @@
 //! Reads `quelch-meta` from Cosmos and renders a human-readable table (or
 //! machine-readable JSON when `--json` is passed).
 
+use std::sync::Arc;
+
 use crate::config::Config;
 use crate::cosmos::meta::Cursor;
 use crate::cosmos::meta::CursorKey;
@@ -24,7 +26,13 @@ pub struct StatusOptions {
 /// Run `quelch status`.
 pub async fn run(config: &Config, options: StatusOptions) -> anyhow::Result<()> {
     if options.tui {
-        anyhow::bail!("--tui not yet implemented (planned for Phase 10)");
+        let cosmos = build_cosmos_backend(config).await?;
+        return crate::tui::run_status_dashboard(
+            Arc::from(cosmos),
+            config.cosmos.meta_container.clone(),
+            std::time::Duration::from_secs(5),
+        )
+        .await;
     }
 
     let cosmos = build_cosmos_backend(config).await?;

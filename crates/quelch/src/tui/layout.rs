@@ -1,180 +1,198 @@
+//! Layout and drawing helpers for the v2 fleet-dashboard TUI.
+
+use chrono::Utc;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Widget},
+    widgets::{Clear, Paragraph},
 };
 
 use super::app::App;
-use super::status::header_line;
-use super::widgets::{
-    azure_panel::AzurePanelWidget, drilldown::Drilldown, help_overlay::HelpOverlay,
-    live_feed::LiveFeed, log_view::LogView, source_table::SourceTable,
-};
+use super::widgets::help_overlay::HelpOverlay;
+use super::widgets::source_table::{DetailPane, FleetTable};
 
-pub fn draw(f: &mut Frame, app: &App, uptime: std::time::Duration, help_open: bool) {
-    // Vertical stack:
-    //   Header | Sources table | Live feed (pushes) | Azure panel | Footer
-    // The live feed is the pane the user asked for explicitly — it makes
-    // "is the thing working right now?" answerable at a glance.
+/// Draw the complete TUI for one frame.
+pub fn draw(f: &mut Frame, app: &App) {
     let areas = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // header
-            Constraint::Min(10),   // sources or log
-            Constraint::Length(8), // live feed
-            Constraint::Length(8), // azure
+            Constraint::Length(2), // header (title + poll status)
+            Constraint::Min(6),    // fleet table
+            Constraint::Length(5), // detail pane (selected row)
             Constraint::Length(1), // footer
         ])
         .split(f.area());
 
     f.render_widget(Clear, f.area());
-    draw_header(f, areas[0], app, uptime);
+    draw_header(f, areas[0], app);
+    f.render_widget(FleetTable { app }, areas[1]);
+    draw_detail(f, areas[2], app);
+    draw_footer(f, areas[3], app);
 
-    if app.prefs.log_view_on {
-        f.render_widget(
-            LogView {
-                lines: &app.log_tail,
-                focused: false,
-            },
-            areas[1],
-        );
-    } else {
-        draw_sources_area(f, areas[1], app);
-    }
-
-    f.render_widget(LiveFeed { app }, areas[2]);
-    f.render_widget(AzurePanelWidget { app }, areas[3]);
-    draw_footer(f, areas[4], app);
-
-    if help_open {
+    if app.help_visible {
         f.render_widget(HelpOverlay, f.area());
     }
 }
 
-fn draw_header(f: &mut Frame, area: Rect, app: &App, uptime: std::time::Duration) {
-    f.render_widget(
-        Paragraph::new(header_line(app, chrono::Utc::now(), uptime)),
-        area,
-    );
-}
+fn draw_header(f: &mut Frame, area: Rect, app: &App) {
+    let title_line = Line::from(vec![
+        Span::styled(" Quelch Status", Style::default().fg(Color::White)),
+        Span::styled(
+            format!("  v{}", env!("CARGO_PKG_VERSION")),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]);
 
-fn draw_sources_area(f: &mut Frame, area: Rect, app: &App) {
-    let outer = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray))
-        .title("Sources");
-    let inner = outer.inner(area);
-    outer.render(area, f.buffer_mut());
-
-    if app.sources.is_empty() {
-        f.render_widget(Paragraph::new("No sources configured"), inner);
-        return;
-    }
-
-    if app.drilldown_open && app.selected_subsource.is_some() {
-        let split = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
-            .split(inner);
-        f.render_widget(SourceTable { app }, split[0]);
-        f.render_widget(Drilldown { app }, split[1]);
+    let poll_line = if let Some(err) = &app.last_poll_error {
+        Line::from(vec![
+            Span::styled(" Poll error: ", Style::default().fg(Color::Red)),
+            Span::styled(
+                err.chars().take(80).collect::<String>(),
+                Style::default().fg(Color::Red),
+            ),
+        ])
+    } else if let Some(at) = app.last_poll_at {
+        let secs = Utc::now().signed_duration_since(at).num_seconds().max(0);
+        let ago = if secs < 5 {
+            "just now".to_string()
+        } else if secs < 120 {
+            format!("{secs}s ago")
+        } else {
+            format!("{}m ago", secs / 60)
+        };
+        Line::from(vec![
+            Span::styled(" Last poll: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                at.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+                Style::default().fg(Color::Gray),
+            ),
+            Span::styled(format!("  ({ago})"), Style::default().fg(Color::DarkGray)),
+        ])
     } else {
-        f.render_widget(SourceTable { app }, inner);
-    }
-}
-
-fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
-    let msg = if app.footer.is_empty() {
-        " ↑↓ select  ·  ←/→ collapse  ·  enter details  ·  r sync now  ·  p pause  ·  s logs  ·  ? help  ·  q quit".to_string()
-    } else {
-        format!(" {}", app.footer)
+        Line::from(Span::styled(
+            " Waiting for first poll…",
+            Style::default().fg(Color::DarkGray),
+        ))
     };
+
+    let block_area = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Length(1)])
+        .split(area);
+
+    f.render_widget(Paragraph::new(title_line), block_area[0]);
+    f.render_widget(Paragraph::new(poll_line), block_area[1]);
+}
+
+fn draw_detail(f: &mut Frame, area: Rect, app: &App) {
+    f.render_widget(DetailPane { app }, area);
+}
+
+fn draw_footer(f: &mut Frame, area: Rect, _app: &App) {
+    let msg = " ↑/↓ select   q quit   ? help";
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
             msg,
-            Style::default().fg(Color::Gray),
+            Style::default().fg(Color::DarkGray),
         ))),
         area,
     );
 }
 
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{
-        AuthConfig, AzureConfig, Config, CosmosConfig, JiraSourceConfig, OpenAiConfig, SourceConfig,
-    };
+    use crate::cosmos::meta::{Cursor, CursorKey};
     use crate::tui::app::App;
-    use crate::tui::prefs::Prefs;
+    use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    fn cfg() -> Config {
-        // TODO(quelch v2 phase 3+): move to a shared test fixture builder
-        Config {
-            azure: AzureConfig {
-                subscription_id: "sub".into(),
-                resource_group: "rg".into(),
-                region: "swedencentral".into(),
-                naming: Default::default(),
-                skip_role_assignments: false,
-            },
-            cosmos: CosmosConfig::default(),
-            search: Default::default(),
-            openai: OpenAiConfig {
-                endpoint: "https://x.openai.azure.com".into(),
-                embedding_deployment: "te".into(),
-                embedding_dimensions: 1536,
-            },
-            sources: vec![SourceConfig::Jira(JiraSourceConfig {
-                name: "j".into(),
-                url: "x".into(),
-                auth: AuthConfig::DataCenter { pat: "p".into() },
-                projects: vec!["DO".into(), "HR".into()],
-                container: None,
-                companion_containers: Default::default(),
-                fields: Default::default(),
-            })],
-            ingest: Default::default(),
-            deployments: vec![],
-            mcp: Default::default(),
-            rigg: Default::default(),
-            state: Default::default(),
-        }
+    fn sample_app() -> App {
+        let mut app = App::new();
+        app.handle_poll_result(Ok(vec![
+            (
+                CursorKey {
+                    deployment_name: "prod".into(),
+                    source_name: "jira-cloud".into(),
+                    subsource: "DO".into(),
+                },
+                {
+                    let mut c = Cursor::default();
+                    c.documents_synced_total = 1842;
+                    c
+                },
+            ),
+            (
+                CursorKey {
+                    deployment_name: "prod".into(),
+                    source_name: "jira-cloud".into(),
+                    subsource: "INT".into(),
+                },
+                {
+                    let mut c = Cursor::default();
+                    c.documents_synced_total = 312;
+                    c
+                },
+            ),
+        ]));
+        app
     }
 
     #[test]
-    fn layout_renders_without_panicking() {
-        let app = App::new(&cfg(), Prefs::default());
-        let mut term = ratatui::Terminal::new(TestBackend::new(100, 26)).unwrap();
-        term.draw(|f| {
-            draw(f, &app, std::time::Duration::from_secs(1), false);
-        })
-        .unwrap();
+    fn draw_does_not_panic() {
+        let app = sample_app();
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        term.draw(|f| draw(f, &app)).unwrap();
     }
 
     #[test]
-    fn footer_shows_only_one_keybinding_line() {
-        let app = App::new(&cfg(), Prefs::default());
-        let mut term = ratatui::Terminal::new(TestBackend::new(100, 26)).unwrap();
-        term.draw(|f| {
-            draw(f, &app, std::time::Duration::from_secs(1), false);
-        })
-        .unwrap();
+    fn draw_with_help_overlay_does_not_panic() {
+        let mut app = sample_app();
+        app.help_visible = true;
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        term.draw(|f| draw(f, &app)).unwrap();
+    }
+
+    #[test]
+    fn draw_with_empty_rows_does_not_panic() {
+        let app = App::new();
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        term.draw(|f| draw(f, &app)).unwrap();
+    }
+
+    fn rendered_text(app: &App) -> String {
+        let backend = TestBackend::new(120, 40);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| draw(f, &app)).unwrap();
         let buf = term.backend().buffer();
-        let text: String = (0..buf.area.height)
+        (0..buf.area.height)
             .map(|y| {
                 (0..buf.area.width)
                     .map(|x| buf[(x, y)].symbol())
                     .collect::<String>()
             })
             .collect::<Vec<_>>()
-            .join("\n");
-        let occurrences = text.matches("sync now").count();
-        assert_eq!(
-            occurrences, 1,
-            "expected 1 footer line, found {occurrences}: {text}"
-        );
+            .join("\n")
+    }
+
+    #[test]
+    fn header_shows_quelch_status() {
+        let app = sample_app();
+        let text = rendered_text(&app);
+        assert!(text.contains("Quelch Status"), "missing title:\n{text}");
+    }
+
+    #[test]
+    fn footer_shows_key_hints() {
+        let app = sample_app();
+        let text = rendered_text(&app);
+        assert!(text.contains("quit"), "missing quit hint:\n{text}");
+        assert!(text.contains("help"), "missing help hint:\n{text}");
     }
 }

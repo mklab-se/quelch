@@ -1,41 +1,39 @@
-//! Terminal user interface for `quelch watch` / `quelch sync`.
+//! Fleet-dashboard TUI for `quelch status --tui`.
+//!
+//! Polls `cosmos::meta::list_all` on a timer and renders the results as a
+//! read-only table. No tracing-event pipeline — state comes from Cosmos.
 
 pub mod app;
-pub mod events;
 pub mod input;
 pub mod layout;
-pub mod metrics;
-pub mod prefs;
-pub mod spinner;
-pub mod status;
-pub mod tracing_layer;
 pub mod widgets;
 
-use anyhow::Result;
 use std::io;
-use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use crossterm::event::{Event, KeyEventKind};
+use anyhow::Result;
+use crossterm::event::{Event, EventStream, KeyEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
+use futures::StreamExt;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use tokio::sync::mpsc;
 
-use crate::config::Config;
-use crate::sync::UiCommand;
+use crate::cosmos::CosmosBackend;
+use crate::cosmos::meta;
 
 use self::app::App;
-use self::events::QuelchEvent;
-use self::input::{InputOutcome, InputState};
-use self::prefs::Prefs;
+use self::input::{InputOutcome, on_key};
 
-/// Restores the terminal on drop — even if a panic unwinds through run().
+// ---------------------------------------------------------------------------
+// Terminal guard
+// ---------------------------------------------------------------------------
+
+/// Restores the terminal to its original state when dropped — even on panic.
 pub struct TerminalGuard {
     restored: bool,
 }
@@ -58,139 +56,96 @@ impl Drop for TerminalGuard {
     }
 }
 
-/// Entry point: runs the TUI until Shutdown or Ctrl-C.
-pub async fn run(
-    config: Config,
-    prefs_path: PathBuf,
-    mut events_rx: mpsc::Receiver<QuelchEvent>,
-    cmd_tx: mpsc::Sender<UiCommand>,
-    drops_counter: Arc<AtomicU64>,
+// ---------------------------------------------------------------------------
+// Main entry point
+// ---------------------------------------------------------------------------
+
+/// Run the fleet dashboard until the user quits.
+///
+/// 1. Sets up the terminal (alternate screen, raw mode).
+/// 2. Spawns a background task that polls `cosmos::meta::list_all` every
+///    `refresh_interval` and pushes the result via a channel.
+/// 3. Main loop: redraws on each timer tick; processes key events.
+/// 4. Restores the terminal on exit (even on panic, via [`TerminalGuard`]).
+pub async fn run_status_dashboard(
+    cosmos: Arc<dyn CosmosBackend>,
+    meta_container: String,
+    refresh_interval: Duration,
 ) -> Result<()> {
-    use crossterm::event::EventStream;
-    use futures::StreamExt;
+    let mut app = App::new();
 
-    let prefs = Prefs::load(&prefs_path)?;
-    let mut app = App::new(&config, prefs);
+    // Channel for poll results: `Ok(rows)` or `Err(message)`.
+    let (poll_tx, mut poll_rx) = mpsc::channel::<Result<Vec<_>, String>>(4);
 
+    // Spawn the background poller.
+    let cosmos_clone = cosmos.clone();
+    let container = meta_container.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(refresh_interval);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            let result = meta::list_all(cosmos_clone.as_ref(), &container)
+                .await
+                .map_err(|e| e.to_string());
+            if poll_tx.send(result).await.is_err() {
+                break; // receiver dropped — TUI exited
+            }
+        }
+    });
+
+    // Set up the terminal.
     let _guard = TerminalGuard::new()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
-    let mut input_state = InputState::default();
-    let start = std::time::Instant::now();
 
-    let mut interval = tokio::time::interval(Duration::from_millis(200));
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Redraw timer at ~10 Hz (poll updates are on a slower interval).
+    let mut redraw_interval = tokio::time::interval(Duration::from_millis(100));
+    redraw_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
     let mut key_events = EventStream::new();
 
     loop {
         tokio::select! {
-            _ = interval.tick() => {
-                while let Ok(ev) = events_rx.try_recv() {
-                    app.apply(ev);
+            // Redraw tick.
+            _ = redraw_interval.tick() => {
+                // Drain any pending poll results (take the last one if multiple arrived).
+                while let Ok(result) = poll_rx.try_recv() {
+                    app.handle_poll_result(result);
                 }
-                app.tick_spinner();
-                app.tick_throughputs(std::time::Instant::now());
-                app.drops = drops_counter.load(Ordering::Relaxed);
                 terminal.draw(|f| {
-                    crate::tui::layout::draw(f, &app, start.elapsed(), input_state.help_open());
+                    layout::draw(f, &app);
                 })?;
             }
+
+            // Keyboard input.
             Some(Ok(ev)) = key_events.next() => {
                 if let Event::Key(key) = ev
                     && key.kind == KeyEventKind::Press
                 {
-                    match input_state.on_key(key, &mut app) {
-                        InputOutcome::Quit => {
-                            let _ = cmd_tx.send(UiCommand::Shutdown).await;
-                            app.prefs.save(&prefs_path).ok();
-                            return Ok(());
-                        }
-                        InputOutcome::Command(cmd) => {
-                            let _ = cmd_tx.send(cmd).await;
-                        }
-                        InputOutcome::None => {}
+                    if on_key(key, &mut app) == InputOutcome::Quit {
+                        return Ok(());
                     }
+                    // Immediate redraw after key event for responsiveness.
+                    terminal.draw(|f| layout::draw(f, &app))?;
                 }
             }
         }
     }
 }
 
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
 #[cfg(test)]
-mod smoke_tests {
+mod tests {
     use super::*;
-    use ratatui::backend::TestBackend;
 
     #[test]
-    fn terminal_guard_constructs_and_drops() {
-        // We can't enter raw mode in a unit test harness, but the struct
-        // can be constructed directly and Drop should run safely.
+    fn terminal_guard_constructs_and_drops_safely() {
+        // We cannot enter raw mode in a test harness, but the struct's
+        // Drop should run without panicking even in the un-initialised case.
         let g = TerminalGuard { restored: false };
         drop(g);
-    }
-
-    fn minimal_v2_config(source_name: &str, projects: Vec<&str>) -> crate::config::Config {
-        // TODO(quelch v2 phase 3+): move to a shared test fixture builder
-        use crate::config::{
-            AuthConfig, AzureConfig, Config, CosmosConfig, JiraSourceConfig, OpenAiConfig,
-            SourceConfig,
-        };
-        Config {
-            azure: AzureConfig {
-                subscription_id: "sub".into(),
-                resource_group: "rg".into(),
-                region: "swedencentral".into(),
-                naming: Default::default(),
-                skip_role_assignments: false,
-            },
-            cosmos: CosmosConfig::default(),
-            search: Default::default(),
-            openai: OpenAiConfig {
-                endpoint: "https://x.openai.azure.com".into(),
-                embedding_deployment: "te".into(),
-                embedding_dimensions: 1536,
-            },
-            sources: vec![SourceConfig::Jira(JiraSourceConfig {
-                name: source_name.into(),
-                url: "http://x".into(),
-                auth: AuthConfig::DataCenter { pat: "p".into() },
-                projects: projects.into_iter().map(String::from).collect(),
-                container: None,
-                companion_containers: Default::default(),
-                fields: Default::default(),
-            })],
-            ingest: Default::default(),
-            deployments: vec![],
-            mcp: Default::default(),
-            rigg: Default::default(),
-            state: Default::default(),
-        }
-    }
-
-    #[test]
-    fn layout_draw_on_test_backend_does_not_panic() {
-        use crate::tui::app::App;
-        use crate::tui::layout::draw;
-        use crate::tui::prefs::Prefs;
-
-        let cfg = minimal_v2_config("j", vec!["DO", "HR"]);
-        let app = App::new(&cfg, Prefs::default());
-        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
-        term.draw(|f| {
-            draw(f, &app, std::time::Duration::from_secs(0), false);
-        })
-        .unwrap();
-    }
-
-    #[test]
-    fn draw_accepts_uptime_and_help_open_flag() {
-        use crate::tui::app::App;
-        use crate::tui::layout::draw;
-        use crate::tui::prefs::Prefs;
-
-        let cfg = minimal_v2_config("j", vec!["DO"]);
-        let app = App::new(&cfg, Prefs::default());
-        let mut term = ratatui::Terminal::new(TestBackend::new(100, 26)).unwrap();
-        term.draw(|f| draw(f, &app, std::time::Duration::from_secs(7), true))
-            .unwrap();
     }
 }
