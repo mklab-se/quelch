@@ -4,6 +4,7 @@ pub mod config;
 pub mod copilot;
 pub mod cosmos;
 pub mod ingest;
+pub mod mcp;
 pub mod mock;
 pub mod sim;
 pub mod sources;
