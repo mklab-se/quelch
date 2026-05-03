@@ -87,16 +87,17 @@ Rationale:
 - `what-if` is Azure-native dry-run; no need to reinvent.
 - Hand-editing Bicep is forbidden; it's regenerated every plan.
 
-### 4. The MCP API is five tools
+### 4. The MCP API is five tools, and it speaks data sources, not containers
 
-Decision: `search`, `query`, `get`, `list_sources`, `aggregate`. See [/docs/mcp-api.md](../../../docs/mcp-api.md).
+Decision: `search`, `query`, `get`, `list_sources`, `aggregate`. Tools take `data_source` (or `data_sources`) as the addressable unit — a logical name like `jira_issues`, `jira_sprints`. The MCP server resolves each logical data source to one-or-more physical Cosmos containers (and matching AI Search indexes) per the `mcp.data_sources` config. See [/docs/mcp-api.md](../../../docs/mcp-api.md) and [/docs/architecture.md](../../../docs/architecture.md#two-layers-of-names).
 
 Rationale:
 
 - Each tool has a single, obvious purpose. Agents pick correctly when descriptions are clear.
 - A single "smart router" hides which database is doing the work and is bad for trust and debugging.
 - All listing tools support cursor pagination so "all" is always reachable.
-- `expose:` server-side filter prevents agents from touching unlisted containers.
+- `expose:` server-side filter prevents agents from touching unlisted data sources.
+- **Two-layer naming.** Storage (containers, indexes) is operator-only; agents only ever see logical data sources. This is what makes multi-instance setups (e.g. one logical `jira_issues` backed by both `jira-issues-internal` and `jira-issues-cloud`) transparent to the agent — the MCP server fans out and merges.
 
 ### 5. State for distributed ingest lives in Cosmos
 
@@ -158,7 +159,7 @@ Rationale:
 
 ### 11. Agent generation is first-class
 
-Decision: `quelch agent generate --target [copilot-studio|copilot-cli|vscode-mcp|claude-code|markdown]` produces grounded, deployment-specific bundles (system prompt, tool descriptions, schema cheatsheet, connection details, example prompts).
+Decision: `quelch agent generate --target [copilot-studio|copilot-cli|vscode-copilot|claude-code|codex|markdown]` produces grounded, deployment-specific bundles (system prompt, tool descriptions, schema cheatsheet, connection details, example prompts). Output form (agent vs skill) is target-defaulted with `--format` override; skill is the default for CLI/IDE targets, agent is the default for Copilot Studio.
 
 Rationale:
 

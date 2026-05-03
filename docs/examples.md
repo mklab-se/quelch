@@ -9,7 +9,7 @@ This document walks through real questions a user would ask an agent, and shows 
 
 These examples drove the design of the MCP tool set; if the new architecture can't answer them well, something's wrong.
 
-The examples assume a Quelch deployment with the `jira-issues`, `jira-sprints`, `jira-fix-versions`, `jira-projects`, `confluence-pages`, and `confluence-spaces` containers exposed.
+The examples assume a Quelch deployment that exposes the data sources `jira_issues`, `jira_sprints`, `jira_fix_versions`, `jira_projects`, `confluence_pages`, and `confluence_spaces`.
 
 ---
 
@@ -17,14 +17,14 @@ The examples assume a Quelch deployment with the `jira-issues`, `jira-sprints`, 
 
 **User expects:** the complete list of active Stories assigned to them — *exactly* all matching, not a top-K sample.
 
-**Agent's plan:** identify "me" (from agent context), then `query` `jira-issues` with the right filter, paginating until the cursor is exhausted.
+**Agent's plan:** identify "me" (from agent context), then `query` `jira_issues` with the right filter, paginating until the cursor is exhausted.
 
 **MCP calls:**
 
 ```jsonc
 // Page 1
 query({
-  container: "jira-issues",
+  data_source: "jira_issues",
   where: {
     "assignee.email": "kristofer@example.com",
     "type": "Story",
@@ -56,13 +56,13 @@ The agent must use `query`, not `search`, because `search` returns a top-K ranke
 
 ```jsonc
 aggregate({
-  container: "jira-issues",
+  data_source: "jira_issues",
   where: { "project_key": "DO" }
 })
 // → { total: { count: 1842, sum: null }, groups: [] }
 
 aggregate({
-  container: "jira-issues",
+  data_source: "jira_issues",
   where: { "project_key": "DO" },
   group_by: "status"
 })
@@ -85,7 +85,7 @@ aggregate({
 
 **User expects:** every relevant issue — the agent must understand that "connection problems" includes "WiFi disconnects", "camera offline", "intermittent connectivity", etc.
 
-**Agent's plan:** this is the canonical hybrid case. `search` against `jira-issues` with a natural-language query, paginating exhaustively because the user said "all".
+**Agent's plan:** this is the canonical hybrid case. `search` against `jira_issues` with a natural-language query, paginating exhaustively because the user said "all".
 
 **MCP calls:**
 
@@ -93,8 +93,8 @@ aggregate({
 // Page 1
 search({
   query: "connection problems camera disconnects wifi offline",
-  indexes: ["jira-issues"],
-  filters: "status ne 'Done'",
+  data_sources: ["jira_issues"],
+  where: { "status": { "not": "Done" } },
   top: 50
 })
 // → { items: [...], next_cursor: "def456", total_estimate: 78 }
@@ -106,7 +106,7 @@ search({ ..., cursor: "def456" })
 
 **Response:** a clickable list of all matching issues, each with its `source_link`, summary, and a short reason why it matched.
 
-The agent should de-emphasise `total_estimate` ("about 78 issues") because AI Search counts are estimates; if the user demands an exact number, follow up with `aggregate` on the same filter.
+The agent should de-emphasise `total_estimate` ("about 78 issues") because semantic-search counts are estimates; if the user demands an exact number, follow up with `aggregate` on the same filter.
 
 ---
 
@@ -121,7 +121,7 @@ The agent should de-emphasise `total_estimate` ("about 78 issues") because AI Se
 ```jsonc
 // Step 1: identify "next" sprint = the future-state sprint with the earliest start date
 query({
-  container: "jira-sprints",
+  data_source: "jira_sprints",
   where: { "project_key": "DO", "state": "future" },
   order_by: [{ field: "start_date", dir: "asc" }],
   top: 1
@@ -130,7 +130,7 @@ query({
 
 // Step 2: issues in that sprint, restricted to plannable types
 query({
-  container: "jira-issues",
+  data_source: "jira_issues",
   where: {
     "project_key": "DO",
     "sprint.id": "204",
@@ -168,7 +168,7 @@ query({
 ```jsonc
 // Step 1: active sprint
 query({
-  container: "jira-sprints",
+  data_source: "jira_sprints",
   where: { "project_key": "DO", "state": "active" },
   top: 1
 })
@@ -176,7 +176,7 @@ query({
 
 // Step 2: sum story points of incomplete issues in it
 aggregate({
-  container: "jira-issues",
+  data_source: "jira_issues",
   where: {
     "project_key": "DO",
     "sprint.id": "203",
@@ -189,7 +189,7 @@ aggregate({
 
 // Step 3 (optional): list those issues so the user can see what's outstanding
 query({
-  container: "jira-issues",
+  data_source: "jira_issues",
   where: {
     "project_key": "DO", "sprint.id": "203", "status": { "not": "Done" }
   },
@@ -212,19 +212,19 @@ query({
 
 ```jsonc
 // Same as Example 4 to get the planned items
-query({ container: "jira-sprints", where: {...}, top: 1 })
-query({ container: "jira-issues", where: { "sprint.id": "204", ... }, top: 200 })
+query({ data_source: "jira_sprints", where: {...}, top: 1 })
+query({ data_source: "jira_issues", where: { "sprint.id": "204", ... }, top: 200 })
 
 // Then a semantic search over the same set for risk language
 search({
   query: "blocker dependency unclear scope external risk",
-  indexes: ["jira-issues"],
-  filters: "sprint/id eq '204'",
+  data_sources: ["jira_issues"],
+  where: { "sprint.id": "204" },
   top: 25
 })
 ```
 
-**Response:** "Top 3 risks for DO Sprint 43: (1) DO-1182 *Camera firmware OTA path* — 13 story points, depends on DO-1170 still open in this sprint. (2) DO-1199 *Cellular handoff regression* — semantic match on 'unclear scope' in comments. (3) DO-1210 *Battery telemetry telemetry contract* — links to an unfinished spec page in Confluence. [links to all three]"
+**Response:** "Top 3 risks for DO Sprint 43: (1) DO-1182 *Camera firmware OTA path* — 13 story points, depends on DO-1170 still open in this sprint. (2) DO-1199 *Cellular handoff regression* — semantic match on 'unclear scope' in comments. (3) DO-1210 *Battery telemetry contract* — links to an unfinished spec page in Confluence. [links to all three]"
 
 ---
 
@@ -232,14 +232,14 @@ search({
 
 **User expects:** a direct link to the release notes page.
 
-**Agent's plan:** confirm what "last iXX firmware" means via `jira-fix-versions`, then `search` Confluence for release notes mentioning that version.
+**Agent's plan:** confirm what "last iXX firmware" means via `jira_fix_versions`, then `search` Confluence for release notes mentioning that version.
 
 **MCP calls:**
 
 ```jsonc
 // Step 1: latest released iXX version
 query({
-  container: "jira-fix-versions",
+  data_source: "jira_fix_versions",
   where: { "name": { "like": "iXX-%" }, "released": true },
   order_by: [{ field: "release_date", dir: "desc" }],
   top: 1
@@ -249,7 +249,7 @@ query({
 // Step 2: Confluence release notes for that version
 search({
   query: "release notes iXX 2.7.0",
-  indexes: ["confluence-pages"],
+  data_sources: ["confluence_pages"],
   top: 5
 })
 // → { items: [{ source_link: "https://confluence.example/.../iXX-2.7.0-release-notes", ... }], ... }
@@ -271,14 +271,14 @@ search({
 // Step 1: discover the docs
 search({
   query: "team way of working development process agile practices",
-  indexes: ["confluence-pages"],
+  data_sources: ["confluence_pages"],
   top: 25
 })
 // → many candidates
 
 // Step 2: pull full content for the top hits
-get({ container: "confluence-pages", id: "<page-id-1>" })
-get({ container: "confluence-pages", id: "<page-id-2>" })
+get({ data_source: "confluence_pages", id: "<page-id-1>" })
+get({ data_source: "confluence_pages", id: "<page-id-2>" })
 // ...
 ```
 
@@ -297,7 +297,7 @@ get({ container: "confluence-pages", id: "<page-id-2>" })
 ```jsonc
 // Jira-side: issues marked as blocked in the last 6 months, grouped by label
 aggregate({
-  container: "jira-issues",
+  data_source: "jira_issues",
   where: {
     "or": [
       { "status": "Blocked" },
@@ -312,8 +312,8 @@ aggregate({
 // Confluence-side: semantic search over retrospectives
 search({
   query: "blocker blocked impediment retrospective",
-  indexes: ["confluence-pages"],
-  filters: "updated ge 2025-10-30T00:00:00Z",
+  data_sources: ["confluence_pages"],
+  where: { "updated": { "gte": "6 months ago" } },
   top: 50
 })
 ```
@@ -329,8 +329,8 @@ If you read all ten, the patterns repeat:
 - **Exhaustive listing** → `query` with cursor pagination.
 - **Counts and totals** → `aggregate`.
 - **Fuzzy / cross-document themes** → `search`.
-- **Domain concepts (sprints, fix versions, spaces)** → `query` against the companion container first, then a follow-up call.
+- **Domain concepts (sprints, fix versions, spaces)** → `query` against the companion data source first, then a follow-up call.
 - **Two-step "resolve then fetch"** is the most common shape.
 - **Always include `source_link`s** in the answer.
 
-Generated agent bundles ([agents.md](agents.md)) encode all of these as system-prompt patterns so the agent doesn't have to re-derive them every conversation.
+Generated bundles ([agent-generation.md](agent-generation.md)) encode all of these as patterns so the assistant doesn't have to re-derive them every conversation.

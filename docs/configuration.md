@@ -199,15 +199,13 @@ deployments:
         memory: "2.0Gi"
         min_replicas: 0      # scale-to-zero when idle
         max_replicas: 5
-    expose:
-      - jira-issues
-      - jira-issues-cloud
-      - confluence-pages
-      - confluence-pages-cloud
-      - jira-sprints
-      - jira-sprints-cloud
-      - jira-fix-versions
-      - confluence-spaces
+    expose:                  # logical data-source names — what agents see
+      - jira_issues
+      - jira_sprints
+      - jira_fix_versions
+      - jira_projects
+      - confluence_pages
+      - confluence_spaces
     auth:
       mode: "api_key"        # "api_key" (v1) or "entra" (v1.x)
 ```
@@ -220,7 +218,7 @@ deployments:
 | `role` | `ingest` or `mcp`. |
 | `target` | `azure` (Quelch can deploy this) or `onprem` (Quelch generates artefacts for you to deploy). |
 | `sources` | (ingest only) Which sources, optionally restricted to subsets of subsources. |
-| `expose` | (mcp only) Which Cosmos containers / AI Search indexes are visible to MCP clients. Anything not listed is invisible — defence in depth. |
+| `expose` | (mcp only) Which **logical data sources** (not physical containers) are visible to MCP clients. Anything not listed is invisible — defence in depth. The names must appear in `mcp.data_sources` (see below). |
 | `azure.container_app` | (target=azure only) Container App sizing and scaling. |
 | `auth` | (mcp only) Authentication mode. |
 
@@ -229,22 +227,74 @@ deployments:
 Quelch validates that:
 
 - Every `(source, subsource)` pair appears in **at most one** ingest deployment.
-- Every container in any `mcp.expose:` list is one Quelch will create (i.e. listed in `cosmos.containers` or as a source `container` override).
+- Every name in any `expose:` list is defined in `mcp.data_sources` (or auto-derivable from the defaults).
 - Every source referenced in a deployment exists in `sources`.
 
 `quelch validate` runs all of these and prints diagnostics.
 
 ## `mcp`
 
-Global MCP defaults. Per-deployment values under `deployments[].auth` and `deployments[].expose` win when present.
+The MCP section has two purposes: define the **logical data sources** the API exposes (mapped onto the physical Cosmos containers), and set global MCP defaults.
+
+This is the layer that hides storage from agents. The `data_sources:` map is what makes "agents call `query(data_source: "jira_issues", ...)`" work even when there are multiple physical Jira containers underneath. See [architecture.md](architecture.md#two-layers-of-names).
 
 ```yaml
 mcp:
+  # Logical data sources. Map an API-layer name to one or more physical containers.
+  # When omitted, Quelch derives sensible defaults from `sources` (see below).
+  data_sources:
+    jira_issues:
+      kind: jira_issue
+      backed_by:
+        - container: jira-issues-internal
+        - container: jira-issues-cloud
+    jira_sprints:
+      kind: jira_sprint
+      backed_by:
+        - container: jira-sprints-internal
+        - container: jira-sprints-cloud
+    jira_fix_versions:
+      kind: jira_fix_version
+      backed_by:
+        - container: jira-fix-versions-internal
+        - container: jira-fix-versions-cloud
+    jira_projects:
+      kind: jira_project
+      backed_by:
+        - container: jira-projects-internal
+        - container: jira-projects-cloud
+    confluence_pages:
+      kind: confluence_page
+      backed_by:
+        - container: confluence-pages-internal
+        - container: confluence-pages-cloud
+    confluence_spaces:
+      kind: confluence_space
+      backed_by:
+        - container: confluence-spaces-internal
+        - container: confluence-spaces-cloud
+
+  # Global server defaults — overridden per deployment when relevant.
   default_top: 25
   max_top: 100
   query_timeout: "30s"
   search_timeout: "20s"
 ```
+
+### Auto-derived `data_sources`
+
+If you omit `mcp.data_sources` entirely, Quelch derives one entry per `kind` from your `sources` and their `cosmos` defaults — i.e. the simple-installation case "just works":
+
+| Default data source | Default kind | Default `backed_by` |
+|---|---|---|
+| `jira_issues` | `jira_issue` | every Jira source's primary container |
+| `jira_sprints` | `jira_sprint` | every Jira source's `companion_containers.sprints` (or default) |
+| `jira_fix_versions` | `jira_fix_version` | every Jira source's `companion_containers.fix_versions` |
+| `jira_projects` | `jira_project` | every Jira source's `companion_containers.projects` |
+| `confluence_pages` | `confluence_page` | every Confluence source's primary container |
+| `confluence_spaces` | `confluence_space` | every Confluence source's `companion_containers.spaces` |
+
+You only need to write `mcp.data_sources` explicitly when you want a non-default mapping — for example, exposing internal-only data on one MCP deployment and cloud-only on another.
 
 ## `state`
 

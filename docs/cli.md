@@ -83,7 +83,7 @@ Flags:
 
 ### `quelch validate`
 
-Loads the config, runs all validation rules (env vars set, deployments disjoint, exposed containers exist, sources referenced, ...), and prints the result.
+Loads the config, runs all validation rules (env vars set, deployments disjoint, exposed data sources exist, sources referenced, ...), and prints the result.
 
 ```bash
 quelch validate
@@ -325,16 +325,26 @@ The generated directory always contains:
 - A `.env.example` listing every environment variable the worker needs.
 - A `README.md` with the three commands the user runs.
 
-## Agent generation
+## Agent and skill generation
 
 ### `quelch agent generate --target <platform>`
 
-Produces a copy-pasteable bundle of agent instructions tailored to your deployment. See [agents.md](agents.md) for the full spec.
+Produces a copy-pasteable bundle of agent or skill material tailored to your deployment. The default form (agent vs skill) depends on the target; `--format` overrides it. See [agent-generation.md](agent-generation.md) for the full spec.
 
 ```bash
 quelch agent generate --target copilot-studio --output ./agent-bundle
-quelch agent generate --target vscode-mcp     --output ./agent-bundle
+quelch agent generate --target claude-code    --output ./agent-bundle
+quelch agent generate --target codex          --output ./agent-bundle
+quelch agent generate --target vscode-copilot --output ./agent-bundle
+quelch agent generate --target copilot-cli    --output ./agent-bundle
+quelch agent generate --target markdown       --output ./agent-bundle
 ```
+
+Flags:
+
+- `--target <platform>` — required. One of `copilot-studio`, `claude-code`, `copilot-cli`, `vscode-copilot`, `codex`, `markdown`.
+- `--format [agent|skill|both]` — override the target's default form.
+- `--output <dir>` — output directory (default `./agent-bundle/`).
 
 ## Embedded helpers
 

@@ -4,6 +4,20 @@ Quelch exposes a small, opinionated MCP toolset designed for agents that need to
 
 This reference covers the transport, authentication, the five tools, the filter grammar, pagination, and the schema-discovery contract.
 
+## What an agent sees
+
+The MCP API is the *only* surface an agent talks to. The agent never sees Cosmos DB, never sees Azure AI Search, never sees container or index names. Everything underneath is an implementation detail Quelch hides.
+
+The agent sees:
+
+- A handful of named **data sources** — `jira_issues`, `jira_sprints`, `jira_fix_versions`, `jira_projects`, `confluence_pages`, `confluence_spaces`, …
+- A field schema per data source.
+- Five tools.
+
+That's it. If today's deployment splits Jira issues across two physical containers (e.g. internal vs cloud), the MCP server fans out and merges; the agent still calls `query(data_source: "jira_issues", ...)` and gets unified results.
+
+> The two-layer naming model — physical storage vs logical data sources — is documented in [architecture.md](architecture.md#two-layers-of-names). It's load-bearing.
+
 ## Transport
 
 Quelch's MCP server speaks the **MCP Streamable HTTP** transport. This is the network-friendly transport supported by Microsoft 365 Copilot Studio, GitHub Copilot CLI, the VS Code MCP integration, and Claude Code.
@@ -44,40 +58,43 @@ Until you have an Entra app registration to use, stay on `api_key`.
 
 Each tool has a single, clearly described purpose. Agents pick the right one based on what they're trying to do.
 
-| Tool | Backend | When to use |
-|---|---|---|
-| `search` | Azure AI Search | The agent has natural language and wants the index's semantic ranking. |
-| `query` | Cosmos DB | The agent has exact filters and needs every match (exhaustive). |
-| `get` | Cosmos DB | The agent already has a document id. |
-| `list_sources` | Static + sample | The agent needs to learn the shape of the data before querying. |
-| `aggregate` | Cosmos DB | The agent needs counts, sums, or grouped totals. |
+| Tool | When to use |
+|---|---|
+| `search` | The agent has natural language and wants ranked, semantically-relevant results. |
+| `query` | The agent has exact filters and needs every match (exhaustive). |
+| `get` | The agent already has a document id. |
+| `list_sources` | The agent needs to learn the available data sources before querying. |
+| `aggregate` | The agent needs counts, sums, or grouped totals. |
 
 ### `search`
 
 ```yaml
 name: search
 description: |
-  Hybrid semantic + keyword search across one or more Quelch indexes.
-  Use this when the user's question contains natural-language concepts that
-  may be expressed differently across documents (e.g. "connection problems"
-  matching "wifi issues" and "camera disconnects").
+  Hybrid semantic + keyword search across one or more data sources.
+  Use this when the user's question contains natural-language concepts
+  that may be expressed differently across documents (e.g. "connection
+  problems" matching "wifi issues" and "camera disconnects").
 
-  Returns ranked results with deep links back to the source system. Use
-  list_sources first if you don't yet know which indexes to search.
+  Returns ranked results with deep links back to the source system. Call
+  list_sources first if you don't yet know which data sources to search.
 arguments:
   query:
     type: string
     required: true
-  indexes:
+  data_sources:
     type: string[]
     required: false
-    description: Subset of exposed indexes to search. Default: all.
-  filters:
-    type: string
+    description: |
+      Subset of data sources to search. Default: all data sources that
+      support search (some metadata sources like jira_projects may be
+      query-only).
+  where:
+    type: object
     required: false
     description: |
-      OData-style filter expression applied alongside semantic ranking.
-      Example: `project_key eq 'DO' and status ne 'Done'`.
+      Structured filter applied alongside semantic ranking. Same grammar
+      as the `where` argument on `query`. See "Filter grammar" below.
   top:
     type: integer
     required: false
@@ -89,27 +106,28 @@ arguments:
     description: Continuation token from a previous response.
 returns:
   items:
-    - id, score, source, source_link, snippet, fields
+    - id, score, data_source, source_link, snippet, fields
   next_cursor: string|null
   total_estimate: integer
 ```
 
 Notes:
 
-- `total_estimate` is approximate (AI Search returns an estimated count). For exact counts, use `aggregate` or `query --count-only`.
-- The agent should iterate with `cursor` until `next_cursor` is `null` if it needs all matches.
+- `total_estimate` is approximate. For exact counts, use `aggregate` or `query` with `count_only: true`.
+- Iterate with `cursor` until `next_cursor` is `null` if the user asked for "all".
+- Each returned item carries the `data_source` it came from, so an agent searching multiple sources can present results grouped or distinguished.
 
 ### `query`
 
 ```yaml
 name: query
 description: |
-  Structured query against a single Cosmos DB container. Use this when the
-  user's question maps to exact filters and ordering — for example, "all my
-  open Stories in DO". Returns every match (paginated by cursor) and an
-  exact total count.
+  Structured query against a single data source. Use this when the
+  user's question maps to exact filters and ordering — for example,
+  "all my open Stories in DO". Returns every match (paginated by cursor)
+  and an exact total count.
 arguments:
-  container:
+  data_source:
     type: string
     required: true
   where:
@@ -134,7 +152,7 @@ arguments:
     default: false
 returns:
   items:
-    - <full Cosmos document>
+    - <full document>
   next_cursor: string|null
   total: integer
 ```
@@ -146,10 +164,10 @@ returns:
 ```yaml
 name: get
 description: |
-  Point-read a document by id from Cosmos DB. Returns the full document or
-  null if not found.
+  Point-read a document by id. Returns the full document or null if
+  not found.
 arguments:
-  container:
+  data_source:
     type: string
     required: true
   id:
@@ -165,37 +183,41 @@ returns:
 name: list_sources
 description: |
   Enumerate the data sources exposed by this Quelch deployment, with
-  schema hints, common enum values, and example filter expressions. Call
-  this BEFORE constructing query/search filters if you don't already know
-  the shape of the data.
+  schema hints, common enum values, and example calls. Call this BEFORE
+  constructing query/search filters if you don't already know the shape
+  of the data.
 arguments: { }
 returns:
-  sources:
-    - container: string                 # Cosmos container name
-      index: string|null                # AI Search index name (null if not searchable)
-      source_type: string               # "jira_issue" | "confluence_page" | "jira_sprint" | ...
-      source_names: string[]            # which configured sources contribute
+  data_sources:
+    - name: string                       # e.g. "jira_issues"
+      kind: string                       # "jira_issue" | "jira_sprint" | "confluence_page" | ...
+      description: string
+      searchable: boolean                # true if `search` works against it
+      source_instances: string[]         # configured source instances backing it
+                                         #  (e.g. ["jira-internal", "jira-cloud"])
       schema:
         - field: string
-          type: string                  # "string" | "integer" | "datetime" | "object" | "array<...>"
-          enum: string[]|null           # known values when small (e.g. status)
+          type: string                   # "string" | "integer" | "datetime" | "object" | "array<...>"
+          enum: string[]|null            # known values when small (e.g. status)
           description: string|null
       examples:
-        - { description: "...", filter: "...", search_query: "..." }
+        - { description: "...", call: "..." }
 ```
 
-This is the agent's grounding source. It's how the LLM learns that `jira-issues` has a `status` field whose values are typically `Open`, `In Progress`, `In Review`, `Done`.
+This is the agent's grounding source. It's how the LLM learns that `jira_issues` has a `status` field whose values are typically `Open`, `In Progress`, `In Review`, `Done`.
+
+The `source_instances` field is informational — it tells the agent which configured source connections feed this data source (useful for "show me only stuff from the cloud Jira", which the agent can then express as a filter on a `source_name` field rather than as separate calls).
 
 ### `aggregate`
 
 ```yaml
 name: aggregate
 description: |
-  Counts, sums, and grouped totals over a Cosmos container. Use this for
-  "how many", "how much", or "top N grouped by ...". Always returns exact
-  numbers.
+  Counts, sums, and grouped totals over a data source. Use this for
+  "how many", "how much", or "top N grouped by ...". Always returns
+  exact numbers.
 arguments:
-  container:
+  data_source:
     type: string
     required: true
   where:
@@ -222,17 +244,12 @@ returns:
 
 Examples:
 
-- `aggregate(container="jira-issues", where={project_key:"DO", status:["In Progress","To Do"]}, sum_field="story_points")` → "how much work is left".
-- `aggregate(container="jira-issues", where={created:{gte:"6 months ago"}}, group_by="labels", count=true, top_groups=5)` → "top 5 most common labels last 6 months".
+- `aggregate(data_source="jira_issues", where={project_key:"DO", status:["In Progress","To Do"]}, sum_field="story_points")` → "how much work is left".
+- `aggregate(data_source="jira_issues", where={created:{gte:"6 months ago"}}, group_by="labels", count=true, top_groups=5)` → "top 5 most common labels last 6 months".
 
 ## Filter grammar
 
-There are two filter syntaxes in the API, used for different reasons:
-
-- **`where` (structured object)** — used by `query` and `aggregate`. Translated by the MCP layer into Cosmos SQL. Designed to be obvious to an LLM.
-- **`filters` (OData string)** — used by `search`. Passed through to Azure AI Search as an OData `$filter` expression (note: AI Search uses `/` for nested fields, e.g. `sprint/id eq '204'`).
-
-This document describes the structured `where` grammar. For OData, see Azure AI Search documentation.
+Every tool that takes a filter (`search`, `query`, `aggregate`) uses the same structured `where` grammar. There is **one** filter language exposed to agents — the MCP server translates it to the right backend syntax internally.
 
 ```jsonc
 // Equality (default)
@@ -255,7 +272,7 @@ This document describes the structured `where` grammar. For OData, see Azure AI 
 // Negation
 { "status": { "not": "Done" } }
 
-// Nested fields (use dots — these are translated to Cosmos SQL paths)
+// Nested fields (use dots)
 { "assignee.email": "kristofer@example.com" }
 { "sprint.state": "active" }
 
@@ -289,11 +306,11 @@ Cursors are short-lived but deterministic enough that an agent can reliably page
 
 For exact totals, agents should call `aggregate` or set `count_only: true` on `query` rather than counting paginated items themselves.
 
-## The `expose:` filter
+## Exposure and visibility
 
-A deployed MCP server only sees the containers / indexes its `mcp.expose:` config lists. Calls referencing anything else return `403 Forbidden`. This is enforced server-side and is independent of agent identity.
+A deployed MCP server only sees the **data sources** its config exposes. Calls referencing anything else return `forbidden`. This is enforced server-side and is independent of agent identity.
 
-`list_sources` reflects only exposed sources, so the agent never even learns about hidden ones.
+`list_sources` reflects only exposed data sources, so the agent never even learns about hidden ones. There is no API surface that exposes physical storage names — even an attacker with a valid API key cannot enumerate Cosmos containers or AI Search indexes through MCP.
 
 ## Errors
 
@@ -301,11 +318,11 @@ All tools return errors as MCP errors with structured payloads:
 
 | Code | Meaning |
 |---|---|
-| `not_found` | The requested document/container/index doesn't exist. |
-| `forbidden` | The container/index is not exposed by this deployment. |
+| `not_found` | The requested document or data source doesn't exist. |
+| `forbidden` | The data source is not exposed by this deployment. |
 | `invalid_argument` | Bad filter, unknown field, malformed cursor. |
 | `unauthenticated` | Missing or invalid auth header. |
-| `unavailable` | Backend (Cosmos / AI Search) returned a retryable error after retries. |
+| `unavailable` | Backend returned a retryable error after retries. |
 | `internal` | Unexpected server-side error; check `quelch azure logs`. |
 
 ## Result shape — the `source_link` contract
@@ -322,10 +339,10 @@ Agents must surface this link in their response so the user can click through to
 For any non-trivial question, the recommended agent flow is:
 
 1. Call `list_sources` once at conversation start. Cache it.
-2. Inspect the schema — what containers exist, what fields they have, what enum values are typical.
+2. Inspect the schema — what data sources exist, what fields they have, what enum values are typical.
 3. Pick the right tool: `search` if the question is fuzzy, `query` if it's precise, `aggregate` if it's a count.
 4. Run the call.
 5. If it returned `next_cursor`, decide whether to paginate: agents should paginate exhaustively when the user asked for "all", and stop early when they asked for a sample.
 6. Return results with `source_link`s.
 
-The `quelch agent generate` command (see [agents.md](agents.md)) produces system-prompt material that encodes exactly this flow, customised to the agent platform you're using.
+The `quelch agent generate` command (see [agent-generation.md](agent-generation.md)) produces system-prompt material that encodes exactly this flow, customised to the agent platform you're using.

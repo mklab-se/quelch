@@ -263,4 +263,4 @@ Someone clicked something in the portal. Decide:
 
 ### MCP returns `403 Forbidden`
 
-The container/index isn't in the deployment's `expose:` list. Update the config and redeploy.
+The data source isn't in the deployment's `expose:` list. Update the config (and `mcp.data_sources` if needed) and redeploy.

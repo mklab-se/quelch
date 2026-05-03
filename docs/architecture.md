@@ -119,11 +119,32 @@ The MCP server picks a backend per tool:
 - `aggregate` → Cosmos SQL aggregations. Use for `COUNT`, `SUM`, `GROUP BY`.
 - `list_sources` → static metadata + a sample of values from Cosmos / AI Search.
 
-The MCP layer translates each tool call into the appropriate backend call, applies the deployment's `expose:` filter, paginates with cursors, and returns results with deep-link `source_link` fields so the agent can hand the user back to Jira/Confluence directly.
+The MCP layer translates each tool call into the appropriate backend call(s), resolves logical data-source names to physical containers/indexes (see [Two layers of names](#two-layers-of-names)), applies the deployment's exposure rules, paginates with cursors, and returns results with deep-link `source_link` fields so the agent can hand the user back to Jira/Confluence directly.
+
+## Two layers of names
+
+There are two naming layers in Quelch and they should never meet on the wrong side of the boundary.
+
+| Layer | Examples | Who sees it |
+|---|---|---|
+| **Storage** — physical Cosmos containers and AI Search indexes | `jira-issues-internal`, `jira-issues-cloud`, `quelch-meta` | Operator (you), `quelch.yaml`, generated Bicep, `az` shell-outs |
+| **API** — logical data sources | `jira_issues`, `jira_sprints`, `confluence_pages` | Agents, MCP tool calls, generated bundles |
+
+The MCP server is the boundary. Inside Quelch, the server holds a static map: each logical data source resolves to one or more physical containers (and matching AI Search indexes). When an agent calls `query(data_source: "jira_issues", ...)`, the MCP layer:
+
+1. Resolves `jira_issues` to its set of underlying Cosmos containers.
+2. Fans out the query to each.
+3. Merges results, paginates with a unified cursor, returns to the agent.
+
+The agent never sees container names, never sees index names, never knows whether one logical data source is backed by one physical container or twenty. This abstraction is the entire point of having an MCP layer.
+
+When you (the operator) work with `quelch.yaml`, you work in the storage layer — you spell containers and indexes by their physical names, because that's what Bicep and `az` understand. When agents work with the live API, they only ever spell data sources. The mapping between the two is configured in [`mcp.data_sources`](configuration.md#mcp).
+
+This document and [configuration.md](configuration.md) talk about both layers, because they're how you set the system up. [mcp-api.md](mcp-api.md), [agent-generation.md](agent-generation.md), and [examples.md](examples.md) talk only about the API layer, because that's all an agent ever sees.
 
 ## Document model
 
-### One container per source-type, overridable
+### Storage layout: one container per source-type, overridable
 
 Default Cosmos containers:
 
@@ -154,12 +175,12 @@ Each container gets its own AI Search Index (and Indexer + skillset). Quelch kno
 
 ### Companion containers for metadata
 
-Jira and Confluence ingest don't just write the obvious entities (issues, pages). They also populate companion containers so agents can resolve domain concepts:
+Jira and Confluence ingest don't just write the obvious entities (issues, pages). They also populate companion containers so agents can resolve domain concepts via the API layer:
 
-- `jira-sprints` — `{ id, name, state: active|future|closed, start_date, end_date, project_key, ... }`. Lets an agent answer "what is the next sprint in DO?" with a single `query`.
-- `jira-fix-versions` — `{ id, name, project_key, released, release_date, ... }`. Lets an agent resolve "the last iXX firmware release".
-- `jira-projects` — `{ key, name, lead, project_type, ... }`. Lets an agent discover available projects.
-- `confluence-spaces` — `{ key, name, type, ... }`. Discoverability for spaces.
+- `jira-sprints` — `{ id, name, state: active|future|closed, start_date, end_date, project_key, ... }`. Surfaced as the `jira_sprints` data source. Lets an agent answer "what is the next sprint in DO?" with a single `query`.
+- `jira-fix-versions` — `{ id, name, project_key, released, release_date, ... }`. Surfaced as `jira_fix_versions`. Lets an agent resolve "the last iXX firmware release".
+- `jira-projects` — `{ key, name, lead, project_type, ... }`. Surfaced as `jira_projects`. Lets an agent discover available projects.
+- `confluence-spaces` — `{ key, name, type, ... }`. Surfaced as `confluence_spaces`. Discoverability for spaces.
 
 These are populated on the same ingest cycle as the primary entity. Updating a sprint state from `future` → `active` takes the next ingest cycle to surface.
 
@@ -196,7 +217,7 @@ A Jira issue document in `jira-issues` looks roughly like:
 
 `source_link` is mandatory on every document — it's how agents hand the user back to the source system.
 
-The exact field set is defined per source-type and documented in [configuration.md](configuration.md). `list_sources` exposes the schema to agents at runtime so they don't have to be hard-coded.
+The exact field set is defined per source-type and documented in [configuration.md](configuration.md). The MCP `list_sources` tool reflects this schema at runtime — phrased entirely in API-layer terms (data sources, fields, enum values) — so agents don't have to be hard-coded against any storage detail.
 
 ## State model
 
