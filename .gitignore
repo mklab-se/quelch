@@ -5,6 +5,10 @@ quelch.yaml
 .quelch-tui-state.json
 .superpowers/
 
+# Generated Azure / rigg artefacts (created by `quelch azure plan`)
+/.quelch/
+/rigg/
+
 # Developer scratch
 /tmp.txt
 /build_output*.json

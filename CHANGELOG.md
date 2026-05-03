@@ -6,19 +6,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
-## [2.0.0-alpha] - Unreleased
+## [2.0.0-alpha] - 2026-04-30
 
 ### Breaking
 
-This is a complete re-architecture; v1 configs are not compatible. See
-[/docs/](docs/) for the new architecture and the migration guide
-(forthcoming) for upgrade steps.
+- Complete rewrite. v1 configs are not compatible. See [docs/](docs/) for the new architecture.
+- Direct Azure AI Search write removed; data now flows source → Cosmos DB → AI Search Indexer.
+- Embedding moved out of Quelch into Azure AI Search integrated vectorisation.
+- v1 commands `sync`, `watch`, `setup`, `reset-indexes` removed; replaced by `ingest`, `azure plan/deploy`, `azure indexer reset`.
 
-### In progress
+### Added
 
-Implementation in progress; see
-[docs/superpowers/plans/2026-05-03-quelch-v2-implementation.md](docs/superpowers/plans/2026-05-03-quelch-v2-implementation.md)
-for the phase-by-phase plan.
+- Cosmos DB as the system of record (raw documents, cursors, worker state in `quelch-meta` container).
+- Azure AI Search via rigg as a library — indexes, skillsets, indexers, knowledge sources, and knowledge bases all rigg-managed.
+- MCP server (Streamable HTTP) with five tools: `search`, `query`, `get`, `list_sources`, `aggregate`.
+- Operator CLI commands: `validate`, `effective-config`, `status`, `query`, `search`, `get`, `reset`, `ingest`, `mcp`, `dev`, `azure plan/deploy/pull/indexer/logs/destroy`, `generate-deployment`, `init`, `agent generate`.
+- Six agent/skill bundle targets: `copilot-studio`, `claude-code`, `copilot-cli`, `vscode-copilot`, `codex`, `markdown`.
+- On-prem deploy artefacts: docker-compose, systemd unit, Kubernetes manifest.
+- Bicep generator + `az deployment group what-if` integration for Azure resource shells.
+- Soft-delete via `_deleted` flag with periodic reconciliation.
+- Minute-resolution sync algorithm with safety lag and backfill resume.
+- Dockerfile for `ghcr.io/mklab-se/quelch:<version>`.
+
+### Changed
+
+- TUI refocused: was per-worker tracing-event view; now a fleet dashboard polling `quelch-meta`.
+
+### Removed
+
+- v1 `sync/` engine.
+- v1 `azure/` AI Search write client (replaced by rigg).
 
 ## [0.8.0] - 2026-04-19
 
