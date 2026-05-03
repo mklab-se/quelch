@@ -1,5 +1,6 @@
 use clap::Parser;
 use quelch::ai::AiCommands;
+use quelch::commands::search::IncludeContentArg;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -63,14 +64,28 @@ pub enum Commands {
         yes: bool,
     },
     /// Show sync status for all sources
-    Status,
+    Status {
+        /// Filter to cursors belonging to this deployment
+        #[arg(long)]
+        deployment: Option<String>,
+        /// Emit machine-readable JSON instead of a table
+        #[arg(long)]
+        json: bool,
+        /// Launch the interactive TUI (planned for Phase 10)
+        #[arg(long)]
+        tui: bool,
+    },
     /// Reset sync state (force full re-sync on next run)
     Reset {
         /// Source name to reset (omit to reset all)
+        #[arg(long)]
         source: Option<String>,
         /// Only reset a single subsource (project or space key) within the source
         #[arg(long)]
         subsource: Option<String>,
+        /// Skip the interactive confirmation prompt
+        #[arg(long)]
+        yes: bool,
     },
     /// Delete all configured indexes from Azure AI Search and clear sync state
     ResetIndexes,
@@ -121,17 +136,73 @@ pub enum Commands {
         #[arg(long, default_value = "40")]
         snapshot_height: u16,
     },
-    /// Search indexed data in Azure AI Search
-    Search {
-        /// The search query
-        query: String,
-        /// Search a specific index (default: search all configured indexes)
-        #[arg(short, long)]
-        index: Option<String>,
-        /// Maximum results per index
-        #[arg(short, long, default_value = "5")]
+    /// Structured query against a Cosmos-backed data source
+    Query {
+        /// Logical data-source name (e.g. jira_issues)
+        #[arg(long, value_name = "NAME")]
+        data_source: String,
+        /// Structured filter predicate as JSON (e.g. '{"status":"Open"}')
+        #[arg(long, value_name = "JSON")]
+        r#where: Option<String>,
+        /// Read filter JSON from a file instead of --where
+        #[arg(long, value_name = "PATH")]
+        where_file: Option<PathBuf>,
+        /// Sort clause — repeatable, format field:dir (e.g. updated:desc)
+        #[arg(long, value_name = "FIELD:DIR")]
+        order_by: Vec<String>,
+        /// Maximum documents per page
+        #[arg(long, default_value = "50")]
         top: usize,
-        /// Output raw JSON instead of formatted results
+        /// Pagination cursor from a prior response
+        #[arg(long)]
+        cursor: Option<String>,
+        /// Return only the document count
+        #[arg(long)]
+        count_only: bool,
+        /// Include soft-deleted documents
+        #[arg(long)]
+        include_deleted: bool,
+        /// Emit machine-readable JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Semantic / hybrid search via Azure AI Search
+    Search {
+        /// Free-text search query
+        query: String,
+        /// Comma-separated logical data-source names to search
+        #[arg(long, value_name = "NAMES")]
+        data_sources: Option<String>,
+        /// Structured filter predicate as JSON
+        #[arg(long, value_name = "JSON")]
+        r#where: Option<String>,
+        /// Maximum hits per page
+        #[arg(long, default_value = "25")]
+        top: usize,
+        /// Pagination cursor from a prior response
+        #[arg(long)]
+        cursor: Option<String>,
+        /// Content level to return
+        #[arg(long, value_enum, default_value = "snippet")]
+        include_content: IncludeContentArg,
+        /// Include soft-deleted documents
+        #[arg(long)]
+        include_deleted: bool,
+        /// Emit machine-readable JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Fetch a single document by ID from a data source
+    Get {
+        /// Document ID
+        id: String,
+        /// Logical data-source name (required)
+        #[arg(long)]
+        data_source: String,
+        /// Include soft-deleted documents
+        #[arg(long)]
+        include_deleted: bool,
+        /// Emit machine-readable JSON
         #[arg(long)]
         json: bool,
     },

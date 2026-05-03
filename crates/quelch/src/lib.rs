@@ -1,5 +1,6 @@
 pub mod ai;
 pub mod azure;
+pub mod commands;
 pub mod config;
 pub mod copilot;
 pub mod cosmos;

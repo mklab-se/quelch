@@ -45,23 +45,124 @@ async fn main() -> Result<()> {
                 "quelch setup is not available in v2; use `quelch azure deploy` (Phase 4)"
             )
         }
-        Commands::Status => {
-            anyhow::bail!(
-                "quelch status is not available in v2; use `quelch status --tui` (Phase 8)"
+        Commands::Status {
+            deployment,
+            json,
+            tui,
+        } => {
+            let config = quelch::config::load_config(&cli.config)?;
+            quelch::commands::status::run(
+                &config,
+                quelch::commands::status::StatusOptions {
+                    deployment,
+                    json,
+                    tui,
+                },
             )
+            .await
         }
-        Commands::Reset { .. } => {
-            anyhow::bail!(
-                "quelch reset is not available in v2; use `quelch azure indexer reset` (Phase 4)"
+        Commands::Reset {
+            source,
+            subsource,
+            yes,
+        } => {
+            let config = quelch::config::load_config(&cli.config)?;
+            quelch::commands::reset::run(
+                &config,
+                quelch::commands::reset::ResetOptions {
+                    source,
+                    subsource,
+                    yes,
+                },
             )
+            .await
         }
         Commands::ResetIndexes => {
             anyhow::bail!(
                 "quelch reset-indexes is not available in v2; use `quelch azure indexer reset` (Phase 4)"
             )
         }
-        Commands::Search { .. } => {
-            anyhow::bail!("quelch search is not available in v2; use `quelch mcp` (Phase 5)")
+        Commands::Query {
+            data_source,
+            r#where,
+            where_file,
+            order_by,
+            top,
+            cursor,
+            count_only,
+            include_deleted,
+            json,
+        } => {
+            let config = quelch::config::load_config(&cli.config)?;
+            // Parse --where / --where-file into a JSON Value.
+            let where_val = parse_where_arg(r#where.as_deref(), where_file.as_deref())?;
+            // Parse --order-by strings.
+            let order_by_parsed = order_by
+                .iter()
+                .map(|s| quelch::commands::query::parse_order_by(s))
+                .collect::<Result<Vec<_>>>()?;
+            quelch::commands::query::run(
+                &config,
+                quelch::commands::query::QueryOptions {
+                    data_source,
+                    where_: where_val,
+                    order_by: order_by_parsed,
+                    top,
+                    cursor,
+                    count_only,
+                    include_deleted,
+                    json,
+                },
+            )
+            .await
+        }
+        Commands::Search {
+            query,
+            data_sources,
+            r#where,
+            top,
+            cursor,
+            include_content,
+            include_deleted,
+            json,
+        } => {
+            let config = quelch::config::load_config(&cli.config)?;
+            let where_val = parse_where_arg(r#where.as_deref(), None)?;
+            let data_sources_parsed = data_sources
+                .as_deref()
+                .map(|s| s.split(',').map(|p| p.trim().to_string()).collect());
+            quelch::commands::search::run(
+                &config,
+                quelch::commands::search::SearchOptions {
+                    query,
+                    data_sources: data_sources_parsed,
+                    where_: where_val,
+                    top,
+                    cursor,
+                    include_content,
+                    include_deleted,
+                    json,
+                },
+            )
+            .await
+        }
+        Commands::Get {
+            id,
+            data_source,
+            include_deleted,
+            json,
+        } => {
+            let config = quelch::config::load_config(&cli.config)?;
+            quelch::commands::get::run(
+                &config,
+                quelch::commands::get::GetOptions {
+                    id,
+                    data_source,
+                    include_deleted,
+                    json,
+                },
+            )
+            .await
         }
         Commands::Sim { .. } => {
             anyhow::bail!("quelch sim is not available in v2; use `quelch dev` (Phase 3/4)")
@@ -121,6 +222,33 @@ async fn main() -> Result<()> {
             }
         },
     }
+}
+
+// ---------------------------------------------------------------------------
+// CLI helpers
+// ---------------------------------------------------------------------------
+
+/// Parse a `--where` JSON string or read JSON from `--where-file`.
+///
+/// Returns `None` if neither argument is provided, or the parsed `Value` on
+/// success.  Returns an error on invalid JSON or file-read failure.
+fn parse_where_arg(
+    where_str: Option<&str>,
+    where_file: Option<&Path>,
+) -> Result<Option<serde_json::Value>> {
+    if let Some(s) = where_str {
+        let v: serde_json::Value = serde_json::from_str(s)
+            .map_err(|e| anyhow::anyhow!("--where is not valid JSON: {e}"))?;
+        return Ok(Some(v));
+    }
+    if let Some(p) = where_file {
+        let s = std::fs::read_to_string(p)
+            .map_err(|e| anyhow::anyhow!("cannot read --where-file '{}': {e}", p.display()))?;
+        let v: serde_json::Value = serde_json::from_str(&s)
+            .map_err(|e| anyhow::anyhow!("--where-file is not valid JSON: {e}"))?;
+        return Ok(Some(v));
+    }
+    Ok(None)
 }
 
 fn cmd_validate(config_path: &Path) -> Result<()> {

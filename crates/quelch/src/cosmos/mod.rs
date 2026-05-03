@@ -14,6 +14,7 @@
 pub mod client;
 pub mod document;
 pub mod error;
+pub mod factory;
 pub mod in_memory;
 pub mod meta;
 pub(crate) mod query_stream;
