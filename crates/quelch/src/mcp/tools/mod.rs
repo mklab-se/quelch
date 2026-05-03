@@ -4,6 +4,8 @@ pub mod aggregate;
 pub mod get;
 pub mod list_sources;
 pub mod query;
+pub mod search;
+pub mod search_api;
 
 use serde::{Deserialize, Serialize};
 
