@@ -1,7 +1,7 @@
 /// Effective-config slicing: extract the sub-`Config` needed by one deployment.
 ///
 /// See `docs/configuration.md` — section "Slicing per deployment".
-use super::{data_sources, Config, ConfigError, DeploymentRole};
+use super::{Config, ConfigError, DeploymentRole, data_sources};
 
 /// Return a sub-[`Config`] containing only what the named deployment needs.
 ///

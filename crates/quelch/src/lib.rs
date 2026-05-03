@@ -2,6 +2,7 @@ pub mod ai;
 pub mod azure;
 pub mod config;
 pub mod copilot;
+pub mod cosmos;
 pub mod mock;
 pub mod search;
 pub mod sim;

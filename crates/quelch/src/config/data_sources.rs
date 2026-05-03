@@ -229,7 +229,11 @@ deployments: []
         assert_eq!(issues.kind, "jira_issue");
         assert_eq!(issues.backed_by.len(), 2);
 
-        let containers: Vec<&str> = issues.backed_by.iter().map(|b| b.container.as_str()).collect();
+        let containers: Vec<&str> = issues
+            .backed_by
+            .iter()
+            .map(|b| b.container.as_str())
+            .collect();
         assert!(
             containers.contains(&"jira-issues"),
             "expected default container 'jira-issues', got {containers:?}"
@@ -267,7 +271,10 @@ deployments: []
         let fix_versions = resolved
             .get("jira_fix_versions")
             .expect("jira_fix_versions must be derived");
-        assert_eq!(fix_versions.backed_by[0].container, "jira-fix-versions-cloud");
+        assert_eq!(
+            fix_versions.backed_by[0].container,
+            "jira-fix-versions-cloud"
+        );
 
         let projects = resolved
             .get("jira_projects")

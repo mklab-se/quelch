@@ -5,7 +5,7 @@
 /// 2. Every `(source, subsource)` pair appears in at most one ingest deployment.
 /// 3. Every name in any `expose:` list is defined in `mcp.data_sources` (explicit
 ///    or auto-derived via [`super::data_sources::resolve`]).
-use super::{data_sources, Config, ConfigError, DeploymentRole, SourceConfig};
+use super::{Config, ConfigError, DeploymentRole, SourceConfig, data_sources};
 use std::collections::{HashMap, HashSet};
 
 /// Run all validation rules against `config`.
