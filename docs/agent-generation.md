@@ -1,6 +1,6 @@
 # Agent and skill generation
 
-`quelch agent generate` produces a copy-pasteable bundle of agent-side material — system prompts, tool descriptions, connection details, schema cheatsheets — tailored to your actual deployment.
+`quelch agent generate` produces a copy-pasteable bundle of agent-side material — system prompts, tool descriptions, connection details, schema cheatsheets — tailored to your actual deployment, ready to point at the **Quelch MCP** (Q-MCP) endpoint.
 
 Different agent platforms model "the AI assistant's instructions" differently:
 

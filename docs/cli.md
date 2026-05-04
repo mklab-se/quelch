@@ -2,7 +2,7 @@
 
 Every Quelch command, every flag, with examples.
 
-The CLI is the operator's entry point. It loads `quelch.yaml`, validates it, and then either does something locally (validate, dev, query) or reaches into Azure (plan, deploy, indexer, logs).
+The CLI is the operator's entry point. It loads `quelch.yaml`, validates it, and then either does something locally (validate, dev, query) or reaches into Azure (plan, deploy, indexer, logs). It also runs **Quelch MCP** (Q-MCP, via `quelch mcp`) and **Quelch Ingest** (Q-Ingest, via `quelch ingest`) when the binary is invoked as the long-running service inside a Container App or on-prem supervisor.
 
 ## Global flags
 

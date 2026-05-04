@@ -1,6 +1,6 @@
 # End-to-end examples
 
-This document walks through real questions a user would ask an agent, and shows how the agent uses Quelch's MCP tools to answer them. Each example follows the same shape:
+This document walks through real questions a user would ask an agent, and shows how the agent uses **Quelch MCP** (Q-MCP) tools to answer them. Each example follows the same shape:
 
 1. **The user's question** — in natural language.
 2. **What the user expects** — what success looks like.

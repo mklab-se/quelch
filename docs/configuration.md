@@ -2,7 +2,7 @@
 
 Quelch is configured by a single `quelch.yaml` file that you version-control alongside your project. This file is the **source of truth**: Quelch reconciles Azure to it. You edit YAML, you run `quelch azure plan`, you review the diff, you run `quelch azure deploy`.
 
-This document describes every section of the file.
+This document describes every section of the file. The two service components it configures are **Quelch MCP** (Q-MCP) and **Quelch Ingest** (Q-Ingest); see [architecture.md](architecture.md) for the role split.
 
 ## Top-level shape
 

@@ -4,9 +4,9 @@ Quelch is a single Rust binary that turns your enterprise knowledge sources (Jir
 
 It does this by being three things at once:
 
-1. **An ingestion service** that pulls data from sources and writes it to **Cosmos DB**.
-2. **An MCP server** (Streamable HTTP) that lets agents query that data over a small, well-defined tool set, blending classical filtering (Cosmos DB) with semantic search (Azure AI Search).
-3. **An operator CLI** that provisions the Azure resources, deploys the workers and the MCP, runs the indexers, and generates the agent-side instructions you paste into Copilot Studio / VS Code / GitHub Copilot CLI.
+1. **Quelch Ingest** (Q-Ingest) — pulls data from sources and writes it to **Cosmos DB**. Typically runs close to its data source — that often means **on-prem** when Confluence / Jira Data Center isn't reachable from Azure.
+2. **Quelch MCP** (Q-MCP) — a Streamable-HTTP MCP server that lets agents query the Cosmos data over a small, well-defined tool set, blending classical filtering (Cosmos DB) with semantic search (Azure AI Search). Typically runs in **Azure** (Container Apps).
+3. **The operator CLI** (`quelch ...`) — references existing Azure resources from your config, deploys the Q-MCP and Q-Ingest workers that target Azure, manages the AI Search side via the embedded [rigg](https://github.com/mklab-se/rigg) library, runs the indexers, and generates the agent-side instructions you paste into Copilot Studio / VS Code / GitHub Copilot CLI.
 
 One binary, one config file, three modes: `quelch ingest`, `quelch mcp`, and the bare `quelch ...` CLI.
 

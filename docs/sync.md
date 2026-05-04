@@ -1,6 +1,6 @@
 # Sync correctness
 
-Incremental sync is the most error-prone part of any system that mirrors an external source. Earlier iterations of this codebase hit specific bugs here, so this document spells out the current algorithm in full detail. If you read only one operational document, read this one.
+Incremental sync is the most error-prone part of any system that mirrors an external source. Earlier iterations of this codebase hit specific bugs here, so this document spells out the current algorithm in full detail. This is the algorithm **Quelch Ingest** (Q-Ingest) runs on every cycle. If you read only one operational document, read this one.
 
 ## The problem
 

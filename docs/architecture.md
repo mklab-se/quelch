@@ -1,6 +1,11 @@
 # Architecture
 
-This document describes how Quelch is structured: the components, how data flows between them, the document model, the state model, the deployment topology, and which parts of today's codebase carry over.
+This document describes how Quelch is structured: the components, how data flows between them, the document model, the state model, the deployment topology, and the module map.
+
+Throughout this doc:
+
+- **Quelch MCP** (Q-MCP) — the MCP server agents talk to. Typically runs in Azure (Container Apps).
+- **Quelch Ingest** (Q-Ingest) — the per-source worker that pulls into Cosmos DB. Typically runs close to its data source — often on-prem next to Confluence / Jira Data Center.
 
 ## The big picture
 
@@ -27,8 +32,8 @@ This document describes how Quelch is structured: the components, how data flows
         │                            │                              │   optional answer)
         │                            │                              │
         │                   ┌────────┴──────────────────────────────┴┐
-        │                   │  Quelch MCP server                     │
-        └──────────────────►│  (Container App)                       │
+        │                   │  Q-MCP                                 │
+        └──────────────────►│  (Container App, typically in Azure)   │
                             │  5 tools, per-tool routing:            │
                             │   • search        → Knowledge Base     │
                             │   • query/get/agg → Cosmos DB          │
@@ -48,7 +53,7 @@ This document describes how Quelch is structured: the components, how data flows
 
 Quelch is one binary with three runtime roles selected by subcommand. The same code, the same Cargo features, deployed differently.
 
-### `quelch ingest` — the worker
+### `quelch ingest` — Quelch Ingest (Q-Ingest)
 
 A long-running process that pulls from a defined slice of sources and writes raw JSON documents to Cosmos DB. It does **not** compute embeddings — Azure AI Search owns vectorisation via integrated vectorisation skillsets.
 
@@ -60,9 +65,9 @@ What it does on each cycle:
 4. Write the documents to their target Cosmos containers.
 5. Write the new cursor back to `quelch-meta`.
 
-It runs anywhere: Azure Container Apps for cloud-side sources, on-prem (Docker, systemd, K8s) for sources behind a corporate firewall.
+Q-Ingest runs anywhere: Azure Container Apps for cloud-side sources, on-prem (Docker, systemd, K8s) for sources behind a corporate firewall — that's the more common case for Confluence / Jira Data Center.
 
-### `quelch mcp` — the agent-facing API
+### `quelch mcp` — Quelch MCP (Q-MCP)
 
 A long-running HTTP server speaking the MCP Streamable HTTP transport. It exposes five tools:
 
