@@ -20,7 +20,10 @@ COPY crates/quelch/Cargo.toml ./crates/quelch/
 RUN mkdir -p crates/quelch/src && echo "fn main() {}" > crates/quelch/src/main.rs && touch crates/quelch/src/lib.rs
 
 # Fetch and compile dependencies (cached unless Cargo.toml/Cargo.lock change).
-RUN cargo build --release -p quelch 2>/dev/null || true
+# This stub-compile is expected to fail at link time (no real source yet),
+# so `|| true` is structurally necessary. We keep stderr visible so genuine
+# errors (registry unreachable, missing system libs) still surface in logs.
+RUN cargo build --release -p quelch || true
 
 # Now copy the real source and build.
 COPY crates/quelch/src ./crates/quelch/src

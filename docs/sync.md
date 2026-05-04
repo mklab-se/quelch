@@ -164,7 +164,7 @@ Why soft delete rather than hard delete:
 - **Recovery.** If a reconciliation bug ever wrongly marks too much as deleted, we can clear `_deleted` and the AI Search Indexer puts them back.
 - **Compatibility.** This is the canonical Azure pattern for Cosmos → AI Search indexers.
 
-Hard compaction is a future operation (`quelch azure compact`, post-v1) that hard-deletes Cosmos docs whose `_deleted_at` is older than a configurable retention.
+Hard compaction is a planned future operation (`quelch azure compact`) that hard-deletes Cosmos docs whose `_deleted_at` is older than a configurable retention.
 
 ### Reconciliation cost
 
@@ -203,7 +203,7 @@ That's enough to recover from any crash, audit any sync, and resume any backfill
 
 The same algorithm applies to Confluence, with two field renames and one API quirk:
 
-- Cursor field is `last_modified_minute` (semantic identical to `last_complete_minute`).
+- Cursor field is the same `last_complete_minute` used for Jira; the semantic is identical (every change with `lastmodified <= last_complete_minute` is durably in Cosmos).
 - Filter language is CQL: `space = "{key}" AND lastmodified >= "{...}" AND lastmodified <= "{...}" ORDER BY lastmodified ASC`.
 - Confluence's CQL doesn't have a stable secondary sort field comparable to Jira's `key ASC`. We use `id ASC` as the secondary sort. Same shape; same correctness story.
 

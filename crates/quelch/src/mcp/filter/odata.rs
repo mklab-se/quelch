@@ -130,8 +130,14 @@ fn translate_like(col: &str, value: &Value) -> Result<String, FilterError> {
         (true, true) | (true, false) => {
             // Substring or suffix — use full-text search (approximate).
             // NOTE: search.ismatch uses full-text semantics, not exact substring matching.
-            let field_name = col; // the field path, already OData-encoded
-            Ok(format!("search.ismatch('{inner}*', '{field_name}')"))
+            // Both the pattern and the field name need to be OData-escaped — pattern
+            // because it's user input, field name defensively (it comes from
+            // `FieldPath::to_odata` which is structural, but escaping costs nothing).
+            let escaped_inner = escape_odata_string(inner);
+            let escaped_field = escape_odata_string(col);
+            Ok(format!(
+                "search.ismatch('{escaped_inner}*', '{escaped_field}')"
+            ))
         }
         (false, true) => {
             // Prefix match.

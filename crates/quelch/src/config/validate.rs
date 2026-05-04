@@ -13,6 +13,73 @@ pub fn run(config: &Config) -> Result<(), ConfigError> {
     validate_sources_referenced(config)?;
     validate_disjoint_subsources(config)?;
     validate_expose_resolves(config)?;
+    validate_no_bicep_unsafe_chars(config)?;
+    Ok(())
+}
+
+/// Reject config values that are interpolated raw into generated Bicep
+/// templates and could break the template if they contain certain characters.
+///
+/// Bicep string literals are single-quoted, so an apostrophe (`'`) in any
+/// interpolated value would terminate the literal early and let the rest of
+/// the value be parsed as Bicep code. Backslashes can escape the closing
+/// quote in some downstream tooling. We reject both at config-load time —
+/// these values are resource names (Azure has its own naming rules anyway,
+/// and Azure resource names cannot contain `'` or `\`), so this only
+/// enforces what's already true.
+fn validate_no_bicep_unsafe_chars(config: &Config) -> Result<(), ConfigError> {
+    let check = |label: &str, value: &str| -> Result<(), ConfigError> {
+        if value.contains('\'') || value.contains('\\') {
+            return Err(ConfigError::Validation(format!(
+                "{label} '{value}' contains a quote or backslash; \
+                 Quelch interpolates these into generated Bicep and \
+                 they would break the template"
+            )));
+        }
+        Ok(())
+    };
+
+    check("azure.resource_group", &config.azure.resource_group)?;
+    check("azure.region", &config.azure.region)?;
+    if let Some(ref prefix) = config.azure.naming.prefix {
+        check("azure.naming.prefix", prefix)?;
+    }
+    if let Some(ref env) = config.azure.naming.environment {
+        check("azure.naming.environment", env)?;
+    }
+    if let Some(ref account) = config.cosmos.account {
+        check("cosmos.account", account)?;
+    }
+    check("cosmos.database", &config.cosmos.database)?;
+    check("cosmos.meta_container", &config.cosmos.meta_container)?;
+    if let Some(ref service) = config.search.service {
+        check("search.service", service)?;
+    }
+    for (kind, container_name) in &[
+        ("jira_issues", &config.cosmos.containers.jira_issues),
+        (
+            "confluence_pages",
+            &config.cosmos.containers.confluence_pages,
+        ),
+        ("jira_sprints", &config.cosmos.containers.jira_sprints),
+        (
+            "jira_fix_versions",
+            &config.cosmos.containers.jira_fix_versions,
+        ),
+        ("jira_projects", &config.cosmos.containers.jira_projects),
+        (
+            "confluence_spaces",
+            &config.cosmos.containers.confluence_spaces,
+        ),
+    ] {
+        check(&format!("cosmos.containers.{kind}"), container_name)?;
+    }
+    for src in &config.sources {
+        check("source name", src.name())?;
+    }
+    for dep in &config.deployments {
+        check("deployment name", &dep.name)?;
+    }
     Ok(())
 }
 

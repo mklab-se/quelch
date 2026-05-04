@@ -165,8 +165,10 @@ The first cycle does a **full backfill** — for a typical Jira project this is 
 You can also tail logs from the running Container App:
 
 ```bash
-quelch azure logs ingest-azure --follow
+quelch azure logs ingest --follow
 ```
+
+(Replace `ingest` with whatever your ingest deployment is named in `quelch.yaml`.)
 
 Once `quelch status` shows non-zero `documents_synced_total` for at least one source, your data is in Cosmos. Within ~15 minutes (the default Indexer cadence), it'll also be in the AI Search index and queryable through the Knowledge Base.
 
@@ -176,12 +178,15 @@ Once `quelch status` shows non-zero `documents_synced_total` for at least one so
 
 The MCP server is now running at the URL you'll find in Azure portal under your Container App's *Application Url* (also visible in `az containerapp show --query properties.configuration.ingress.fqdn`).
 
-The MCP API key was auto-generated and stored in Key Vault:
+The MCP API key was auto-generated and stored in Key Vault. Look up the names of the Key Vault and the MCP Container App from the Azure portal (or `az resource list -g <resource-group> -o table`), then:
 
 ```bash
-KEY_VAULT_NAME=$(az keyvault list -g "$(grep -m1 resource_group quelch.yaml | awk '{print $2}' | tr -d \")" --query "[0].name" -o tsv)
-QUELCH_MCP_API_KEY=$(az keyvault secret show --vault-name "$KEY_VAULT_NAME" --name mcp-api-key --query value -o tsv)
-MCP_URL=$(az containerapp show -n "$(quelch effective-config mcp-azure | grep -A1 '^deployments:' | tail -1 | awk '{print $3}')" -g "$(grep -m1 resource_group quelch.yaml | awk '{print $2}' | tr -d \")" --query properties.configuration.ingress.fqdn -o tsv)
+RG=<your-resource-group>
+KV=<your-key-vault-name>          # e.g. quelch-prod-kv
+APP=<your-mcp-container-app-name> # e.g. quelch-prod-mcp
+
+QUELCH_MCP_API_KEY=$(az keyvault secret show --vault-name "$KV" --name mcp-api-key --query value -o tsv)
+MCP_URL=$(az containerapp show -n "$APP" -g "$RG" --query properties.configuration.ingress.fqdn -o tsv)
 
 # List available data sources (round-trip MCP connectivity check)
 curl -X POST "https://$MCP_URL/mcp" \
@@ -263,9 +268,11 @@ You can point a local agent at `http://127.0.0.1:8080/mcp` and exercise the same
 
 Useful flags:
 
-- `--no-tui` — log to stdout instead of the dashboard.
-- `--mcp-port 9000` — bind the MCP server elsewhere.
+- `--no-tui` — disable the dashboard and emit structured logs to stdout instead (global flag).
+- `--mcp-port 9000` — bind the MCP server elsewhere (default `8080`).
 - `--seed 42` — deterministic simulator output for reproducible runs.
+- `--rate-multiplier 5.0` — speed up simulated activity for quicker exercises.
+- `--use-cosmos-emulator` — point at the local Cosmos DB emulator instead of the in-memory backend.
 
 This is the recommended way to **first** experience Quelch before paying for any Azure resources.
 

@@ -245,7 +245,7 @@ deployments:
       - confluence_pages
       - confluence_spaces
     auth:
-      mode: "api_key"        # "api_key" (v1) or "entra" (v1.x)
+      mode: "api_key"        # "api_key" (current) or "entra" (planned)
 ```
 
 ### Common deployment fields
@@ -464,4 +464,4 @@ deployments:
       mode: "api_key"
 ```
 
-That config provisions a Cosmos DB, an AI Search service with two indexes, an Azure OpenAI account (assumed pre-existing), and two Container Apps — and it's enough to get `quelch agent generate` to produce working agent instructions.
+That config provisions a Cosmos DB, an AI Search service with one index per exposed data source (four in this example: `jira_issues`, `jira_sprints`, `jira_fix_versions`, `confluence_pages`), an Azure OpenAI account (assumed pre-existing), and two Container Apps — and it's enough to get `quelch agent generate` to produce working agent instructions.

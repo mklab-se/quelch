@@ -70,9 +70,13 @@ axum = { version = "0.8", features = ["macros"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "cors"] }
 
-# Cosmos DB client (azure_data_cosmos is the official azure-sdk-for-rust crate)
+# Cosmos DB client (azure_data_cosmos is the official azure-sdk-for-rust crate).
+# azure_core is needed for direct access to Continuation's `Header` trait so we
+# can extract the raw token string (the public Debug impl wraps it in
+# `Continuation("...")`).
 azure_data_cosmos = "0.21"
 azure_identity = "0.21"
+azure_core = "0.21"
 
 # Templating for Bicep / on-prem artefacts
 handlebars = "6"

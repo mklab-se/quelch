@@ -204,12 +204,10 @@ quelch dev
 Flags:
 
 - `--use-real-search` — use a real Azure AI Search service instead of the in-memory mock.
-- `--use-cosmos-emulator` — use the local Cosmos DB emulator.
+- `--use-cosmos-emulator` — use the local Cosmos DB emulator at `https://localhost:8081`.
 - `--mcp-port <P>` — port the embedded MCP server listens on (default `8080`).
-- `--seed <N>` — seed the simulator for deterministic runs.
-- `--rate-multiplier <f>` — speed up / slow down simulated activity.
-
-`quelch dev` is exhaustively documented by the simulator's existing snapshot/recording features (`--snapshot-to`, `--snapshot-frames`).
+- `--seed <N>` — seed the fixture data generator for deterministic runs.
+- `--rate-multiplier <f>` — scale the simulated activity rate.
 
 ## Ad-hoc query commands
 
@@ -405,13 +403,16 @@ Flags:
 Manages the `ailloy` integration. Reserved for future AI features in Quelch itself; embeddings happen in Azure AI Search, not here.
 
 ```bash
-quelch ai status
-quelch ai config
+quelch ai status     # show whether AI features are configured (default if no subcommand)
+quelch ai config     # interactive configuration wizard
+quelch ai test       # send a test embedding through the configured model
+quelch ai enable     # mark AI features as active
+quelch ai disable    # mark AI features as inactive
 ```
 
 ### `quelch sim`
 
-Runs the activity simulator without the rest of the stack. Currently a stub — superseded by `quelch dev`, which spins up the same simulator alongside an in-memory Cosmos backend, the ingest worker, and the MCP server in a single process.
+Runs the activity simulator without the rest of the stack — useful for snapshotting deterministic fixture streams. For an end-to-end local environment (mock sources + ingest + MCP + TUI) use `quelch dev` instead.
 
 ### `quelch mock`
 

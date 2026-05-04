@@ -72,7 +72,7 @@ A long-running HTTP server speaking the MCP Streamable HTTP transport. It expose
 - `list_sources` — discoverability: containers, schemas, common enum values.
 - `aggregate` — count, sum, group_by over Cosmos DB.
 
-It only exposes the indexes/containers explicitly listed in its `expose:` block — defence in depth. It's deployed on Azure Container Apps and authenticates calls via API key (v1) or Microsoft Entra ID (v1.x).
+It only exposes the indexes/containers explicitly listed in its `expose:` block — defence in depth. It's deployed on Azure Container Apps and authenticates calls via API key (current) or Microsoft Entra ID (planned).
 
 ### `quelch` — the operator CLI
 
@@ -527,49 +527,33 @@ your-config-repo/
 
 You can hand-edit anything under `rigg/` — Quelch will not overwrite hand-edited files. This is how you take over fine-grained tuning of an index or knowledge base while still using Quelch for everything else.
 
-## What carries over from v1
-
-The earlier direct-to-Azure-AI-Search architecture left ~5,000 lines of Rust we could reuse. Most of it carries over.
-
-### Kept and extended
-
-| Module | Role |
-|---|---|
-| `sources/jira.rs`, `sources/confluence.rs`, `sources/mod.rs` | The `SourceConnector` trait stays. We extend the connectors to populate companion containers (sprints, fix versions, spaces). |
-| `config/` | Stays as the YAML loader; new sections (`cosmos`, `openai`, `deployments`, `mcp`, `state`) added. |
-| `tui/` | Refocused: default UX of `quelch dev`, plus `quelch status --tui` becomes a fleet dashboard reading `quelch-meta`. |
-| `sim/` | Drives `quelch dev` and CI. |
-| `mock/` | Local Jira/Confluence HTTP server, used by `quelch dev` and integration tests. |
-| `ai.rs` (ailloy integration) | Stays as a dependency for future AI features. Not used on the ingest path. |
-| `copilot.rs` | Becomes the `copilot-studio` target of `quelch agent generate`. |
-
-### Replaced or removed
-
-| Module | Fate |
-|---|---|
-| `azure/mod.rs` (REST client to AI Search write API) | Removed entirely. AI Search reads/writes go through `rigg-client` for configuration and the MCP `search` tool. |
-| `sync/embedder.rs` | Removed. Embeddings happen in Azure AI Search via skillset. |
-| `sync/mod.rs` engine | Replaced by a simpler `ingest/` engine: pull → write Cosmos → write cursor. |
-| Commands `sync`, `watch`, `setup`, `reset-indexes`, `search`, `generate-agent` | Replaced by the new command tree (see [cli.md](cli.md)). |
-
-### New modules
+## Module map
 
 | Module | Purpose |
 |---|---|
-| `ingest/` | Replaces `sync/`. Source → Cosmos write loop. |
-| `cosmos/` | Cosmos DB client (writes, point-reads, SQL queries, change-feed cursor metadata). |
-| `mcp/` | The Streamable HTTP MCP server and the five tool implementations. |
-| `azure/deploy/` | Bicep generator + `az` shell-out helpers + `what-if` parser, for the resource-shell layer. |
+| `cli.rs`, `main.rs`, `commands/` | Clap-derived CLI surface and per-command dispatch. |
+| `config/` | YAML loader, env-var substitution, validation, and per-deployment slicing. |
+| `sources/` | `SourceConnector` trait plus Jira and Confluence implementations. |
+| `ingest/` | Source → Cosmos write loop with cursor persistence and reconciliation. |
+| `cosmos/` | Cosmos DB client (writes, point reads, SQL queries, cursor metadata). |
+| `mcp/` | Streamable HTTP MCP server and the five tool implementations (`search`, `query`, `get`, `list_sources`, `aggregate`). |
+| `azure/deploy/` | Bicep generator, `az` shell-out helpers, `what-if` parser — the resource-shell layer. |
 | `azure/rigg/` | Generates `rigg/` files from `quelch.yaml`; embeds `rigg-core` + `rigg-client` to plan/diff/push them. |
 | `agent/` | Agent and skill bundle generators (Copilot Studio, Copilot CLI, VS Code Copilot, Claude Code, Codex, markdown). |
-| `config/deployments.rs` | Slicing logic — turns the full config into a per-deployment effective config. |
+| `init/` | Wizard for `quelch init` — discovery via `az`, prompts, template instantiation. |
+| `dev/` | Wires the simulator, mock servers, ingest worker, and MCP server into a single in-process `quelch dev` mode. |
+| `sim/` | Activity simulator for `quelch dev` and CI. |
+| `mock/` | Local Jira/Confluence HTTP server used by `quelch dev` and integration tests. |
+| `tui/` | Ratatui-based fleet dashboard for `quelch status --tui` and `quelch dev`. |
+| `onprem/` | Helpers for the on-prem ingest deployment shape. |
+| `ai.rs` | `ailloy` integration; reserved for future AI features in Quelch itself, not used on the ingest path. |
 
 ## Cross-cutting concerns
 
 - **Auth to Azure resources:** managed identity wherever possible (Container Apps → Cosmos / AI Search / OpenAI). API key fallbacks for local development. Keys are read from environment variables; the config never contains a literal secret.
 - **Auth to source systems:** PAT for Data Center, email + API token for Cloud.
 - **Logging:** `tracing` + `tracing-subscriber`, JSON output in production, TUI-friendly fields. Per-document logs only at `debug!`.
-- **Errors:** typed per module with `thiserror`, `anyhow` at CLI boundaries (unchanged from v1).
+- **Errors:** typed per module with `thiserror`, `anyhow` at CLI boundaries.
 - **Versioning:** the Quelch CLI version pins the Container App image tag. `quelch 0.9.0 azure deploy` always deploys `ghcr.io/mklab-se/quelch:0.9.0`. No drift between operator and worker.
 - **External library deps:**
   - `rigg-core` and `rigg-client` for Azure AI Search and Microsoft Foundry configuration (see [Provisioning split: Bicep vs rigg](#provisioning-split-bicep-vs-rigg)).

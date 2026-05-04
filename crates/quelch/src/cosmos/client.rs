@@ -200,11 +200,15 @@ impl QueryStreamInner for SdkQueryStream {
             }
             Some(Err(e)) => Err(sdk_err(e)),
             Some(Ok(response)) => {
-                // Update the stored continuation token.
+                // Update the stored continuation token. We extract the raw
+                // string via the `Header` trait — `Continuation`'s public API
+                // exposes only `Debug` (which produces `Continuation("token")`)
+                // and the `Header::value()` method.
+                use azure_core::headers::Header;
                 self.continuation = response
                     .continuation_token
                     .as_ref()
-                    .map(|c| format!("{c:?}"));
+                    .map(|c| c.value().as_str().to_owned());
 
                 // Extract the document payloads; ignore `DocumentAttributes`.
                 let docs: Vec<Value> = response

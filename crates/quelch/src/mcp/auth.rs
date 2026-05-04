@@ -33,13 +33,65 @@ pub async fn api_key_middleware(req: Request, next: Next) -> Result<Response, St
 
         let provided = auth.and_then(|h| h.strip_prefix("Bearer "));
 
-        if provided != Some(expected.as_str()) {
+        let provided_bytes = provided.unwrap_or("").as_bytes();
+        if !constant_time_eq(provided_bytes, expected.as_bytes()) {
             return Err(StatusCode::UNAUTHORIZED);
         }
     }
 
     // If QUELCH_MCP_API_KEY is not set: dev mode — accept all requests.
     Ok(next.run(req).await)
+}
+
+/// Constant-time byte-slice comparison.
+///
+/// Returns true iff `a` and `b` have the same length and every byte matches.
+/// The execution time depends only on the maximum of the two lengths, never
+/// on which positions match — this denies a timing-side-channel attacker the
+/// ability to recover the secret one byte at a time.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    let len = a.len().max(b.len());
+    // Mix the length difference into the accumulator so unequal lengths are
+    // detected without short-circuiting the loop.
+    let mut diff: u32 = (a.len() as u32) ^ (b.len() as u32);
+    for i in 0..len {
+        let ai = *a.get(i).unwrap_or(&0);
+        let bi = *b.get(i).unwrap_or(&0);
+        diff |= (ai ^ bi) as u32;
+    }
+    diff == 0
+}
+
+#[cfg(test)]
+mod constant_time_eq_tests {
+    use super::constant_time_eq;
+
+    #[test]
+    fn equal_bytes_match() {
+        assert!(constant_time_eq(b"hello", b"hello"));
+    }
+
+    #[test]
+    fn different_bytes_dont_match() {
+        assert!(!constant_time_eq(b"hello", b"world"));
+    }
+
+    #[test]
+    fn different_lengths_dont_match() {
+        assert!(!constant_time_eq(b"hello", b"hellos"));
+        assert!(!constant_time_eq(b"hellos", b"hello"));
+    }
+
+    #[test]
+    fn empty_strings_match() {
+        assert!(constant_time_eq(b"", b""));
+    }
+
+    #[test]
+    fn empty_vs_nonempty_dont_match() {
+        assert!(!constant_time_eq(b"", b"a"));
+        assert!(!constant_time_eq(b"a", b""));
+    }
 }
 
 // ---------------------------------------------------------------------------

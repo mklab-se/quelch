@@ -36,33 +36,6 @@ pub struct Cli {
 
 #[derive(clap::Subcommand)]
 pub enum Commands {
-    /// Run a one-shot sync of all configured sources
-    Sync {
-        /// Auto-create missing indexes without prompting
-        #[arg(long)]
-        create_indexes: bool,
-        /// Also purge orphaned documents from indexes
-        #[arg(long)]
-        purge: bool,
-        /// Maximum number of documents to sync (useful for debugging)
-        #[arg(long)]
-        max_docs: Option<u64>,
-    },
-    /// Run continuous sync (polls at configured interval)
-    Watch {
-        /// Auto-create missing indexes without prompting
-        #[arg(long)]
-        create_indexes: bool,
-        /// Maximum number of documents to sync per cycle (useful for debugging)
-        #[arg(long)]
-        max_docs: Option<u64>,
-    },
-    /// Check and create Azure AI Search indexes needed by the config
-    Setup {
-        /// Auto-create without prompting
-        #[arg(short, long)]
-        yes: bool,
-    },
     /// Show sync status for all sources
     Status {
         /// Filter to cursors belonging to this deployment
@@ -87,8 +60,6 @@ pub enum Commands {
         #[arg(long)]
         yes: bool,
     },
-    /// Delete all configured indexes from Azure AI Search and clear sync state
-    ResetIndexes,
     /// Validate config file without running
     Validate,
     /// Print the effective (sliced) config for one deployment
@@ -124,38 +95,6 @@ pub enum Commands {
         /// Port to listen on
         #[arg(short, long, default_value = "9999")]
         port: u16,
-    },
-    /// Run quelch against a fully simulated environment for local testing and CI.
-    Sim {
-        /// Run for this long then exit. Default: run until Ctrl-C. Example: 30s, 2m, 1h.
-        #[arg(long)]
-        duration: Option<humantime::Duration>,
-        /// Seed the activity generator for reproducible runs.
-        #[arg(long)]
-        seed: Option<u64>,
-        /// Scale activity rate. 1.0 = default, 2.0 = twice as fast.
-        #[arg(long, default_value = "1.0")]
-        rate_multiplier: f64,
-        /// Probability each Azure request gets a 429 or 503. 0.0 disables.
-        #[arg(long, default_value = "0.03")]
-        fault_rate: f64,
-        /// CI-friendly: fail with exit code 1 if fewer than N docs are indexed.
-        #[arg(long)]
-        assert_docs: Option<u64>,
-        /// Render the TUI to a headless backend and write a multi-frame text
-        /// dump to this file. Enables deterministic verification of the TUI
-        /// from CI or an AI agent. Implies --no-tui for stdout.
-        #[arg(long)]
-        snapshot_to: Option<PathBuf>,
-        /// Number of frames to capture when --snapshot-to is set.
-        #[arg(long, default_value = "10")]
-        snapshot_frames: u32,
-        /// Width of the TestBackend when --snapshot-to is set. Default 120.
-        #[arg(long, default_value = "120")]
-        snapshot_width: u16,
-        /// Height of the TestBackend when --snapshot-to is set. Default 40.
-        #[arg(long, default_value = "40")]
-        snapshot_height: u16,
     },
     /// Structured query against a Cosmos-backed data source
     Query {
@@ -252,12 +191,6 @@ pub enum Commands {
     Ai {
         #[command(subcommand)]
         command: Option<AiCommands>,
-    },
-    /// Generate Copilot Studio agent topics and instructions
-    GenerateAgent {
-        /// Output directory for generated files
-        #[arg(short, long, default_value = "copilot-studio")]
-        output: PathBuf,
     },
     /// Generate an agent or skill bundle for a specific platform
     Agent {

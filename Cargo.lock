@@ -2271,6 +2271,7 @@ dependencies = [
  "assert_cmd",
  "async-trait",
  "axum",
+ "azure_core",
  "azure_data_cosmos",
  "azure_identity",
  "base64 0.22.1",

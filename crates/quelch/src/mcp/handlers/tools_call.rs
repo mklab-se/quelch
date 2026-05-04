@@ -58,7 +58,7 @@ pub async fn handle(state: &ServerState, params: Value) -> Result<Value, JsonRpc
             )
             .await
             .map_err(map_mcp_error)?;
-            serde_json::to_value(resp).unwrap()
+            to_value_or_internal(&resp)?
         }
         "query" => {
             let req: query::QueryRequest = serde_json::from_value(arguments)
@@ -66,7 +66,7 @@ pub async fn handle(state: &ServerState, params: Value) -> Result<Value, JsonRpc
             let resp = query::run(state.cosmos.as_ref(), state.expose.as_ref(), req)
                 .await
                 .map_err(map_mcp_error)?;
-            serde_json::to_value(resp).unwrap()
+            to_value_or_internal(&resp)?
         }
         "get" => {
             let req: get::GetRequest = serde_json::from_value(arguments)
@@ -74,7 +74,7 @@ pub async fn handle(state: &ServerState, params: Value) -> Result<Value, JsonRpc
             let resp = get::run(state.cosmos.as_ref(), state.expose.as_ref(), req)
                 .await
                 .map_err(map_mcp_error)?;
-            serde_json::to_value(resp).unwrap()
+            to_value_or_internal(&resp)?
         }
         "aggregate" => {
             let req: aggregate::AggregateRequest = serde_json::from_value(arguments)
@@ -87,23 +87,28 @@ pub async fn handle(state: &ServerState, params: Value) -> Result<Value, JsonRpc
             )
             .await
             .map_err(map_mcp_error)?;
-            serde_json::to_value(resp).unwrap()
+            to_value_or_internal(&resp)?
         }
         "list_sources" => {
             let resp = list_sources::run(state.expose.as_ref(), state.schema.as_ref())
                 .await
                 .map_err(map_mcp_error)?;
-            serde_json::to_value(resp).unwrap()
+            to_value_or_internal(&resp)?
         }
         other => return Err(invalid_params(format!("unknown tool: {other}"))),
     };
 
     // Wrap in MCP content envelope.
     // TODO(mcp-spec): verify content envelope shape against the live spec.
-    let json_str = serde_json::to_string(&result).unwrap();
+    let json_str = serde_json::to_string(&result)
+        .map_err(|e| internal_error(format!("serialise tool result: {e}")))?;
     Ok(serde_json::json!({
         "content": [{ "type": "text", "text": json_str }]
     }))
+}
+
+fn to_value_or_internal<T: serde::Serialize>(value: &T) -> Result<Value, JsonRpcError> {
+    serde_json::to_value(value).map_err(|e| internal_error(format!("serialise tool response: {e}")))
 }
 
 // ---------------------------------------------------------------------------
@@ -113,6 +118,14 @@ pub async fn handle(state: &ServerState, params: Value) -> Result<Value, JsonRpc
 fn invalid_params(msg: String) -> JsonRpcError {
     JsonRpcError {
         code: -32602,
+        message: msg,
+        data: None,
+    }
+}
+
+fn internal_error(msg: String) -> JsonRpcError {
+    JsonRpcError {
+        code: -32603,
         message: msg,
         data: None,
     }

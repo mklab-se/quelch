@@ -55,18 +55,6 @@ async fn main() -> Result<()> {
         } => cmd_generate_deployment(&cli.config, &name, target, &output),
         Commands::Mock { port } => quelch::mock::run_mock_server(port).await,
         Commands::Ai { command } => quelch::ai::run(command).await,
-        // TODO(quelch v2 phase 3+): wire up remaining commands
-        Commands::Sync { .. } => {
-            anyhow::bail!("quelch sync is not available in v2; use `quelch ingest` (Phase 3)")
-        }
-        Commands::Watch { .. } => {
-            anyhow::bail!("quelch watch is not available in v2; use `quelch ingest` (Phase 3)")
-        }
-        Commands::Setup { .. } => {
-            anyhow::bail!(
-                "quelch setup is not available in v2; use `quelch azure deploy` (Phase 4)"
-            )
-        }
         Commands::Status {
             deployment,
             json,
@@ -98,11 +86,6 @@ async fn main() -> Result<()> {
                 },
             )
             .await
-        }
-        Commands::ResetIndexes => {
-            anyhow::bail!(
-                "quelch reset-indexes is not available in v2; use `quelch azure indexer reset` (Phase 4)"
-            )
         }
         Commands::Query {
             data_source,
@@ -185,14 +168,6 @@ async fn main() -> Result<()> {
                 },
             )
             .await
-        }
-        Commands::Sim { .. } => {
-            anyhow::bail!("quelch sim is not available in v2; use `quelch dev` (Phase 3/4)")
-        }
-        Commands::GenerateAgent { .. } => {
-            anyhow::bail!(
-                "quelch generate-agent is not available in v2; use `quelch agent generate` (Phase 8)"
-            )
         }
         Commands::Agent {
             command:

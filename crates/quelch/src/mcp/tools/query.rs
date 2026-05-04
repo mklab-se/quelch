@@ -103,19 +103,27 @@ pub async fn run(
 
     if let Some(orderings) = &req.order_by {
         sql.push_str(" ORDER BY ");
-        let parts: Vec<String> = orderings
-            .iter()
-            .map(|o| {
-                format!(
-                    "c.{} {}",
-                    o.field,
-                    match o.dir {
-                        SortDir::Asc => "ASC",
-                        SortDir::Desc => "DESC",
-                    }
-                )
-            })
-            .collect();
+        let mut parts: Vec<String> = Vec::with_capacity(orderings.len());
+        for o in orderings {
+            // Field names are user-supplied (via the MCP request) and embedded
+            // directly into Cosmos SQL with no parameter binding (Cosmos SQL
+            // does not allow parameterising column names). Validate strictly
+            // against an allowlist before inserting — anything else is a SQL
+            // injection.
+            if !is_valid_field_path(&o.field) {
+                return Err(McpError::InvalidArgument(format!(
+                    "order_by.field '{}' contains invalid characters; only \
+                     [A-Za-z0-9_.] are permitted, must start with a letter or \
+                     underscore",
+                    o.field
+                )));
+            }
+            let dir = match o.dir {
+                SortDir::Asc => "ASC",
+                SortDir::Desc => "DESC",
+            };
+            parts.push(format!("c.{} {}", o.field, dir));
+        }
         sql.push_str(&parts.join(", "));
     }
 
@@ -168,9 +176,79 @@ pub async fn run(
     })
 }
 
+/// Validate a dotted field path before embedding into Cosmos SQL.
+///
+/// Cosmos SQL doesn't allow parameter-binding for column references, so the
+/// path is interpolated directly. We accept only the safe subset
+/// `[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*` — anything outside
+/// that allowlist (whitespace, quotes, semicolons, brackets, …) is rejected.
+fn is_valid_field_path(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+    for segment in s.split('.') {
+        if segment.is_empty() {
+            return false;
+        }
+        let mut chars = segment.chars();
+        let first = chars.next().unwrap();
+        if !(first.is_ascii_alphabetic() || first == '_') {
+            return false;
+        }
+        if !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return false;
+        }
+    }
+    true
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod field_path_tests {
+    use super::is_valid_field_path;
+
+    #[test]
+    fn accepts_simple_names() {
+        assert!(is_valid_field_path("status"));
+        assert!(is_valid_field_path("project_key"));
+        assert!(is_valid_field_path("_deleted"));
+    }
+
+    #[test]
+    fn accepts_dotted_paths() {
+        assert!(is_valid_field_path("assignee.email"));
+        assert!(is_valid_field_path("sprint.state"));
+        assert!(is_valid_field_path("a.b.c.d"));
+    }
+
+    #[test]
+    fn rejects_empty_and_dotted_edge_cases() {
+        assert!(!is_valid_field_path(""));
+        assert!(!is_valid_field_path("."));
+        assert!(!is_valid_field_path(".foo"));
+        assert!(!is_valid_field_path("foo."));
+        assert!(!is_valid_field_path("foo..bar"));
+    }
+
+    #[test]
+    fn rejects_starting_with_digit() {
+        assert!(!is_valid_field_path("1status"));
+        assert!(!is_valid_field_path("foo.1bar"));
+    }
+
+    #[test]
+    fn rejects_injection_attempts() {
+        assert!(!is_valid_field_path("status; DROP TABLE issues"));
+        assert!(!is_valid_field_path("status' OR '1'='1"));
+        assert!(!is_valid_field_path("status DESC, id LIMIT 1"));
+        assert!(!is_valid_field_path("status\nFROM"));
+        assert!(!is_valid_field_path("status WHERE x = 1"));
+        assert!(!is_valid_field_path("status[0]"));
+    }
+}
 
 #[cfg(test)]
 mod tests {

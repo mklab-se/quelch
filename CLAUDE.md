@@ -1,6 +1,6 @@
 # Quelch
 
-Quelch ingests data from external sources (Jira, Confluence) directly into Azure AI Search indexes. No intermediate storage — direct source-to-index sync with incremental updates.
+Quelch ingests data from external sources (Jira, Confluence) into **Cosmos DB** as the system of record, lets **Azure AI Search** index it (via the embedded [rigg](https://github.com/mklab-se/rigg) library — indexes, skillsets, indexers, knowledge sources, knowledge bases), and exposes a **five-tool MCP server** (Streamable HTTP) that agents call directly. The MCP fans out per tool: `search` → AI Search **Knowledge Base** (Agentic Retrieval); `query` / `get` / `aggregate` → Cosmos DB; `list_sources` → cached schema catalog.
 
 ## Build & Test Commands
 
@@ -29,21 +29,31 @@ Single-crate workspace: `crates/quelch/`.
 
 ```
 crates/quelch/src/
-├── main.rs          # CLI entry point, clap setup
-├── cli.rs           # CLI arg definitions (planned)
-├── config/          # YAML config loading, validation, env var substitution (planned)
-├── sources/         # Source connector trait + implementations (planned)
-│   ├── jira.rs
-│   └── confluence.rs
-├── azure/           # Azure AI Search REST client (planned)
-├── sync/            # Sync engine, state persistence, concurrency (planned)
-├── tui/             # Ratatui dashboard (planned)
-└── transform.rs     # Source doc → Azure doc mapping (planned)
+├── main.rs            # CLI entry point, clap setup
+├── cli.rs             # CLI arg definitions
+├── config/            # YAML config loading, validation, slicing, data-source resolution
+├── sources/           # SourceConnector trait + Jira/Confluence connectors
+├── ingest/            # Per-cycle algorithm, backfill resume, deletion reconciliation, worker
+├── cosmos/            # Cosmos DB client (real + in-memory test backend), cursor state
+├── mcp/               # Streamable HTTP server, 5 tools, where-grammar parser, expose filter
+├── azure/
+│   ├── deploy/        # Bicep generator, az shell-outs (plan/deploy/indexer/logs/destroy)
+│   └── rigg/          # Generates rigg files from quelch.yaml; wraps rigg-core/rigg-client
+├── agent/             # Agent + skill bundle generator (6 targets)
+├── commands/          # Operator CLI handlers (status, query, search, get, reset, etc.)
+├── onprem/            # Generate docker / systemd / k8s artefacts
+├── init/              # Interactive `quelch init` wizard
+├── dev/               # `quelch dev` (sim + in-memory backends + ingest + MCP, all in one process)
+├── tui/               # Fleet dashboard polling quelch-meta
+├── sim/, mock/        # Activity simulator + local Jira/Confluence mock servers (powers dev mode + tests)
+└── ai.rs              # ailloy integration (reserved for future AI features)
 ```
+
+See [docs/architecture.md](docs/architecture.md) for the canonical architecture reference.
 
 ## Key Patterns
 
-- **Edition:** 2024, MSRV 1.94
+- **Edition:** 2024, MSRV 1.95
 - **Error handling:** `thiserror` for typed errors per module, `anyhow` at CLI boundary
 - **Async:** `tokio` with full features
 - **HTTP:** `reqwest` with `rustls-tls-native-roots`
