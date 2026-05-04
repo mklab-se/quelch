@@ -33,7 +33,7 @@ pub struct OrderBy {
 pub(crate) mod test_helpers {
     use std::collections::HashMap;
 
-    use serde_json::{Value, json};
+    use serde_json::json;
 
     use crate::config::BackedBy;
     use crate::config::data_sources::ResolvedDataSource;
@@ -118,13 +118,6 @@ pub(crate) mod test_helpers {
             .await
             .unwrap();
 
-        cosmos
-    }
-
-    /// A single document for point-read tests.
-    pub async fn build_cosmos_with_single_doc(container: &str, doc: Value) -> InMemoryCosmos {
-        let cosmos = InMemoryCosmos::new();
-        cosmos.upsert(container, doc).await.unwrap();
         cosmos
     }
 }

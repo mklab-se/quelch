@@ -213,14 +213,16 @@ mod tests {
         let backend = InMemoryCosmos::new();
         let k = key("prod", "my-jira", "DO");
 
-        let mut cursor = Cursor::default();
-        cursor.documents_synced_total = 42;
-        cursor.last_complete_minute = Some(Utc::now());
-        cursor.backfill_in_progress = true;
-        cursor.backfill_last_seen = Some(BackfillCheckpoint {
-            updated: Utc::now(),
-            key: "DO-99".into(),
-        });
+        let cursor = Cursor {
+            documents_synced_total: 42,
+            last_complete_minute: Some(Utc::now()),
+            backfill_in_progress: true,
+            backfill_last_seen: Some(BackfillCheckpoint {
+                updated: Utc::now(),
+                key: "DO-99".into(),
+            }),
+            ..Default::default()
+        };
 
         save(&backend, META, &k, &cursor).await.unwrap();
         let loaded = load(&backend, META, &k).await.unwrap();
@@ -248,12 +250,16 @@ mod tests {
         let backend = InMemoryCosmos::new();
         let k = key("prod", "my-jira", "DO");
 
-        let mut c1 = Cursor::default();
-        c1.documents_synced_total = 10;
+        let c1 = Cursor {
+            documents_synced_total: 10,
+            ..Default::default()
+        };
         save(&backend, META, &k, &c1).await.unwrap();
 
-        let mut c2 = Cursor::default();
-        c2.documents_synced_total = 99;
+        let c2 = Cursor {
+            documents_synced_total: 99,
+            ..Default::default()
+        };
         save(&backend, META, &k, &c2).await.unwrap();
 
         let loaded = load(&backend, META, &k).await.unwrap();
@@ -275,12 +281,18 @@ mod tests {
         let k2 = key("prod", "confluence", "WIKI");
         let k3 = key("dev", "my-jira", "HR");
 
-        let mut c1 = Cursor::default();
-        c1.documents_synced_total = 1;
-        let mut c2 = Cursor::default();
-        c2.documents_synced_total = 2;
-        let mut c3 = Cursor::default();
-        c3.documents_synced_total = 3;
+        let c1 = Cursor {
+            documents_synced_total: 1,
+            ..Default::default()
+        };
+        let c2 = Cursor {
+            documents_synced_total: 2,
+            ..Default::default()
+        };
+        let c3 = Cursor {
+            documents_synced_total: 3,
+            ..Default::default()
+        };
 
         save(&backend, META, &k1, &c1).await.unwrap();
         save(&backend, META, &k2, &c2).await.unwrap();

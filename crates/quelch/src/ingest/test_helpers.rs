@@ -28,23 +28,6 @@ pub fn make_source_doc(id: &str, partition_key: &str) -> SourceDocument {
     }
 }
 
-/// Build a [`SourceDocument`] with a specific `updated_at`.
-pub fn make_source_doc_at(
-    id: &str,
-    partition_key: &str,
-    updated_at: DateTime<Utc>,
-) -> SourceDocument {
-    let mut fields = HashMap::new();
-    fields.insert("title".into(), format!("Doc {id}").into());
-    SourceDocument {
-        id: id.to_string(),
-        partition_key: partition_key.to_string(),
-        fields,
-        updated_at,
-        source_link: format!("https://example.com/{id}"),
-    }
-}
-
 // ---------------------------------------------------------------------------
 // MockConnector
 // ---------------------------------------------------------------------------

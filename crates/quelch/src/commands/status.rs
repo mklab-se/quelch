@@ -170,21 +170,27 @@ mod tests {
         let cosmos = InMemoryCosmos::new();
 
         let k1 = key("prod", "jira-cloud", "DO");
-        let mut c1 = Cursor::default();
-        c1.documents_synced_total = 1842;
-        c1.last_sync_at = Some(Utc::now());
+        let c1 = Cursor {
+            documents_synced_total: 1842,
+            last_sync_at: Some(Utc::now()),
+            ..Default::default()
+        };
         save(&cosmos, META, &k1, &c1).await.unwrap();
 
         let k2 = key("prod", "jira-cloud", "INT");
-        let mut c2 = Cursor::default();
-        c2.documents_synced_total = 312;
-        c2.last_sync_at = Some(Utc::now());
+        let c2 = Cursor {
+            documents_synced_total: 312,
+            last_sync_at: Some(Utc::now()),
+            ..Default::default()
+        };
         save(&cosmos, META, &k2, &c2).await.unwrap();
 
         let k3 = key("staging", "confluence", "WIKI");
-        let mut c3 = Cursor::default();
-        c3.documents_synced_total = 99;
-        c3.last_error = Some("429 too many requests".to_string());
+        let c3 = Cursor {
+            documents_synced_total: 99,
+            last_error: Some("429 too many requests".to_string()),
+            ..Default::default()
+        };
         save(&cosmos, META, &k3, &c3).await.unwrap();
 
         meta::list_all(&cosmos, META).await.unwrap()
@@ -218,9 +224,11 @@ mod tests {
     async fn status_json_output_is_valid() {
         let cosmos = InMemoryCosmos::new();
         let k = key("prod", "jira-cloud", "DO");
-        let mut c = Cursor::default();
-        c.documents_synced_total = 42;
-        c.last_sync_at = Some(Utc::now());
+        let c = Cursor {
+            documents_synced_total: 42,
+            last_sync_at: Some(Utc::now()),
+            ..Default::default()
+        };
         save(&cosmos, META, &k, &c).await.unwrap();
 
         let rows = meta::list_all(&cosmos, META).await.unwrap();
@@ -255,8 +263,10 @@ mod tests {
 
     #[tokio::test]
     async fn status_backfilling_shows_in_state() {
-        let mut c = Cursor::default();
-        c.backfill_in_progress = true;
+        let c = Cursor {
+            backfill_in_progress: true,
+            ..Default::default()
+        };
 
         let state = fmt_state(&c);
         // Strip ANSI codes for assertion (colored may or may not add them in tests)
@@ -265,8 +275,10 @@ mod tests {
 
     #[tokio::test]
     async fn status_error_shows_in_state() {
-        let mut c = Cursor::default();
-        c.last_error = Some("429 rate limit".to_string());
+        let c = Cursor {
+            last_error: Some("429 rate limit".to_string()),
+            ..Default::default()
+        };
 
         let state = fmt_state(&c);
         assert!(state.contains("error:"));

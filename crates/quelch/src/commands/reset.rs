@@ -142,10 +142,12 @@ mod tests {
         let cosmos = InMemoryCosmos::new();
 
         let k = key("prod", "jira-cloud", "DO");
-        let mut c = Cursor::default();
-        c.documents_synced_total = 500;
-        c.last_complete_minute = Some(Utc::now());
-        c.backfill_in_progress = true;
+        let c = Cursor {
+            documents_synced_total: 500,
+            last_complete_minute: Some(Utc::now()),
+            backfill_in_progress: true,
+            ..Default::default()
+        };
         save(&cosmos, META, &k, &c).await.unwrap();
 
         // Verify it's there.
@@ -181,9 +183,11 @@ mod tests {
         let cosmos = InMemoryCosmos::new();
 
         let k = key("prod", "jira-cloud", "DO");
-        let mut c = Cursor::default();
-        c.documents_synced_total = 100;
-        c.last_complete_minute = Some(Utc::now());
+        let c = Cursor {
+            documents_synced_total: 100,
+            last_complete_minute: Some(Utc::now()),
+            ..Default::default()
+        };
         save(&cosmos, META, &k, &c).await.unwrap();
 
         // With --yes: should reset without asking.
@@ -213,8 +217,10 @@ mod tests {
         let k_jira = key("prod", "jira-cloud", "DO");
         let k_conf = key("prod", "confluence", "DOCS");
 
-        let mut c = Cursor::default();
-        c.last_complete_minute = Some(Utc::now());
+        let c = Cursor {
+            last_complete_minute: Some(Utc::now()),
+            ..Default::default()
+        };
         save(&cosmos, META, &k_jira, &c).await.unwrap();
         save(&cosmos, META, &k_conf, &c).await.unwrap();
 

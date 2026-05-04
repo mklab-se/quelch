@@ -282,14 +282,16 @@ mod tests {
         // backfill_in_progress=true, backfill_target set, and backfill_last_seen
         // pointing to the last doc from page 1.
         let target = floor_to_minute(Utc::now()) - Duration::minutes(2);
-        let mut cursor = Cursor::default();
-        cursor.backfill_in_progress = true;
-        cursor.backfill_target = Some(target);
-        cursor.backfill_last_seen = Some(crate::cosmos::meta::BackfillCheckpoint {
-            updated: ts(9, 30),
-            key: "DO-5".into(),
-        });
-        cursor.documents_synced_total = 2; // already wrote 2 docs in page 1
+        let cursor = Cursor {
+            backfill_in_progress: true,
+            backfill_target: Some(target),
+            backfill_last_seen: Some(crate::cosmos::meta::BackfillCheckpoint {
+                updated: ts(9, 30),
+                key: "DO-5".into(),
+            }),
+            documents_synced_total: 2, // already wrote 2 docs in page 1
+            ..Default::default()
+        };
         meta::save(&cosmos, "quelch-meta", &key, &cursor)
             .await
             .unwrap();

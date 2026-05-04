@@ -765,7 +765,7 @@ mod tests {
 
         // Quelch internals
         assert_eq!(f["_partition_key"].as_str().unwrap(), "ENG");
-        assert_eq!(f["_deleted"].as_bool().unwrap(), false);
+        assert!(!f["_deleted"].as_bool().unwrap());
         assert!(f["_deleted_at"].is_null());
     }
 

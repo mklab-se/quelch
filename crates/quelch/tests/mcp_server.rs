@@ -124,6 +124,7 @@ async fn post_mcp(app: Router, body: Value) -> (StatusCode, Value) {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)] // guard must span the await to keep env var stable
 async fn initialize_returns_server_info() {
     let _guard = ENV_LOCK.lock().unwrap();
     // SAFETY: protected by ENV_LOCK.
@@ -150,6 +151,7 @@ async fn initialize_returns_server_info() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn list_sources_via_http() {
     let _guard = ENV_LOCK.lock().unwrap();
     unsafe { std::env::remove_var("QUELCH_MCP_API_KEY") };
@@ -178,6 +180,7 @@ async fn list_sources_via_http() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn tools_call_list_sources_returns_result() {
     let _guard = ENV_LOCK.lock().unwrap();
     unsafe { std::env::remove_var("QUELCH_MCP_API_KEY") };
@@ -212,6 +215,7 @@ async fn tools_call_list_sources_returns_result() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn tools_call_query_returns_result() {
     let _guard = ENV_LOCK.lock().unwrap();
     unsafe { std::env::remove_var("QUELCH_MCP_API_KEY") };
@@ -284,6 +288,7 @@ async fn tools_call_query_returns_result() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn tools_call_search_returns_result() {
     let _guard = ENV_LOCK.lock().unwrap();
     unsafe { std::env::remove_var("QUELCH_MCP_API_KEY") };
@@ -323,6 +328,7 @@ async fn tools_call_search_returns_result() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn unknown_method_returns_method_not_found_error() {
     let _guard = ENV_LOCK.lock().unwrap();
     unsafe { std::env::remove_var("QUELCH_MCP_API_KEY") };
@@ -350,6 +356,7 @@ async fn unknown_method_returns_method_not_found_error() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn forbidden_data_source_returns_proper_error() {
     let _guard = ENV_LOCK.lock().unwrap();
     unsafe { std::env::remove_var("QUELCH_MCP_API_KEY") };
@@ -389,6 +396,7 @@ async fn forbidden_data_source_returns_proper_error() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn auth_middleware_blocks_missing_key_when_configured() {
     let _guard = ENV_LOCK.lock().unwrap();
     let prev = std::env::var("QUELCH_MCP_API_KEY").ok();

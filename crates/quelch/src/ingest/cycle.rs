@@ -219,9 +219,9 @@ mod tests {
         cosmos::{InMemoryCosmos, meta::CursorKey},
         ingest::{
             config::CycleConfig,
-            test_helpers::{MockConnector, make_source_doc, make_source_doc_at},
+            test_helpers::{MockConnector, make_source_doc},
         },
-        sources::{BackfillCheckpoint, Companions, SourceDocument},
+        sources::Companions,
     };
 
     fn make_key() -> CursorKey {
@@ -242,8 +242,10 @@ mod tests {
         key: &CursorKey,
         last_minute: chrono::DateTime<Utc>,
     ) {
-        let mut cursor = crate::cosmos::meta::Cursor::default();
-        cursor.last_complete_minute = Some(last_minute);
+        let cursor = crate::cosmos::meta::Cursor {
+            last_complete_minute: Some(last_minute),
+            ..Default::default()
+        };
         meta::save(cosmos, "quelch-meta", key, &cursor)
             .await
             .unwrap();
@@ -286,8 +288,10 @@ mod tests {
         let past = Utc::now() - Duration::minutes(15);
         let past = crate::ingest::window::floor_to_minute(past);
         {
-            let mut cursor = crate::cosmos::meta::Cursor::default();
-            cursor.last_complete_minute = Some(past);
+            let cursor = crate::cosmos::meta::Cursor {
+                last_complete_minute: Some(past),
+                ..Default::default()
+            };
             meta::save(&cosmos, "quelch-meta", &key, &cursor)
                 .await
                 .unwrap();
@@ -322,8 +326,10 @@ mod tests {
 
         let past = crate::ingest::window::floor_to_minute(Utc::now() - Duration::minutes(15));
         {
-            let mut cursor = crate::cosmos::meta::Cursor::default();
-            cursor.last_complete_minute = Some(past);
+            let cursor = crate::cosmos::meta::Cursor {
+                last_complete_minute: Some(past),
+                ..Default::default()
+            };
             meta::save(&cosmos, "quelch-meta", &key, &cursor)
                 .await
                 .unwrap();
@@ -353,8 +359,10 @@ mod tests {
 
         let past = crate::ingest::window::floor_to_minute(Utc::now() - Duration::minutes(15));
         {
-            let mut cursor = crate::cosmos::meta::Cursor::default();
-            cursor.last_complete_minute = Some(past);
+            let cursor = crate::cosmos::meta::Cursor {
+                last_complete_minute: Some(past),
+                ..Default::default()
+            };
             meta::save(&cosmos, "quelch-meta", &key, &cursor)
                 .await
                 .unwrap();
@@ -393,8 +401,10 @@ mod tests {
         // Seed cursor with a timestamp only 1 minute in the past, lag=2 → no window.
         let recent = crate::ingest::window::floor_to_minute(Utc::now() - Duration::minutes(1));
         {
-            let mut cursor = crate::cosmos::meta::Cursor::default();
-            cursor.last_complete_minute = Some(recent);
+            let cursor = crate::cosmos::meta::Cursor {
+                last_complete_minute: Some(recent),
+                ..Default::default()
+            };
             meta::save(&cosmos, "quelch-meta", &key, &cursor)
                 .await
                 .unwrap();
@@ -423,8 +433,10 @@ mod tests {
 
         let past = crate::ingest::window::floor_to_minute(Utc::now() - Duration::minutes(15));
         {
-            let mut cursor = crate::cosmos::meta::Cursor::default();
-            cursor.last_complete_minute = Some(past);
+            let cursor = crate::cosmos::meta::Cursor {
+                last_complete_minute: Some(past),
+                ..Default::default()
+            };
             meta::save(&cosmos, "quelch-meta", &key, &cursor)
                 .await
                 .unwrap();

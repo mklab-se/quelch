@@ -144,7 +144,7 @@ pub async fn run(
     let mut groups = groups;
     if let Some(top) = req.top_groups {
         // Sort by count descending before truncating
-        groups.sort_by(|a, b| b.count.cmp(&a.count));
+        groups.sort_by_key(|b| std::cmp::Reverse(b.count));
         groups.truncate(top);
     }
 

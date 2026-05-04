@@ -80,7 +80,7 @@ pub async fn run(
 mod tests {
     use super::*;
     use crate::cosmos::InMemoryCosmos;
-    use crate::mcp::tools::test_helpers::{build_expose, build_expose_jira_issues};
+    use crate::mcp::tools::test_helpers::build_expose_jira_issues;
     use serde_json::json;
 
     async fn make_cosmos_with_doc(id: &str, deleted: bool) -> InMemoryCosmos {

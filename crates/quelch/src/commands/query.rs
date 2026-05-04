@@ -124,7 +124,6 @@ pub fn parse_order_by(s: &str) -> anyhow::Result<OrderBy> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cosmos::InMemoryCosmos;
     use crate::mcp::tools::test_helpers::{
         build_cosmos_with_jira_issues, build_expose_jira_issues,
     };

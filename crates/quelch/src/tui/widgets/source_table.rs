@@ -329,8 +329,10 @@ mod tests {
     #[test]
     fn backfill_row_shows_distinctly() {
         let mut app = App::new();
-        let mut c = Cursor::default();
-        c.backfill_in_progress = true;
+        let c = Cursor {
+            backfill_in_progress: true,
+            ..Default::default()
+        };
         app.handle_poll_result(Ok(vec![(key("prod", "jira", "DO"), c)]));
         let text = rendered_text(&app, 120, 10);
         assert!(
@@ -342,8 +344,10 @@ mod tests {
     #[test]
     fn error_row_shows_distinctly() {
         let mut app = App::new();
-        let mut c = Cursor::default();
-        c.last_error = Some("429 rate limit".into());
+        let c = Cursor {
+            last_error: Some("429 rate limit".into()),
+            ..Default::default()
+        };
         app.handle_poll_result(Ok(vec![(key("prod", "jira", "DO"), c)]));
         let text = rendered_text(&app, 120, 10);
         assert!(text.contains("error"), "error not shown distinctly: {text}");
@@ -372,9 +376,11 @@ mod tests {
     #[test]
     fn detail_pane_shows_selected_row() {
         let mut app = App::new();
-        let mut c = Cursor::default();
-        c.documents_synced_total = 9999;
-        c.last_sync_at = Some(Utc::now());
+        let c = Cursor {
+            documents_synced_total: 9999,
+            last_sync_at: Some(Utc::now()),
+            ..Default::default()
+        };
         app.handle_poll_result(Ok(vec![(key("prod", "my-jira", "DO"), c)]));
         let text = detail_text(&app, 120, 8);
         assert!(text.contains("prod"), "deployment missing: {text}");
@@ -385,8 +391,10 @@ mod tests {
     #[test]
     fn detail_pane_shows_error_field() {
         let mut app = App::new();
-        let mut c = Cursor::default();
-        c.last_error = Some("rate limited".into());
+        let c = Cursor {
+            last_error: Some("rate limited".into()),
+            ..Default::default()
+        };
         app.handle_poll_result(Ok(vec![(key("prod", "jira", "DO"), c)]));
         let text = detail_text(&app, 120, 8);
         assert!(

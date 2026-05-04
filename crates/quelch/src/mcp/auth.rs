@@ -77,6 +77,9 @@ mod tests {
     }
 
     #[tokio::test]
+    // The guard must be held across the await to prevent another test from
+    // changing QUELCH_MCP_API_KEY while the request is in-flight.
+    #[allow(clippy::await_holding_lock)]
     async fn api_key_middleware_no_auth_required_when_env_unset() {
         let _guard = ENV_LOCK.lock().unwrap();
         let prev = std::env::var("QUELCH_MCP_API_KEY").ok();
@@ -92,6 +95,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn api_key_middleware_rejects_missing_header() {
         let _guard = ENV_LOCK.lock().unwrap();
         let prev = std::env::var("QUELCH_MCP_API_KEY").ok();
@@ -107,6 +111,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn api_key_middleware_rejects_wrong_value() {
         let _guard = ENV_LOCK.lock().unwrap();
         let prev = std::env::var("QUELCH_MCP_API_KEY").ok();
@@ -122,6 +127,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn api_key_middleware_passes_correct_value() {
         let _guard = ENV_LOCK.lock().unwrap();
         let prev = std::env::var("QUELCH_MCP_API_KEY").ok();

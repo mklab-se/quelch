@@ -122,10 +122,9 @@ mod tests {
                     source_name: "jira-cloud".into(),
                     subsource: "DO".into(),
                 },
-                {
-                    let mut c = Cursor::default();
-                    c.documents_synced_total = 1842;
-                    c
+                Cursor {
+                    documents_synced_total: 1842,
+                    ..Default::default()
                 },
             ),
             (
@@ -134,10 +133,9 @@ mod tests {
                     source_name: "jira-cloud".into(),
                     subsource: "INT".into(),
                 },
-                {
-                    let mut c = Cursor::default();
-                    c.documents_synced_total = 312;
-                    c
+                Cursor {
+                    documents_synced_total: 312,
+                    ..Default::default()
                 },
             ),
         ]));
@@ -169,7 +167,7 @@ mod tests {
     fn rendered_text(app: &App) -> String {
         let backend = TestBackend::new(120, 40);
         let mut term = Terminal::new(backend).unwrap();
-        term.draw(|f| draw(f, &app)).unwrap();
+        term.draw(|f| draw(f, app)).unwrap();
         let buf = term.backend().buffer();
         (0..buf.area.height)
             .map(|y| {

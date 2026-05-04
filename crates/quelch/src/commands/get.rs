@@ -83,7 +83,6 @@ pub async fn run(config: &Config, options: GetOptions) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::cosmos::{CosmosBackend, InMemoryCosmos};
     use crate::mcp::tools::get::{GetRequest, run as get_run};
     use crate::mcp::tools::test_helpers::build_expose_jira_issues;
