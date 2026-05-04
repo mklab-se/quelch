@@ -29,24 +29,31 @@
 
 Quelch is a knowledge-platform operator tool for teams using Jira and Confluence. It ingests data into **Cosmos DB** as the system of record, uses **Azure AI Search** (via the embedded [rigg](https://github.com/mklab-se/rigg) library) for hybrid semantic retrieval, and exposes a **five-tool MCP API** that agents (Copilot Studio, VS Code Copilot, Claude, Codex) can call directly.
 
-One Rust binary, one YAML config file, three runtime roles: `quelch ingest`, `quelch mcp`, and the operator CLI.
+One Rust binary, two service components, one declarative YAML:
+
+- **Quelch MCP** (Q-MCP) — the MCP server agents talk to. Typically runs in Azure (Container Apps), but doesn't have to.
+- **Quelch Ingest** (Q-Ingest) — the worker that pulls from each data source into Cosmos DB. Typically runs **close to the data source** — that's often on-prem when Confluence / Jira Data Center isn't reachable from Azure.
+
+You usually run one Q-MCP and one or more Q-Ingest workers. Plus the `quelch` operator CLI for planning and deploying.
 
 > **New here?** Start with **[docs/getting-started.md](docs/getting-started.md)** — a step-by-step happy-path walkthrough from `brew install` to a deployed MCP server an agent can talk to.
 
 ## Architecture overview
 
 ```
+   Wherever the source lives                Cosmos DB (Azure)              Azure
+─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─
                                               ┌─────────────────────────────┐
                                               │  Azure AI Search            │
                             ┌─────────────┐   │   ├─ Indexer (auto-vector)  │
-Sources ──quelch ingest──►  │  Cosmos DB  │◄──┤   └─ Knowledge Base         │
-                            │ (raw JSON)  │   │      (Agentic Retrieval)    │
+Sources ─── Q-Ingest ────►  │  Cosmos DB  │◄──┤   └─ Knowledge Base         │
+  (Jira / Confluence)       │ (raw JSON)  │   │      (Agentic Retrieval)    │
                             └──────┬──────┘   └─────────────┬───────────────┘
                                    │ query · get            │ search
                                    │ aggregate              │ (semantic)
                                    ▼                        ▼
                                  ┌────────────────────────────┐
-                                 │        quelch mcp          │
+                                 │           Q-MCP            │
                                  │ (per-tool routing; 5 tools)│
                                  └─────────────┬──────────────┘
                                                │  MCP Streamable HTTP
@@ -54,7 +61,9 @@ Sources ──quelch ingest──►  │  Cosmos DB  │◄──┤   └─ K
                               Agent (Copilot Studio / VS Code / Claude / Codex / …)
 ```
 
-The MCP server fans out **per tool**: `query`/`get`/`aggregate` hit Cosmos DB directly (exact, exhaustive); `search` routes through the Azure AI Search **Knowledge Base** (Agentic Retrieval — question decomposition, reranking, optional answer synthesis); `list_sources` answers from a cached schema catalog without any backend call. See [docs/architecture.md](docs/architecture.md) for full details.
+Q-Ingest can sit on-prem next to Confluence / Jira Data Center while Q-MCP runs in Azure — both write/read the same Cosmos account.
+
+Q-MCP fans out **per tool**: `query`/`get`/`aggregate` hit Cosmos DB directly (exact, exhaustive); `search` routes through the Azure AI Search **Knowledge Base** (Agentic Retrieval — question decomposition, reranking, optional answer synthesis); `list_sources` answers from a cached schema catalog without any backend call. See [docs/architecture.md](docs/architecture.md) for full details.
 
 ## Features
 
@@ -63,9 +72,9 @@ The MCP server fans out **per tool**: `query`/`get`/`aggregate` hit Cosmos DB di
 - **Five-tool MCP API** — `search` (Knowledge Base agentic retrieval), `query` (Cosmos SQL), `get` (point-read), `list_sources`, `aggregate`
 - **Incremental sync** — minute-resolution windows with safety lag, backfill resume, soft-delete reconciliation
 - **Agent bundle generator** — `quelch agent generate` produces grounded bundles for Copilot Studio, Claude Code, VS Code Copilot, Copilot CLI, Codex, and Markdown
-- **On-prem artefacts** — `quelch generate-deployment` writes docker-compose, systemd, or Kubernetes manifests; Quelch never SSHes anywhere
+- **On-prem-friendly Q-Ingest** — `quelch generate-deployment` writes docker-compose, systemd, or Kubernetes manifests so Q-Ingest can run next to your data sources; Quelch never SSHes anywhere
 - **Operator CLI** — `azure plan`, `azure deploy`, `azure indexer`, `azure logs` with Bicep + `az` shell-outs
-- **Rich TUI** — fleet dashboard showing live ingest state per worker, polling `quelch-meta`
+- **Rich TUI** — fleet dashboard showing live state per Q-Ingest worker, polling `quelch-meta`
 
 ## Installation
 

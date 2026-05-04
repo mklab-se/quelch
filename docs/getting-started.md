@@ -1,8 +1,13 @@
 # Getting started
 
-This walkthrough sets up a working Quelch deployment end-to-end: a Cosmos-DB-backed knowledge platform fed from your Jira and Confluence, with an MCP server that an agent (Copilot Studio, Claude Code, VS Code Copilot, GitHub Copilot CLI, or OpenAI Codex) can connect to.
+This walkthrough sets up a working Quelch deployment end-to-end: a Cosmos-DB-backed knowledge platform fed from your Jira and Confluence, with **Quelch MCP** (Q-MCP) exposing the data so an agent (Copilot Studio, Claude Code, VS Code Copilot, GitHub Copilot CLI, OpenAI Codex) can talk to it.
 
-It's the **happy path** for a single environment. For multi-environment, on-prem ingest, distributed deployments, and other shapes, see [deployment.md](deployment.md).
+Two service components, one config file:
+
+- **Quelch MCP** (Q-MCP) — the MCP server agents call. Most often runs in **Azure** (Container Apps), since it's a long-running HTTP service and benefits from Azure's identity / networking story. It doesn't have to.
+- **Quelch Ingest** (Q-Ingest) — the worker that pulls from each data source. Most often runs **close to the source** — for Atlassian Cloud that can be Azure too, but for Jira / Confluence Data Center it's typically on-prem next to those servers. Q-Ingest writes into the same Cosmos DB account that Q-MCP reads from.
+
+This walkthrough covers the **happy path**: Q-MCP in Azure + Q-Ingest in Azure with Atlassian Cloud sources. For mixed topologies (Q-MCP in Azure + Q-Ingest on-prem), see [deployment.md "Hybrid topology"](deployment.md#hybrid-topology).
 
 If you just want to **evaluate Quelch locally** without touching Azure or your real source systems, skip ahead to [Try it offline first with `quelch dev`](#try-it-offline-first-with-quelch-dev).
 
@@ -31,19 +36,32 @@ Quelch deliberately does **not** provision the Azure infrastructure it depends o
 
 ### Azure resources you must create before running `quelch init`
 
-All in the **same resource group** (this isn't strictly required by Azure, but it's what the docs and `quelch init` assume — saves you having to type cross-RG ARM IDs everywhere):
+What you actually need depends on **where Q-MCP and Q-Ingest will run**. Pick a topology, create the resources for it.
+
+All-in-Azure setups (the happy path this doc walks through): everything in the **same resource group** keeps the wizard simple. (Cross-RG references are supported for shared resources like a Foundry project owned by another team — that's covered in [deployment.md "Hybrid topology"](deployment.md#hybrid-topology).)
+
+#### Always required (regardless of where Q-MCP / Q-Ingest run)
 
 | Resource | Why Quelch needs it | Create with |
 |---|---|---|
-| **Resource group** | Container for everything below | `az group create -n <rg> -l <region>` |
-| **Cosmos DB account** (NoSQL API) | System of record. Quelch creates the database and containers inside. | `az cosmosdb create -n <name> -g <rg> --kind GlobalDocumentDB --capabilities EnableServerless` |
-| **Azure AI Search service** (Basic+, semantic ranker enabled) | Hosts the indexes and the agentic Knowledge Base. | `az search service create -n <name> -g <rg> --sku basic` then [enable semantic ranker](https://learn.microsoft.com/azure/search/semantic-how-to-enable-disable). |
+| **Resource group** | Container for the resources below | `az group create -n <rg> -l <region>` |
+| **Cosmos DB account** (NoSQL API) | System of record. Quelch creates the database and containers inside. Both Q-MCP and Q-Ingest read/write it. | `az cosmosdb create -n <name> -g <rg> --kind GlobalDocumentDB --capabilities EnableServerless` |
+| **Azure AI Search service** (Basic+, semantic ranker enabled) | Hosts the indexes and the agentic Knowledge Base that Q-MCP queries via the `search` tool. | `az search service create -n <name> -g <rg> --sku basic` then [enable semantic ranker](https://learn.microsoft.com/azure/search/semantic-how-to-enable-disable). |
 | **AI model provider** — pick one: |||
 | &nbsp;&nbsp;**Microsoft Foundry project** *(recommended)* | Holds the embedding deployment (used by the AI Search vectorizer) and the chat deployment (used by the Knowledge Base for query planning + answer synthesis). | Create in the [Foundry portal](https://ai.azure.com); deploy `text-embedding-3-large` + a supported chat model (e.g. `gpt-5-mini`). |
 | &nbsp;&nbsp;**Azure OpenAI account** | Same role as the Foundry project; older surface. | `az cognitiveservices account create -n <name> -g <rg> --kind OpenAI --sku S0 -l <region>`, then deploy embedding + chat models. |
-| **Container Apps environment** | Hosts the Quelch MCP and ingest Container Apps. | `az containerapp env create -n <name> -g <rg> -l <region>` (also creates a Log Analytics Workspace). |
+
+#### Required only when a deployment has `target: azure`
+
+If **at least one** of Q-MCP or Q-Ingest will run in Azure (the typical setup for Q-MCP):
+
+| Resource | Why Quelch needs it | Create with |
+|---|---|---|
+| **Container Apps environment** | Hosts the Q-MCP / Q-Ingest Container Apps. | `az containerapp env create -n <name> -g <rg> -l <region>` (also creates a Log Analytics Workspace). |
 | **Application Insights** | Telemetry destination for the Container Apps. | `az monitor app-insights component create --app <name> -g <rg> -l <region>` |
-| **Key Vault** | Holds the MCP API key and the Jira / Confluence credentials. Quelch writes secrets into it; the Container App reads them via managed identity. | `az keyvault create -n <globally-unique-name> -g <rg> -l <region>` |
+| **Key Vault** | Holds the Q-MCP API key and (if Q-Ingest runs in Azure) the Jira / Confluence credentials. The Container App reads them via managed identity. | `az keyvault create -n <globally-unique-name> -g <rg> -l <region>` |
+
+For **Q-Ingest running on-prem**, none of the three above apply — secrets live wherever your on-prem secret store does (env var / `.env` / k8s `Secret` / HashiCorp Vault / etc.) and `quelch generate-deployment` writes scaffolding for whichever supervisor you're using. See [deployment.md "Hybrid topology"](deployment.md#hybrid-topology).
 
 **Supported chat models** (per the Azure AI Search 2025-11-01-preview): `gpt-4o`, `gpt-4o-mini`, `gpt-4.1`, `gpt-4.1-nano`, `gpt-4.1-mini`, `gpt-5`, `gpt-5-nano`, `gpt-5-mini`. **Recommended: `gpt-5-mini`** — newer than the 4.1 family, in Microsoft's portal-validated subset, similar cost/latency tier. Use `gpt-5` if you need higher answer-synthesis quality and can absorb the cost; use `gpt-5-nano` for lowest latency when query complexity is moderate.
 
@@ -212,22 +230,36 @@ Once `quelch status` shows non-zero `documents_synced_total` for at least one so
 
 The MCP server is now running at the URL you'll find in Azure portal under your Container App's *Application Url* (also visible in `az containerapp show --query properties.configuration.ingress.fqdn`).
 
-The MCP API key was auto-generated and stored in Key Vault. Look up the names of the Key Vault and the MCP Container App from the Azure portal (or `az resource list -g <resource-group> -o table`), then:
+Quelch does not generate the API key for you — you set it in Key Vault before (or after) the first deploy. Pick a value, store it, point the Container App at it:
 
 ```bash
 RG=<your-resource-group>
 KV=<your-key-vault-name>          # e.g. quelch-prod-kv
 APP=<your-mcp-container-app-name> # e.g. quelch-prod-mcp
 
-QUELCH_MCP_API_KEY=$(az keyvault secret show --vault-name "$KV" --name mcp-api-key --query value -o tsv)
+# 1) Generate a key (any high-entropy value works):
+NEW_KEY=$(openssl rand -base64 32)
+
+# 2) Store it in Key Vault under the canonical name `quelch-mcp-api-key`:
+az keyvault secret set --vault-name "$KV" --name quelch-mcp-api-key --value "$NEW_KEY"
+
+# 3) Restart the Container App revision so it picks up the new secret value:
+az containerapp revision restart -g "$RG" -n "$APP" \
+  --revision $(az containerapp revision list -g "$RG" -n "$APP" \
+                 --query "[?properties.active].name | [0]" -o tsv)
+
+# 4) Read it back to call Q-MCP from your shell:
+QUELCH_MCP_API_KEY=$(az keyvault secret show --vault-name "$KV" --name quelch-mcp-api-key --query value -o tsv)
 MCP_URL=$(az containerapp show -n "$APP" -g "$RG" --query properties.configuration.ingress.fqdn -o tsv)
 
-# List available data sources (round-trip MCP connectivity check)
+# 5) List available data sources (round-trip Q-MCP connectivity check):
 curl -X POST "https://$MCP_URL/mcp" \
   -H "Authorization: Bearer $QUELCH_MCP_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 ```
+
+To **rotate** later: re-run steps 1–3. See [mcp-api.md "Setting and rotating the API key"](mcp-api.md#current--api-key) for the on-prem equivalents.
 
 If you see a JSON-RPC response listing five tools (`search`, `query`, `get`, `list_sources`, `aggregate`) you're connected.
 

@@ -34,23 +34,86 @@ https://quelch-prod-mcp.<region>.azurecontainerapps.io
 
 ### Current — API key
 
-The deployed Container App generates and stores an API key in Azure Key Vault. Clients pass it as a header:
+**Quelch MCP** (Q-MCP) reads its expected API key from the `QUELCH_MCP_API_KEY` environment variable at startup. Clients pass the same value as a bearer token:
 
 ```
 Authorization: Bearer <api-key>
 ```
 
-Retrieve the key with:
+If `QUELCH_MCP_API_KEY` is **not** set, Q-MCP runs in **dev mode** and accepts every request unauthenticated — useful for `quelch dev`, but never what you want in production. Always set the env var when running Q-MCP for real.
+
+Quelch does not generate the API key for you (yet). You set it once at deploy time and rotate it the same way.
+
+#### Generating a key
 
 ```bash
-quelch agent generate --target <...>     # the bundle includes the key
-# or
-az keyvault secret show --vault-name quelch-prod-kv --name mcp-api-key
+NEW_KEY=$(openssl rand -base64 32)
 ```
+
+Use whatever your org standardises on — 32 random base64 bytes is plenty.
+
+#### Setting the key — Azure-hosted Q-MCP
+
+The generated Bicep wires `QUELCH_MCP_API_KEY` to a Container App secret reference (`mcp-api-key`) that points at a Key Vault secret named **`quelch-mcp-api-key`**. You populate that secret directly in Key Vault — Quelch references whatever value is there at deploy / restart time.
+
+```bash
+# First time:
+NEW_KEY=$(openssl rand -base64 32)
+az keyvault secret set \
+  --vault-name <your-kv> \
+  --name quelch-mcp-api-key \
+  --value "$NEW_KEY"
+
+quelch azure deploy        # Container App picks up the secret on revision creation
+```
+
+Make sure your operator identity has the **Key Vault Secrets Officer** role on the vault, or the `secret set` call will be rejected.
+
+#### Setting the key — on-prem Q-MCP
+
+The on-prem deployment artefacts (`quelch generate-deployment --target docker | systemd | k8s`) emit a placeholder for `QUELCH_MCP_API_KEY` you fill in by hand:
+
+```bash
+# docker compose:
+echo "QUELCH_MCP_API_KEY=$(openssl rand -base64 32)" >> .env
+docker compose up -d
+
+# systemd:
+sudo sed -i "s|QUELCH_MCP_API_KEY=.*|QUELCH_MCP_API_KEY=$(openssl rand -base64 32)|" \
+  /etc/quelch/quelch-mcp-onprem.env
+sudo systemctl restart quelch-mcp-onprem
+
+# kubernetes (assuming the generated Secret named quelch-mcp-secrets):
+kubectl create secret generic quelch-mcp-secrets \
+  --from-literal=QUELCH_MCP_API_KEY="$(openssl rand -base64 32)" \
+  --dry-run=client -o yaml | kubectl apply -f -
+kubectl rollout restart deploy/quelch-mcp
+```
+
+#### Reading the key back (e.g. to configure an agent)
+
+```bash
+# Azure:
+az keyvault secret show \
+  --vault-name <your-kv> \
+  --name quelch-mcp-api-key \
+  --query value -o tsv
+
+# On-prem:
+grep QUELCH_MCP_API_KEY /etc/quelch/quelch-mcp-onprem.env  # or wherever you stored it
+```
+
+Or generate an [agent bundle](agent-generation.md) — `quelch agent generate` includes the key in the bundle when running interactively against a deployed instance.
+
+#### Rotating the key
+
+Same as setting, then trigger a restart. On Container Apps the revision auto-rolls when secret values referenced by `keyVaultUrl` change, but it can take a minute; force it with `az containerapp revision restart` if needed. On-prem: restart whichever supervisor (docker / systemd / k8s) owns the process.
+
+A rolling rotation (where the old key still works for a grace period) is on the roadmap but not implemented today — a rotation is an immediate cutover.
 
 ### Future — Microsoft Entra ID
 
-When `mcp.auth.mode: "entra"` is set, the Container App uses Container Apps' built-in Easy Auth integration. Agent platforms (Copilot Studio, VS Code MCP) acquire a token for the Quelch app registration and present it as a bearer token.
+When `mcp.auth.mode: "entra"` is set, the Container App uses Container Apps' built-in Easy Auth integration. Agent platforms (Copilot Studio, VS Code MCP) acquire a token for the Quelch app registration and present it as a bearer token. This eliminates the manual key handling above.
 
 Until you have an Entra app registration to use, stay on `api_key`.
 

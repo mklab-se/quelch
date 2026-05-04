@@ -12,14 +12,14 @@ Before your first `quelch azure deploy` you need:
 1. **The Quelch CLI installed** locally (`brew install mklab-se/tap/quelch` or `cargo install quelch`).
 2. **The Azure CLI installed and logged in** (`az login`). Quelch uses your `az` credentials for all Azure operations — there's no separate Quelch identity to provision.
 3. **An Azure subscription** that you have at least the `Contributor` role on the resource group. `Owner` (or User Access Administrator) is needed if you want Quelch to grant the Container App's managed identity RBAC on Cosmos / AI Search / Key Vault / the AI provider — see [Authentication chain](#authentication-chain) below. If you only have `Contributor`, set `azure.skip_role_assignments: true` in the config and have someone with the right role apply the role assignments separately.
-4. **All required Azure resources pre-provisioned** in the same resource group: Cosmos DB account, AI Search service (Basic+ with semantic ranker enabled), a Microsoft Foundry project or Azure OpenAI account containing your embedding + chat deployments, a Container Apps environment, an Application Insights component, and a Key Vault. See [getting-started.md "Prerequisites"](getting-started.md#0-prerequisites) for the exact `az` commands. **Quelch does not provision any of these — it only configures their internals and creates the Container App that runs ingest/MCP.**
-5. **Source-system credentials** in your local environment as env vars referenced by `quelch.yaml`:
-   - Jira Cloud: `JIRA_EMAIL`, `JIRA_API_TOKEN`.
-   - Jira Data Center: `JIRA_PAT`.
-   - Confluence Cloud: `CONFLUENCE_EMAIL`, `CONFLUENCE_API_TOKEN`.
-   - Confluence Data Center: `CONFLUENCE_PAT`.
+4. **The Azure resources Q-MCP and Q-Ingest depend on, pre-provisioned**:
+   - **Always required**: Cosmos DB account, AI Search service (Basic+ with semantic ranker enabled), a Foundry project or Azure OpenAI account holding your embedding + chat deployments.
+   - **Required only if any deployment has `target: azure`**: Container Apps environment, Application Insights, Key Vault.
 
-   Quelch reads these env vars at deploy time, writes them into the pre-existing Key Vault, and configures the Container App to read them from Key Vault at runtime. Your laptop's env vars never touch the deployed container directly.
+   See [getting-started.md "Prerequisites"](getting-started.md#0-prerequisites) for the exact `az` commands. **Quelch does not provision any of these** — it only configures their internals and deploys the Container App for whichever Q-MCP / Q-Ingest run in Azure.
+5. **Source-system credentials**. Where they live depends on where Q-Ingest runs:
+   - **Q-Ingest in Azure**: set `JIRA_EMAIL` / `JIRA_API_TOKEN` / `JIRA_PAT` / `CONFLUENCE_*` env vars in your local shell. Quelch reads them at `azure deploy` time, writes them into Key Vault, and the Container App reads them from Key Vault via managed identity. Your laptop's env vars never reach the deployed container.
+   - **Q-Ingest on-prem**: `quelch generate-deployment` emits `.env.example` / systemd unit / k8s `Secret` scaffolding. You fill in the credentials directly on the on-prem host using whichever secret store you already use (`.env`, sealed-secrets, HashiCorp Vault, etc.). Azure Key Vault is not in the picture for on-prem Q-Ingest.
 6. **A Git repo** for `quelch.yaml` (and the generated `.quelch/azure/` and `rigg/` directories).
 
 Then:
@@ -326,33 +326,38 @@ There is no `quelch update` for on-prem workers. The way to update is:
 
 The new worker reads its cursor from `quelch-meta` on startup; no data is lost.
 
-## Hybrid topology — typical setup
+## Hybrid topology
 
-Real installations almost always combine both:
+Real installations almost always combine both — **Q-MCP in Azure** (it's an HTTP service agents call from anywhere; Container Apps gives it identity, scaling, and a public FQDN for free) plus **Q-Ingest near each data source** (Jira / Confluence Data Center installs typically aren't reachable from Azure, so the worker has to live on-prem). Atlassian Cloud sources can run their Q-Ingest in Azure alongside Q-MCP if you prefer.
 
 ```
-On-prem hosts                           Azure
-─────────────                           ──────────────────────
-quelch ingest (Jira DC, Confluence DC)  ─►  Cosmos DB
+On-prem hosts                          Azure (single Cosmos + AI Search backend)
+─────────────                          ──────────────────────────────────────
+Q-Ingest  (Jira DC, Confluence DC)     ─►  Cosmos DB
                                               │
                                               ▼
                                         AI Search Indexer
                                               │
                                               ▼
-                                        AI Search Index
+                                        AI Search Index + Knowledge Base
                                               ▲
                                               │
-quelch ingest (Jira Cloud, Conf Cloud)  ─►  Cosmos DB
+Q-Ingest  (Atlassian Cloud, optional)  ─►  Cosmos DB
                                               │
                                               ▼
-                                        Quelch MCP (Container App)
+                                            Q-MCP  (Container App)
                                               ▲
-                                              │ Streamable HTTP
+                                              │ MCP Streamable HTTP
                                               │
-                                       Copilot Studio agents
+                                          Copilot Studio / VS Code / Claude / …
 ```
 
-One config file describes both halves. `quelch azure deploy` handles the cloud half. `quelch generate-deployment` plus a `git pull` + `docker compose up -d` on each host handles the on-prem half.
+One `quelch.yaml` describes both halves. `quelch azure deploy` handles whichever deployments have `target: azure` (typically Q-MCP, plus any Q-Ingest you've put in Azure). `quelch generate-deployment <onprem-deployment>` produces docker-compose / systemd / k8s artefacts the on-prem operator runs themselves — Quelch never SSHes anywhere.
+
+**Secrets in a hybrid setup**:
+- The Q-MCP API key lives in Azure Key Vault (since Q-MCP is in Azure) — see [mcp-api.md "Setting and rotating the API key"](mcp-api.md#current--api-key).
+- Each on-prem Q-Ingest holds its own source PAT(s) locally (`.env` / systemd EnvironmentFile / k8s `Secret`). Azure Key Vault is irrelevant for those — the on-prem hosts need a credential where they run, not where the Container App runs.
+- Cosmos DB credentials: each Q-Ingest authenticates with the Cosmos primary key (or a dedicated service principal) configured in its local secret store; Q-MCP in Azure uses managed identity. Both ultimately resolve to RBAC on the same Cosmos account.
 
 ## Troubleshooting
 

@@ -1,6 +1,13 @@
 # Quelch
 
-Quelch ingests data from external sources (Jira, Confluence) into **Cosmos DB** as the system of record, lets **Azure AI Search** index it (via the embedded [rigg](https://github.com/mklab-se/rigg) library — indexes, skillsets, indexers, knowledge sources, knowledge bases), and exposes a **five-tool MCP server** (Streamable HTTP) that agents call directly. The MCP fans out per tool: `search` → AI Search **Knowledge Base** (Agentic Retrieval); `query` / `get` / `aggregate` → Cosmos DB; `list_sources` → cached schema catalog.
+Quelch ingests data from external sources (Jira, Confluence) into **Cosmos DB** as the system of record, lets **Azure AI Search** index it (via the embedded [rigg](https://github.com/mklab-se/rigg) library — indexes, skillsets, indexers, knowledge sources, knowledge bases), and exposes a **five-tool MCP server** (Streamable HTTP) that agents call directly.
+
+**Two service components, canonical names**:
+
+- **Quelch MCP** (Q-MCP) — the MCP server. Typically runs in Azure (Container Apps), but doesn't have to. Fans out per tool: `search` → AI Search **Knowledge Base** (Agentic Retrieval); `query` / `get` / `aggregate` → Cosmos DB direct; `list_sources` → cached schema catalog.
+- **Quelch Ingest** (Q-Ingest) — the worker. Typically runs **close to each data source** — Atlassian Cloud sources can run alongside Q-MCP in Azure, but Jira / Confluence Data Center usually means an on-prem Q-Ingest pointed at the same Cosmos account.
+
+Use these names consistently in code, comments, log messages, and prose. Spell out the full form on first mention in each doc / file, then the short form is fine.
 
 ## Build & Test Commands
 
