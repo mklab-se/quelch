@@ -6,6 +6,64 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-05-04
+
+### Security
+
+- **MCP API-key comparison**: replaced byte-string `!=` with a constant-time
+  helper to close a timing-attack vector that could let a network-adjacent
+  attacker recover the configured key.
+- **OData `LIKE` translation** (`mcp/filter/odata.rs`): the field name was
+  embedded into `search.ismatch(...)` unescaped, so a crafted `where` clause
+  could inject OData syntax. Both the field and the user-supplied pattern
+  are now escaped through `escape_odata_string`.
+- **`order_by.field` SQL embedding** (`mcp/tools/query.rs`): added an
+  allowlist validator (`is_valid_field_path`) that rejects anything outside
+  `[A-Za-z0-9_.]` before the field is interpolated into the Cosmos SQL
+  string. Five new unit tests cover the rejected forms.
+- **Bicep injection guard** (`config/validate.rs`): user-supplied identifiers
+  flowing into generated Bicep — `azure.resource_group`, `azure.region`,
+  `naming.prefix`/`environment`, Cosmos field names, AI Search service name,
+  every container name, source names, and deployment names — are now
+  rejected if they contain `'` or `\`.
+
+### Fixed
+
+- **Cosmos continuation token** (`cosmos/client.rs`): the token was being
+  stored as the `Debug` representation of the header struct (`{c:?}`), which
+  made every paginated query restart at page one. Token is now read via
+  `Header::value().as_str()`. Required adding `azure_core` to the workspace
+  dependencies.
+- **MCP `tools/call` handler**: replaced four `serde_json::to_value(...).unwrap()`
+  / `to_string(...).unwrap()` calls with a JSON-RPC internal-error helper
+  so the server can no longer panic on a non-serialisable response.
+- **Ingest non-fatal error logging**: companion fetch/upsert in
+  `ingest/cycle.rs`, cursor-save-after-failure in `ingest/backfill.rs`, and
+  reconciliation metadata in `ingest/reconcile.rs` were silently dropping
+  errors via `let _ = ...` / `.ok()`. They now log via `tracing::warn!` so
+  recurring drift is visible to operators. Behaviour is unchanged.
+
+### Changed
+
+- **Dead code removal**: `crates/quelch/src/copilot.rs` (35 lines, no
+  callers) deleted; the stub `Sync`/`Watch`/`Setup`/`ResetIndexes`/`Sim`/
+  `GenerateAgent` CLI variants and their bail handlers are gone; the unused
+  `sim::run` stub is gone. `crates/quelch/src/mcp/handlers/tools_call.rs`
+  picked up a `to_value_or_internal` helper to keep the dispatcher tidy.
+- **Documentation**: dropped the remaining v1/v2 framing in `architecture.md`,
+  `configuration.md`, `deployment.md` and replaced "What carries over from v1"
+  with a current module map. Fixed `getting-started.md` deployment-name
+  reference, MCP-smoke-test command, and clarified `--no-tui` is a global
+  flag. Re-tagged stale `TODO(v2 follow-up)` / `TODO(phase-11)` markers in
+  `mcp/tools/*` to point at what they actually track (`TODO(perf)`,
+  `TODO(multi-container)`, `TODO(rigg-client)`, etc.).
+- **CI/build hygiene**: `ci.yml` now sets `permissions: contents: read`,
+  uses `cancel-in-progress` concurrency, and runs `cargo clippy --all-targets`
+  in a single job. `release.yml` aligns `actions/upload-artifact` /
+  `download-artifact` versions and fails hard if the Homebrew-tap update
+  fails (it used to swallow the error). Dockerfile no longer hides stderr
+  in the dependency-cache step.
+
 ## [0.9.3] - 2026-05-04
 
 ### Fixed
