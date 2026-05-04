@@ -241,6 +241,7 @@ fn build_dev_config(mock_jira_url: &str, mock_confluence_url: &str, _mcp_port: u
         },
         cosmos: CosmosConfig {
             account: None,
+            account_resource_group: None,
             database: "quelch".into(),
             containers: Default::default(),
             meta_container: "quelch-meta".into(),
@@ -250,6 +251,7 @@ fn build_dev_config(mock_jira_url: &str, mock_confluence_url: &str, _mcp_port: u
         ai: AiConfig {
             provider: AiProvider::AzureOpenai,
             endpoint: "https://dev.openai.azure.com".into(),
+            resource_group: None,
             embedding: AiEmbeddingConfig {
                 deployment: "dev-te".into(),
                 dimensions: 1536,

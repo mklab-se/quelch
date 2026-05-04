@@ -103,16 +103,32 @@ pub async fn check_all(config: &Config) -> Report {
     let mut checks = Vec::new();
 
     let sub = &config.azure.subscription_id;
-    let rg = &config.azure.resource_group;
 
-    // Cosmos DB account (always required — the system of record).
-    checks.push(check_cosmos(sub, rg, config.cosmos.account.as_deref()).await);
+    // Cosmos DB account (always required — the system of record). May live in
+    // a different RG than the rest of the deployment if `cosmos.account_resource_group`
+    // is set.
+    checks.push(
+        check_cosmos(
+            sub,
+            config.cosmos_resource_group(),
+            config.cosmos.account.as_deref(),
+        )
+        .await,
+    );
 
-    // Azure AI Search service (always required — exposes the MCP search tool).
-    checks.push(check_search(sub, rg, config.search.service.as_deref()).await);
+    // Azure AI Search service (always required — exposes Q-MCP's search tool).
+    checks.push(
+        check_search(
+            sub,
+            config.search_resource_group(),
+            config.search.service.as_deref(),
+        )
+        .await,
+    );
 
     // AI provider (Foundry or Azure OpenAI) — must exist regardless of role.
-    checks.push(check_ai_provider(sub, rg, config).await);
+    // Often lives in a shared / centrally-managed RG.
+    checks.push(check_ai_provider(sub, config.ai_resource_group(), config).await);
 
     // Cloud-only prerequisites: ACA env, App Insights, Key Vault.
     let has_azure_deployment = config
@@ -121,9 +137,12 @@ pub async fn check_all(config: &Config) -> Report {
         .any(|d| matches!(d.target, DeploymentTarget::Azure));
 
     if has_azure_deployment {
-        checks.push(check_container_apps_env(sub, rg).await);
-        checks.push(check_application_insights(sub, rg).await);
-        checks.push(check_key_vault(sub, rg).await);
+        checks
+            .push(check_container_apps_env(sub, config.container_apps_env_resource_group()).await);
+        checks.push(
+            check_application_insights(sub, config.application_insights_resource_group()).await,
+        );
+        checks.push(check_key_vault(sub, config.key_vault_resource_group()).await);
     }
 
     // For MCP deployments specifically, note the Container App will be

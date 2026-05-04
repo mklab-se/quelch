@@ -44,6 +44,7 @@ pub fn minimal_template() -> Config {
         ai: AiConfig {
             provider: AiProvider::Foundry,
             endpoint: "https://${FOUNDRY_PROJECT}.cognitiveservices.azure.com".to_string(),
+            resource_group: None,
             embedding: AiEmbeddingConfig {
                 deployment: "text-embedding-3-large".to_string(),
                 dimensions: 3072,

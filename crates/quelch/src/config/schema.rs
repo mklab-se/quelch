@@ -37,6 +37,61 @@ pub struct Config {
 // Azure
 // ---------------------------------------------------------------------------
 
+impl Config {
+    /// Return the effective resource group for the Cosmos DB account.
+    /// Falls back to `azure.resource_group` if no override is set.
+    pub fn cosmos_resource_group(&self) -> &str {
+        self.cosmos
+            .account_resource_group
+            .as_deref()
+            .unwrap_or(&self.azure.resource_group)
+    }
+
+    /// Return the effective resource group for the AI Search service.
+    pub fn search_resource_group(&self) -> &str {
+        self.search
+            .service_resource_group
+            .as_deref()
+            .unwrap_or(&self.azure.resource_group)
+    }
+
+    /// Return the effective resource group for the AI provider (Foundry
+    /// project / Azure OpenAI account).
+    pub fn ai_resource_group(&self) -> &str {
+        self.ai
+            .resource_group
+            .as_deref()
+            .unwrap_or(&self.azure.resource_group)
+    }
+
+    /// Return the effective resource group for the Container Apps environment.
+    pub fn container_apps_env_resource_group(&self) -> &str {
+        self.azure
+            .resources
+            .container_apps_env_resource_group
+            .as_deref()
+            .unwrap_or(&self.azure.resource_group)
+    }
+
+    /// Return the effective resource group for the Application Insights component.
+    pub fn application_insights_resource_group(&self) -> &str {
+        self.azure
+            .resources
+            .application_insights_resource_group
+            .as_deref()
+            .unwrap_or(&self.azure.resource_group)
+    }
+
+    /// Return the effective resource group for the Key Vault.
+    pub fn key_vault_resource_group(&self) -> &str {
+        self.azure
+            .resources
+            .key_vault_resource_group
+            .as_deref()
+            .unwrap_or(&self.azure.resource_group)
+    }
+}
+
 /// Azure subscription, resource group, region, and resource naming config.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AzureConfig {
@@ -58,11 +113,19 @@ pub struct AzureConfig {
 /// References to pre-existing Azure resources that Quelch needs to bind to
 /// but does not provision itself. Each field defaults to a name derived from
 /// `naming.prefix` + `naming.environment` if left unset.
+///
+/// Each resource also has an optional `_resource_group` sibling that
+/// overrides [`AzureConfig::resource_group`] for that resource — useful when
+/// shared resources (e.g. a Foundry project owned by another team) live in
+/// a different resource group than the rest of the deployment.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct AzureExistingResources {
     pub container_apps_env: Option<String>,
+    pub container_apps_env_resource_group: Option<String>,
     pub application_insights: Option<String>,
+    pub application_insights_resource_group: Option<String>,
     pub key_vault: Option<String>,
+    pub key_vault_resource_group: Option<String>,
 }
 
 /// Resource naming prefixes used when Quelch auto-generates Azure resource names.
@@ -80,6 +143,10 @@ pub struct NamingConfig {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CosmosConfig {
     pub account: Option<String>,
+    /// Override `azure.resource_group` for the Cosmos account lookup.
+    /// Useful when the Cosmos account is shared across teams and lives
+    /// in a separate resource group.
+    pub account_resource_group: Option<String>,
     #[serde(default = "default_cosmos_database")]
     pub database: String,
     #[serde(default)]
@@ -94,6 +161,7 @@ impl Default for CosmosConfig {
     fn default() -> Self {
         Self {
             account: None,
+            account_resource_group: None,
             database: default_cosmos_database(),
             containers: CosmosContainersDefaults::default(),
             meta_container: default_meta_container(),
@@ -188,6 +256,8 @@ fn default_throughput_mode() -> String {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SearchConfig {
     pub service: Option<String>,
+    /// Override `azure.resource_group` for the AI Search service lookup.
+    pub service_resource_group: Option<String>,
     #[serde(default = "default_search_sku")]
     pub sku: String,
     #[serde(default)]
@@ -198,6 +268,7 @@ impl Default for SearchConfig {
     fn default() -> Self {
         Self {
             service: None,
+            service_resource_group: None,
             sku: default_search_sku(),
             indexer: IndexerConfig::default(),
         }
@@ -266,6 +337,10 @@ fn default_indexer_interval() -> String {
 pub struct AiConfig {
     pub provider: AiProvider,
     pub endpoint: String,
+    /// Override `azure.resource_group` for the AI provider lookup. Common in
+    /// enterprise setups where a single Foundry project / Azure OpenAI
+    /// account is shared across many workloads in a separate resource group.
+    pub resource_group: Option<String>,
     pub embedding: AiEmbeddingConfig,
     pub chat: AiChatConfig,
 }

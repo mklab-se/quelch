@@ -207,6 +207,7 @@ pub async fn ai_section(azure: &AzureConfig) -> anyhow::Result<AiConfig> {
     Ok(AiConfig {
         provider,
         endpoint,
+        resource_group: None,
         embedding,
         chat,
     })

@@ -44,6 +44,43 @@ azure:
 
 `resources.*` lets you point at resources that don't follow the naming convention. **All three plus `cosmos.account` and `search.service` must point at resources that already exist** — Quelch references them via Bicep `existing` and does not provision them.
 
+### Cross-resource-group references
+
+Each external resource Quelch references has an optional `_resource_group` sibling that overrides `azure.resource_group` for **just that resource**. Useful when a shared resource — most commonly the AI provider — lives in a different resource group than the workload's primary RG.
+
+```yaml
+azure:
+  resource_group: "rg-quelch-prod"        # default RG; everything below uses this unless overridden
+  resources:
+    container_apps_env: "quelch-prod-cae"
+    # container_apps_env_resource_group: "rg-shared-platform"
+    application_insights: "quelch-prod-appi"
+    # application_insights_resource_group: "rg-shared-platform"
+    key_vault: "quelch-prod-kv"
+    # key_vault_resource_group: "rg-shared-secrets"
+
+cosmos:
+  account: "quelch-prod-cosmos"
+  # account_resource_group: "rg-data"
+
+search:
+  service: "quelch-prod-search"
+  # service_resource_group: "rg-platform-search"
+
+ai:
+  provider: foundry
+  endpoint: "https://shared-foundry.cognitiveservices.azure.com"
+  resource_group: "rg-shared-ai"          # the typical case — Foundry shared across teams
+```
+
+The override is honoured by:
+
+- **`quelch init` discovery** — `az` queries scope to the override RG when picking from existing resources.
+- **`quelch validate` prerequisite check** — looks for the resource in the override RG.
+- **Bicep generator** — emits `scope: resourceGroup('rg-other')` on the `existing` block so role assignments target the right resource. The `quelch azure deploy` operator must have appropriate role assignment permissions in each override RG (or use `skip_role_assignments: true` and have someone else apply them manually).
+
+Cross-subscription references (resources in a different subscription, not just a different RG) are not yet supported — request it if you need it.
+
 `skip_role_assignments: true` suppresses the `Microsoft.Authorization/roleAssignments` blocks in the generated Bicep. Use this when you don't have Owner / User Access Administrator on the target resources; ask someone who does to grant `Cosmos DB Built-in Data Contributor`, `Search Index Data Contributor`, `Key Vault Secrets User`, and `Cognitive Services User` to the deployment's managed identity manually.
 
 ## `cosmos`

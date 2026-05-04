@@ -113,17 +113,21 @@ param location string = resourceGroup().location
 // ---------------------------------------------------------------------------
 
 fn render_existing_resources(config: &Config, prefix: &str, env: &str) -> String {
+    let default_rg = &config.azure.resource_group;
+
     let cosmos_name = config
         .cosmos
         .account
         .clone()
         .unwrap_or_else(|| format!("{prefix}-{env}-cosmos"));
+    let cosmos_scope = scope_clause(default_rg, config.cosmos_resource_group());
 
     let search_name = config
         .search
         .service
         .clone()
         .unwrap_or_else(|| format!("{prefix}-{env}-search"));
+    let search_scope = scope_clause(default_rg, config.search_resource_group());
 
     let kv_name = config
         .azure
@@ -131,6 +135,7 @@ fn render_existing_resources(config: &Config, prefix: &str, env: &str) -> String
         .key_vault
         .clone()
         .unwrap_or_else(|| format!("{prefix}-{env}-kv"));
+    let kv_scope = scope_clause(default_rg, config.key_vault_resource_group());
 
     let cae_name = config
         .azure
@@ -138,6 +143,7 @@ fn render_existing_resources(config: &Config, prefix: &str, env: &str) -> String
         .container_apps_env
         .clone()
         .unwrap_or_else(|| format!("{prefix}-{env}-cae"));
+    let cae_scope = scope_clause(default_rg, config.container_apps_env_resource_group());
 
     let appi_name = config
         .azure
@@ -145,8 +151,10 @@ fn render_existing_resources(config: &Config, prefix: &str, env: &str) -> String
         .application_insights
         .clone()
         .unwrap_or_else(|| format!("{prefix}-{env}-appi"));
+    let appi_scope = scope_clause(default_rg, config.application_insights_resource_group());
 
     let ai_account_name = ai_account_name_from_endpoint(&config.ai.endpoint);
+    let ai_scope = scope_clause(default_rg, config.ai_resource_group());
 
     let ai_resource_block = match config.ai.provider {
         // Both classic Azure OpenAI accounts (kind=OpenAI) and Foundry projects
@@ -155,7 +163,7 @@ fn render_existing_resources(config: &Config, prefix: &str, env: &str) -> String
         AiProvider::AzureOpenai | AiProvider::Foundry => format!(
             "resource aiAccount 'Microsoft.CognitiveServices/accounts@2024-10-01' existing = {{\n\
              \x20\x20name: '{ai_account_name}'\n\
-             }}\n"
+             {ai_scope}}}\n"
         ),
     };
 
@@ -166,26 +174,37 @@ fn render_existing_resources(config: &Config, prefix: &str, env: &str) -> String
          \n\
          resource cosmos 'Microsoft.DocumentDB/databaseAccounts@2024-05-15' existing = {{\n\
          \x20\x20name: '{cosmos_name}'\n\
-         }}\n\
+         {cosmos_scope}}}\n\
          \n\
          resource search 'Microsoft.Search/searchServices@2024-03-01-preview' existing = {{\n\
          \x20\x20name: '{search_name}'\n\
-         }}\n\
+         {search_scope}}}\n\
          \n\
          resource kv 'Microsoft.KeyVault/vaults@2024-04-01-preview' existing = {{\n\
          \x20\x20name: '{kv_name}'\n\
-         }}\n\
+         {kv_scope}}}\n\
          \n\
          resource cae 'Microsoft.App/managedEnvironments@2024-03-01' existing = {{\n\
          \x20\x20name: '{cae_name}'\n\
-         }}\n\
+         {cae_scope}}}\n\
          \n\
          resource appi 'Microsoft.Insights/components@2020-02-02' existing = {{\n\
          \x20\x20name: '{appi_name}'\n\
-         }}\n\
+         {appi_scope}}}\n\
          \n\
          {ai_resource_block}"
     )
+}
+
+/// Render the optional `scope: resourceGroup('rg-name')` line for a Bicep
+/// `existing` block. Returns an empty string when the resource lives in the
+/// deployment's default resource group (no `scope` line needed).
+fn scope_clause(default_rg: &str, effective_rg: &str) -> String {
+    if default_rg == effective_rg {
+        String::new()
+    } else {
+        format!("  scope: resourceGroup('{effective_rg}')\n")
+    }
 }
 
 /// Extract the Azure resource name from an AI provider endpoint URL.
