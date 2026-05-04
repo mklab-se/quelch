@@ -24,7 +24,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Validate => cmd_validate(&cli.config),
+        Commands::Validate => cmd_validate(&cli.config).await,
         Commands::EffectiveConfig { name } => cmd_effective_config(&cli.config, &name),
         Commands::Init {
             non_interactive,
@@ -270,7 +270,7 @@ fn parse_where_arg(
     Ok(None)
 }
 
-fn cmd_validate(config_path: &Path) -> Result<()> {
+async fn cmd_validate(config_path: &Path) -> Result<()> {
     let config = config::load_config(config_path)?;
     println!("Config is valid.");
     println!("  Azure subscription: {}", config.azure.subscription_id);
@@ -284,6 +284,10 @@ fn cmd_validate(config_path: &Path) -> Result<()> {
     for deployment in &config.deployments {
         println!("    - {}", deployment.name);
     }
+
+    let report = quelch::init::prereq::check_all(&config).await;
+    report.print();
+
     Ok(())
 }
 
