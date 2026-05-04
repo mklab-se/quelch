@@ -39,9 +39,9 @@ One Rust binary, one YAML config file, three runtime roles: `quelch ingest`, `qu
 Sources ──quelch ingest──►  │  Cosmos DB  │◄──┤   └─ Knowledge Base         │
                             │ (raw JSON)  │   │      (Agentic Retrieval)    │
                             └──────┬──────┘   └─────────────┬───────────────┘
-                                   │ query · get             │ search
-                                   │ aggregate               │ (semantic)
-                                   ▼                         ▼
+                                   │ query · get            │ search
+                                   │ aggregate              │ (semantic)
+                                   ▼                        ▼
                                  ┌────────────────────────────┐
                                  │        quelch mcp          │
                                  │ (per-tool routing; 5 tools)│
