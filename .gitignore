@@ -9,6 +9,9 @@ quelch.yaml
 /.quelch/
 /rigg/
 
+# Claude Code local-only state
+/.claude/worktrees/
+
 # Developer scratch
 /tmp.txt
 /build_output*.json
