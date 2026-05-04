@@ -2264,7 +2264,7 @@ dependencies = [
 
 [[package]]
 name = "quelch"
-version = "0.9.1"
+version = "0.9.2"
 dependencies = [
  "ailloy",
  "anyhow",

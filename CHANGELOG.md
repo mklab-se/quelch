@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-05-04
+
+### Fixed
+
+- Clippy 1.95 lints that v0.9.1's CI hit unexpectedly: `unnecessary_sort_by`,
+  `field_reassign_with_default` (28 sites), `bool_assert_comparison`,
+  `needless_borrow`, `await_holding_lock` (annotated where dropping the guard
+  would race), plus a handful of unused imports / dead code. No behavioural
+  changes.
+
+### Changed
+
+- MSRV bumped from 1.94.1 → 1.95.0. The CI workflows use
+  `dtolnay/rust-toolchain@stable` so they auto-track latest stable; the MSRV
+  is now consistent with that.
+
 ## [0.9.1] - 2026-05-04
 
 ### Fixed
