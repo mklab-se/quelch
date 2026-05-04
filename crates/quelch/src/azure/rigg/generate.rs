@@ -22,7 +22,7 @@ use rigg_core::resources::{
     skillset::{Skill, SkillInput, SkillOutput, Skillset},
 };
 
-use crate::config::{Config, data_sources};
+use crate::config::{Config, OutputMode, ReasoningEffort, data_sources};
 
 /// Errors that can occur during rigg file generation.
 #[derive(Debug, Error)]
@@ -119,7 +119,7 @@ pub fn all(config: &Config) -> Result<GeneratedRiggFiles, GenerateError> {
 
     // Generate one knowledge base per MCP deployment.
     for (deployment_name, ks_names) in &ks_by_deployment {
-        let kb = build_knowledge_base(deployment_name, ks_names)?;
+        let kb = build_knowledge_base(deployment_name, ks_names, config)?;
         let kb_name = format!("{deployment_name}-kb");
         let yaml = to_yaml_kb(&kb, &kb_name)?;
         files.knowledge_bases.insert(kb_name, yaml);
@@ -134,7 +134,7 @@ pub fn all(config: &Config) -> Result<GeneratedRiggFiles, GenerateError> {
 
 /// Build an `Index` for the given container and source kind.
 fn build_index(container: &str, kind: &str, config: &Config) -> Result<Index, GenerateError> {
-    let dimensions = config.openai.embedding_dimensions as i32;
+    let dimensions = config.ai.embedding.dimensions as i32;
     let vector_profile = "default-vector-profile";
 
     let mut fields = build_common_fields();
@@ -183,9 +183,9 @@ fn build_index(container: &str, kind: &str, config: &Config) -> Result<Index, Ge
                 "name": "azure-openai-vectorizer",
                 "kind": "azureOpenAI",
                 "azureOpenAIParameters": {
-                    "resourceUri": config.openai.endpoint,
-                    "deploymentId": config.openai.embedding_deployment,
-                    "modelName": config.openai.embedding_deployment
+                    "resourceUri": config.ai.endpoint,
+                    "deploymentId": config.ai.embedding.deployment,
+                    "modelName": config.ai.embedding.deployment
                 }
             })]),
             compressions: None,
@@ -791,14 +791,14 @@ fn build_skillset(container: &str, kind: &str, config: &Config) -> Result<Skills
         }],
         extra: {
             let mut m = std::collections::HashMap::new();
-            m.insert("resourceUri".to_string(), json!(config.openai.endpoint));
+            m.insert("resourceUri".to_string(), json!(config.ai.endpoint));
             m.insert(
                 "deploymentId".to_string(),
-                json!(config.openai.embedding_deployment),
+                json!(config.ai.embedding.deployment),
             );
             m.insert(
                 "modelName".to_string(),
-                json!(config.openai.embedding_deployment),
+                json!(config.ai.embedding.deployment),
             );
             m
         },
@@ -913,9 +913,24 @@ fn build_knowledge_source(container: &str) -> Result<KnowledgeSource, GenerateEr
 // ---------------------------------------------------------------------------
 
 /// Build a `KnowledgeBase` grouping knowledge sources for an MCP deployment.
+///
+/// The KB is wired up with:
+/// - `knowledgeSources`: one reference per data source exposed by the MCP.
+/// - `models[]`: a single `azureOpenAI`-kind model pointing at the chat
+///   deployment configured in `ai.chat`.  AI Search uses this for query
+///   planning and (when `output_mode: answerSynthesis`) answer formulation.
+/// - `retrievalReasoningEffort`: minimal/low/medium per the Knowledge Base
+///   preview API.
+/// - `outputMode`: answerSynthesis or extractedData.
+///
+/// The model JSON shape is the same for both Azure OpenAI accounts and
+/// Microsoft Foundry projects — only the `resourceUri` (= `ai.endpoint`)
+/// differs.  Authentication is expected to flow through the search service's
+/// managed identity (no `apiKey` is emitted).
 fn build_knowledge_base(
     deployment_name: &str,
     ks_names: &[String],
+    config: &Config,
 ) -> Result<KnowledgeBase, GenerateError> {
     let mut extra = std::collections::HashMap::new();
     extra.insert(
@@ -927,6 +942,34 @@ fn build_knowledge_base(
                 .collect::<Vec<_>>()
         ),
     );
+
+    extra.insert(
+        "models".to_string(),
+        json!([{
+            "kind": "azureOpenAI",
+            "azureOpenAIParameters": {
+                "resourceUri": config.ai.endpoint,
+                "deploymentId": config.ai.chat.deployment,
+                "modelName": config.ai.chat.model_name,
+            }
+        }]),
+    );
+
+    let effort = match config.ai.chat.retrieval_reasoning_effort {
+        ReasoningEffort::Minimal => "minimal",
+        ReasoningEffort::Low => "low",
+        ReasoningEffort::Medium => "medium",
+    };
+    extra.insert(
+        "retrievalReasoningEffort".to_string(),
+        json!({ "kind": effort }),
+    );
+
+    let output_mode = match config.ai.chat.output_mode {
+        OutputMode::AnswerSynthesis => "answerSynthesis",
+        OutputMode::ExtractedData => "extractedData",
+    };
+    extra.insert("outputMode".to_string(), json!(output_mode));
 
     let kb = KnowledgeBase {
         name: format!("{deployment_name}-kb"),
@@ -1108,10 +1151,15 @@ azure:
   region: "swedencentral"
 cosmos:
   database: "quelch"
-openai:
+ai:
+  provider: azure_openai
   endpoint: "https://test.openai.azure.com"
-  embedding_deployment: "text-embedding-3-large"
-  embedding_dimensions: 3072
+  embedding:
+    deployment: "text-embedding-3-large"
+    dimensions: 3072
+  chat:
+    deployment: "gpt-4.1-mini"
+    model_name: "gpt-4.1-mini"
 "#;
 
     fn config_with_jira_cloud() -> Config {

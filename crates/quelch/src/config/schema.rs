@@ -18,7 +18,7 @@ pub struct Config {
     pub cosmos: CosmosConfig,
     #[serde(default)]
     pub search: SearchConfig,
-    pub openai: OpenAiConfig,
+    pub ai: AiConfig,
     #[serde(default)]
     pub sources: Vec<SourceConfig>,
     #[serde(default)]
@@ -234,15 +234,80 @@ fn default_indexer_interval() -> String {
 }
 
 // ---------------------------------------------------------------------------
-// OpenAI
+// AI provider (embedding + chat models)
 // ---------------------------------------------------------------------------
 
-/// Azure OpenAI endpoint and embedding deployment used by AI Search skillsets.
+/// Reference to an existing AI model provider — either an Azure OpenAI account
+/// or a Microsoft Foundry project — that hosts both the embedding deployment
+/// (used by the AI Search vectorizer / skillset) and the chat-completion
+/// deployment (used by the Knowledge Base for query planning and answer
+/// synthesis).
+///
+/// The on-the-wire JSON shape Azure AI Search emits is identical for both
+/// providers; the `provider` field exists so `quelch init` knows which `az`
+/// command surface to query when discovering deployments.
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct OpenAiConfig {
+pub struct AiConfig {
+    pub provider: AiProvider,
     pub endpoint: String,
-    pub embedding_deployment: String,
-    pub embedding_dimensions: u32,
+    pub embedding: AiEmbeddingConfig,
+    pub chat: AiChatConfig,
+}
+
+/// Which Azure surface holds the model deployments referenced by [`AiConfig`].
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AiProvider {
+    /// Classic Azure OpenAI account (`Microsoft.CognitiveServices/accounts`
+    /// with `kind=OpenAI`).
+    AzureOpenai,
+    /// Microsoft Foundry project (`Microsoft.MachineLearningServices/workspaces`
+    /// with `kind=Project`).
+    Foundry,
+}
+
+/// Embedding deployment that the AI Search vectorizer / skillset will call.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AiEmbeddingConfig {
+    pub deployment: String,
+    pub dimensions: u32,
+}
+
+/// Chat-completion deployment that the Knowledge Base uses for agentic
+/// retrieval (query planning + optional answer synthesis).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AiChatConfig {
+    pub deployment: String,
+    pub model_name: String,
+    #[serde(default)]
+    pub retrieval_reasoning_effort: ReasoningEffort,
+    #[serde(default)]
+    pub output_mode: OutputMode,
+}
+
+/// `retrievalReasoningEffort.kind` for the Knowledge Base.
+///
+/// `Minimal` skips the LLM (vector + keyword + semantic only). `Low` is the
+/// portal default. `Medium` enables follow-up subqueries.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningEffort {
+    Minimal,
+    #[default]
+    Low,
+    Medium,
+}
+
+/// Knowledge Base `outputMode`.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub enum OutputMode {
+    /// LLM-formulated natural-language answer with citations. Portal default.
+    #[serde(rename = "answerSynthesis")]
+    #[default]
+    AnswerSynthesis,
+    /// Raw ranked search results, no LLM-side composition.
+    #[serde(rename = "extractedData")]
+    ExtractedData,
 }
 
 // ---------------------------------------------------------------------------
@@ -613,10 +678,15 @@ cosmos:
   database: "quelch"
 search:
   sku: "basic"
-openai:
-  endpoint: "https://test.openai.azure.com"
-  embedding_deployment: "text-embedding-3-large"
-  embedding_dimensions: 3072
+ai:
+  provider: foundry
+  endpoint: "https://test-foundry.cognitiveservices.azure.com"
+  embedding:
+    deployment: "text-embedding-3-large"
+    dimensions: 3072
+  chat:
+    deployment: "gpt-4.1-mini"
+    model_name: "gpt-4.1-mini"
 sources:
   - type: jira
     name: jira-cloud
@@ -641,6 +711,12 @@ deployments:
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.azure.region, "swedencentral");
         assert_eq!(config.deployments.len(), 2);
+        assert!(matches!(config.ai.provider, AiProvider::Foundry));
+        assert_eq!(config.ai.embedding.dimensions, 3072);
+        assert_eq!(
+            config.ai.chat.retrieval_reasoning_effort,
+            ReasoningEffort::Low
+        );
     }
 
     #[test]
@@ -677,10 +753,17 @@ search:
       interval: "PT15M"
     high_water_mark_field: "updated"
 
-openai:
+ai:
+  provider: azure_openai
   endpoint: "https://prod.openai.azure.com"
-  embedding_deployment: "text-embedding-3-large"
-  embedding_dimensions: 3072
+  embedding:
+    deployment: "text-embedding-3-large"
+    dimensions: 3072
+  chat:
+    deployment: "gpt-4.1-mini"
+    model_name: "gpt-4.1-mini"
+    retrieval_reasoning_effort: medium
+    output_mode: answerSynthesis
 
 sources:
   - type: jira

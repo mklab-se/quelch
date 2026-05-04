@@ -77,52 +77,266 @@ pub async fn azure_section() -> anyhow::Result<AzureConfig> {
 }
 
 // ---------------------------------------------------------------------------
-// OpenAI section
+// AI provider section (Foundry or Azure OpenAI; embedding + chat deployments)
 // ---------------------------------------------------------------------------
 
-/// Prompt for Azure OpenAI endpoint and embedding deployment.
-pub async fn openai_section(
-    azure: &AzureConfig,
-    _subscription_id: &str,
-) -> anyhow::Result<OpenAiConfig> {
-    println!("\n=== Azure OpenAI ===");
-    println!(
-        "Looking for Azure OpenAI accounts in '{}'...",
-        azure.resource_group
-    );
+/// Prompt for the AI model provider (Foundry or Azure OpenAI), discover
+/// existing accounts in the chosen resource group, and pick embedding +
+/// chat deployments inside the selected account.
+///
+/// If no accounts are found we tell the user clearly and offer the manual
+/// entry fallback so they can still write the config — `quelch validate`
+/// catches it at re-run time.
+pub async fn ai_section(azure: &AzureConfig) -> anyhow::Result<AiConfig> {
+    println!("\n=== AI model provider ===");
+    println!("Quelch wires up two model deployments in your AI Search Knowledge Base:");
+    println!("  - an embedding model (used by the vectorizer / skillset)");
+    println!("  - a chat / LLM (used for query planning + answer synthesis)");
+    println!("Both can live in the same Azure OpenAI account or Microsoft Foundry project.\n");
 
-    let discovered = discover::find_openai_account(&azure.subscription_id, &azure.resource_group)
-        .await
-        .ok()
-        .flatten();
+    let providers = ["Microsoft Foundry  (recommended)", "Azure OpenAI"];
+    let provider_idx = dialoguer::Select::new()
+        .with_prompt("Where do your model deployments live?")
+        .items(&providers)
+        .default(0)
+        .interact()?;
+    let provider = if provider_idx == 0 {
+        AiProvider::Foundry
+    } else {
+        AiProvider::AzureOpenai
+    };
 
-    let default_endpoint = discovered
-        .as_ref()
-        .map(|a| a.endpoint.clone())
-        .unwrap_or_else(|| "https://YOUR-OPENAI.openai.azure.com".to_string());
+    let (endpoint, account_name) = match provider {
+        AiProvider::Foundry => {
+            println!(
+                "Looking for Foundry projects (Cognitive Services AIServices accounts) in '{}'...",
+                azure.resource_group
+            );
+            let projects =
+                discover::list_foundry_projects(&azure.subscription_id, &azure.resource_group)
+                    .await
+                    .unwrap_or_default();
+            if projects.is_empty() {
+                println!(
+                    "  ✗ No Foundry projects found in resource group '{}'.",
+                    azure.resource_group
+                );
+                println!(
+                    "    Create one in the Azure portal (https://ai.azure.com), \
+                     then re-run `quelch init`."
+                );
+                println!("    Falling back to manual endpoint entry...");
+                let endpoint: String = dialoguer::Input::new()
+                    .with_prompt("Foundry project endpoint")
+                    .with_initial_text("https://YOUR-FOUNDRY.cognitiveservices.azure.com")
+                    .interact_text()?;
+                (endpoint, None)
+            } else {
+                let labels: Vec<_> = projects
+                    .iter()
+                    .map(|p| format!("{} — {}", p.name, p.endpoint))
+                    .collect();
+                let chosen = dialoguer::Select::new()
+                    .with_prompt("Foundry project")
+                    .items(&labels)
+                    .default(0)
+                    .interact()?;
+                let p = &projects[chosen];
+                (p.endpoint.clone(), Some(p.name.clone()))
+            }
+        }
+        AiProvider::AzureOpenai => {
+            println!(
+                "Looking for Azure OpenAI accounts in '{}'...",
+                azure.resource_group
+            );
+            let accounts =
+                discover::list_openai_accounts(&azure.subscription_id, &azure.resource_group)
+                    .await
+                    .unwrap_or_default();
+            if accounts.is_empty() {
+                println!(
+                    "  ✗ No Azure OpenAI accounts found in resource group '{}'.",
+                    azure.resource_group
+                );
+                println!(
+                    "    Create one with:\n      \
+                     az cognitiveservices account create -n <name> -g {} \\\n        \
+                       --kind OpenAI --sku S0 -l {}",
+                    azure.resource_group, azure.region
+                );
+                println!(
+                    "    Then deploy the embedding + chat models you want and re-run `quelch init`."
+                );
+                println!("    Falling back to manual endpoint entry...");
+                let endpoint: String = dialoguer::Input::new()
+                    .with_prompt("Azure OpenAI endpoint")
+                    .with_initial_text("https://YOUR-OPENAI.openai.azure.com")
+                    .interact_text()?;
+                (endpoint, None)
+            } else {
+                let labels: Vec<_> = accounts
+                    .iter()
+                    .map(|a| format!("{} — {}", a.name, a.endpoint))
+                    .collect();
+                let chosen = dialoguer::Select::new()
+                    .with_prompt("Azure OpenAI account")
+                    .items(&labels)
+                    .default(0)
+                    .interact()?;
+                let a = &accounts[chosen];
+                (a.endpoint.clone(), Some(a.name.clone()))
+            }
+        }
+    };
 
-    let endpoint: String = dialoguer::Input::new()
-        .with_prompt("Azure OpenAI endpoint")
-        .with_initial_text(&default_endpoint)
-        .interact_text()?;
+    // Discover deployments inside the chosen account/project (best-effort).
+    let deployments = match account_name {
+        Some(ref name) => {
+            discover::list_model_deployments(&azure.subscription_id, &azure.resource_group, name)
+                .await
+                .unwrap_or_default()
+        }
+        None => Vec::new(),
+    };
 
-    let deployment_name: String = dialoguer::Input::new()
-        .with_prompt("Embedding deployment name")
-        .with_initial_text("text-embedding-3-large")
-        .interact_text()?;
+    let embedding = pick_embedding_deployment(&deployments)?;
+    let chat = pick_chat_deployment(&deployments)?;
 
-    let dimensions_str: String = dialoguer::Input::new()
+    Ok(AiConfig {
+        provider,
+        endpoint,
+        embedding,
+        chat,
+    })
+}
+
+/// Pick (or manually enter) an embedding deployment.
+fn pick_embedding_deployment(
+    available: &[discover::ModelDeployment],
+) -> anyhow::Result<AiEmbeddingConfig> {
+    let candidates: Vec<&discover::ModelDeployment> = available
+        .iter()
+        .filter(|d| d.model_name.starts_with("text-embedding"))
+        .collect();
+
+    let deployment = if candidates.is_empty() {
+        if !available.is_empty() {
+            println!("  (no embedding deployments found in the chosen account)");
+        }
+        dialoguer::Input::<String>::new()
+            .with_prompt("Embedding deployment name")
+            .with_initial_text("text-embedding-3-large")
+            .interact_text()?
+    } else {
+        let labels: Vec<_> = candidates
+            .iter()
+            .map(|d| format!("{} ({})", d.name, d.model_name))
+            .collect();
+        let chosen = dialoguer::Select::new()
+            .with_prompt("Embedding deployment")
+            .items(&labels)
+            .default(0)
+            .interact()?;
+        candidates[chosen].name.clone()
+    };
+
+    let dims_str: String = dialoguer::Input::new()
         .with_prompt("Embedding dimensions")
         .with_initial_text("3072")
         .interact_text()?;
-    let embedding_dimensions: u32 = dimensions_str
+    let dimensions: u32 = dims_str
         .parse()
         .map_err(|_| anyhow::anyhow!("embedding dimensions must be a number"))?;
 
-    Ok(OpenAiConfig {
-        endpoint,
-        embedding_deployment: deployment_name,
-        embedding_dimensions,
+    Ok(AiEmbeddingConfig {
+        deployment,
+        dimensions,
+    })
+}
+
+/// Supported chat models for AI Search agentic retrieval (per Azure AI Search
+/// 2025-11-01-preview). Used to filter the deployment Select.
+const SUPPORTED_CHAT_MODELS: &[&str] = &[
+    "gpt-4o",
+    "gpt-4o-mini",
+    "gpt-4.1",
+    "gpt-4.1-nano",
+    "gpt-4.1-mini",
+    "gpt-5",
+    "gpt-5-nano",
+    "gpt-5-mini",
+];
+
+/// Pick (or manually enter) a chat deployment.
+fn pick_chat_deployment(available: &[discover::ModelDeployment]) -> anyhow::Result<AiChatConfig> {
+    let candidates: Vec<&discover::ModelDeployment> = available
+        .iter()
+        .filter(|d| SUPPORTED_CHAT_MODELS.iter().any(|m| d.model_name == *m))
+        .collect();
+
+    let (deployment, model_name) = if candidates.is_empty() {
+        if !available.is_empty() {
+            println!(
+                "  (no supported chat deployments found; supported models: {})",
+                SUPPORTED_CHAT_MODELS.join(", ")
+            );
+        }
+        let dep: String = dialoguer::Input::new()
+            .with_prompt("Chat deployment name")
+            .with_initial_text("gpt-4.1-mini")
+            .interact_text()?;
+        let model: String = dialoguer::Input::new()
+            .with_prompt("Chat model name")
+            .with_initial_text(&dep)
+            .interact_text()?;
+        (dep, model)
+    } else {
+        let labels: Vec<_> = candidates
+            .iter()
+            .map(|d| format!("{} ({})", d.name, d.model_name))
+            .collect();
+        let chosen = dialoguer::Select::new()
+            .with_prompt("Chat (LLM) deployment")
+            .items(&labels)
+            .default(0)
+            .interact()?;
+        let c = candidates[chosen];
+        (c.name.clone(), c.model_name.clone())
+    };
+
+    let efforts = ["minimal", "low (default)", "medium"];
+    let effort_idx = dialoguer::Select::new()
+        .with_prompt("Retrieval reasoning effort")
+        .items(&efforts)
+        .default(1)
+        .interact()?;
+    let retrieval_reasoning_effort = match effort_idx {
+        0 => ReasoningEffort::Minimal,
+        1 => ReasoningEffort::Low,
+        _ => ReasoningEffort::Medium,
+    };
+
+    let modes = [
+        "answerSynthesis (LLM-generated answer with citations)",
+        "extractedData (raw ranked results)",
+    ];
+    let mode_idx = dialoguer::Select::new()
+        .with_prompt("Knowledge Base output mode")
+        .items(&modes)
+        .default(0)
+        .interact()?;
+    let output_mode = if mode_idx == 0 {
+        OutputMode::AnswerSynthesis
+    } else {
+        OutputMode::ExtractedData
+    };
+
+    Ok(AiChatConfig {
+        deployment,
+        model_name,
+        retrieval_reasoning_effort,
+        output_mode,
     })
 }
 

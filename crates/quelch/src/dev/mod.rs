@@ -20,9 +20,10 @@ use crate::config::schema::{
     AzureConfig, CompanionContainersConfig, DeploymentAuthConfig, NamingConfig,
 };
 use crate::config::{
-    AuthConfig, Config, CosmosConfig, DeploymentConfig, DeploymentRole, DeploymentSource,
-    DeploymentTarget, IngestConfig, JiraSourceConfig, McpAuthMode, McpConfig, OpenAiConfig,
-    RiggConfig, SearchConfig, SourceConfig, StateConfig,
+    AiChatConfig, AiConfig, AiEmbeddingConfig, AiProvider, AuthConfig, Config, CosmosConfig,
+    DeploymentConfig, DeploymentRole, DeploymentSource, DeploymentTarget, IngestConfig,
+    JiraSourceConfig, McpAuthMode, McpConfig, OutputMode, ReasoningEffort, RiggConfig,
+    SearchConfig, SourceConfig, StateConfig,
 };
 use crate::cosmos::{CosmosBackend, InMemoryCosmos};
 use crate::ingest::config::CycleConfig;
@@ -245,10 +246,19 @@ fn build_dev_config(mock_jira_url: &str, mock_confluence_url: &str, _mcp_port: u
             throughput: Default::default(),
         },
         search: SearchConfig::default(),
-        openai: OpenAiConfig {
+        ai: AiConfig {
+            provider: AiProvider::AzureOpenai,
             endpoint: "https://dev.openai.azure.com".into(),
-            embedding_deployment: "dev-te".into(),
-            embedding_dimensions: 1536,
+            embedding: AiEmbeddingConfig {
+                deployment: "dev-te".into(),
+                dimensions: 1536,
+            },
+            chat: AiChatConfig {
+                deployment: "gpt-4.1-mini".into(),
+                model_name: "gpt-4.1-mini".into(),
+                retrieval_reasoning_effort: ReasoningEffort::Low,
+                output_mode: OutputMode::AnswerSynthesis,
+            },
         },
         sources: vec![
             SourceConfig::Jira(JiraSourceConfig {

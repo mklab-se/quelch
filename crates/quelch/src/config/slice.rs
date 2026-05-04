@@ -114,7 +114,7 @@ pub fn for_deployment(config: &Config, name: &str) -> Result<Config, ConfigError
         azure: config.azure.clone(),
         cosmos: config.cosmos.clone(),
         search: config.search.clone(),
-        openai: config.openai.clone(),
+        ai: config.ai.clone(),
         ingest: config.ingest.clone(),
         rigg: config.rigg.clone(),
         state: config.state.clone(),
@@ -140,10 +140,15 @@ azure:
   region: "swedencentral"
 cosmos:
   database: "quelch"
-openai:
+ai:
+  provider: azure_openai
   endpoint: "https://test.openai.azure.com"
-  embedding_deployment: "text-embedding-3-large"
-  embedding_dimensions: 3072
+  embedding:
+    deployment: "text-embedding-3-large"
+    dimensions: 3072
+  chat:
+    deployment: "gpt-4.1-mini"
+    model_name: "gpt-4.1-mini"
 "#;
 
     #[test]

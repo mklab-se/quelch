@@ -125,10 +125,15 @@ azure:
   region: "swedencentral"
 cosmos:
   database: "quelch"
-openai:
+ai:
+  provider: azure_openai
   endpoint: "https://x.openai.azure.com"
-  embedding_deployment: "te"
-  embedding_dimensions: 1536
+  embedding:
+    deployment: "te"
+    dimensions: 1536
+  chat:
+    deployment: "gpt-4.1-mini"
+    model_name: "gpt-4.1-mini"
 ingest:
   poll_interval: "120s"
   safety_lag_minutes: 5
@@ -159,10 +164,15 @@ azure:
   region: "swedencentral"
 cosmos:
   database: "quelch"
-openai:
+ai:
+  provider: azure_openai
   endpoint: "https://x.openai.azure.com"
-  embedding_deployment: "te"
-  embedding_dimensions: 1536
+  embedding:
+    deployment: "te"
+    dimensions: 1536
+  chat:
+    deployment: "gpt-4.1-mini"
+    model_name: "gpt-4.1-mini"
 ingest:
   poll_interval: "not-a-duration"
   max_cycle_duration: "also-bad"

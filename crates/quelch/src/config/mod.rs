@@ -69,10 +69,15 @@ azure:
   region: "swedencentral"
 cosmos:
   database: "quelch"
-openai:
+ai:
+  provider: azure_openai
   endpoint: "https://x.openai.azure.com"
-  embedding_deployment: "te"
-  embedding_dimensions: 1536
+  embedding:
+    deployment: "te"
+    dimensions: 1536
+  chat:
+    deployment: "gpt-4.1-mini"
+    model_name: "gpt-4.1-mini"
 sources: []
 deployments: []
 "#;
