@@ -6,6 +6,46 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-05-04
+
+### Changed
+
+- **Default chat model**: switched from `gpt-4.1-mini` to `gpt-5-mini`
+  across the wizard, templates, dev mode, and test fixtures. `gpt-5-mini`
+  is in Microsoft's portal-validated subset for the Knowledge Base
+  preview API and is the newer of the two same-cost-tier options.
+  Existing configs are not affected — this only changes defaults for
+  new `quelch init` runs and the docs' worked examples.
+- **Docs — Q-MCP / Q-Ingest terminology**: standardised on "Quelch MCP"
+  (Q-MCP) and "Quelch Ingest" (Q-Ingest) across README, getting-started,
+  deployment, mcp-api, and CLAUDE.md. Spell out on first mention, then
+  use the short form. Other docs will follow as they're touched.
+- **Docs — topology emphasis**: the README architecture diagram, the
+  hybrid-topology section in deployment.md, and the getting-started intro
+  all now lead with "Q-MCP typically in Azure, Q-Ingest typically near
+  the data source (often on-prem)" rather than treating an
+  everything-in-Azure setup as the default mental model.
+- **Docs — secrets scoped per target**: Key Vault is no longer described
+  as a universal Quelch prerequisite. The getting-started prereqs table
+  now splits "always required" (Cosmos / AI Search / AI provider) from
+  "required only if any deployment has `target: azure`" (ACA env, App
+  Insights, Key Vault). On-prem Q-Ingest keeps secrets in env / `.env` /
+  k8s `Secret` — never touches Key Vault.
+
+### Added
+
+- **`mcp-api.md` "Setting and rotating the API key"** — end-to-end
+  documentation of the operator flow that was previously left as a
+  `// TODO: populate at deploy time` comment in the generated Bicep.
+  Covers Azure-host (`az keyvault secret set` + revision restart) and
+  on-prem (docker / systemd / k8s) paths, with `openssl rand` examples.
+
+### Fixed
+
+- **Key Vault secret name** read by `getting-started.md` matched the
+  Bicep template's name (`quelch-mcp-api-key`). The doc previously read
+  from `mcp-api-key`, which the template never populates.
+
 ## [0.10.0] - 2026-05-04
 
 ### BREAKING
