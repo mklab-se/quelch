@@ -47,11 +47,11 @@ Quelch CLI ─────────────────────► Co
                                            │ Managed Identity (User-assigned)
                                            │ + role assignments
                                            ▼
-                                  Azure resources
-                                  ┌─ Cosmos DB         (Cosmos DB Built-in Data Contributor)
-                                  ├─ AI Search service (Search Index Data Reader/Contributor)
-                                  ├─ Azure OpenAI      (Cognitive Services OpenAI User)
-                                  └─ Key Vault         (Key Vault Secrets User)
+                                  Existing Azure resources
+                                  ┌─ Cosmos DB                       (Cosmos DB Built-in Data Contributor)
+                                  ├─ AI Search service               (Search Index Data Contributor)
+                                  ├─ Foundry / Azure OpenAI          (Cognitive Services User)
+                                  └─ Key Vault                       (Key Vault Secrets User)
 
 
 Agent (Copilot / Claude / VS Code) ──HTTPS──► Quelch MCP

@@ -47,6 +47,22 @@ pub struct AzureConfig {
     pub naming: NamingConfig,
     #[serde(default)]
     pub skip_role_assignments: bool,
+    /// Names of the existing Azure resources Quelch references but does not
+    /// provision (Container Apps environment, App Insights, Key Vault).
+    /// Cosmos account and AI Search service have their own dedicated config
+    /// blocks (`cosmos.account` / `search.service`).
+    #[serde(default)]
+    pub resources: AzureExistingResources,
+}
+
+/// References to pre-existing Azure resources that Quelch needs to bind to
+/// but does not provision itself. Each field defaults to a name derived from
+/// `naming.prefix` + `naming.environment` if left unset.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct AzureExistingResources {
+    pub container_apps_env: Option<String>,
+    pub application_insights: Option<String>,
+    pub key_vault: Option<String>,
 }
 
 /// Resource naming prefixes used when Quelch auto-generates Azure resource names.

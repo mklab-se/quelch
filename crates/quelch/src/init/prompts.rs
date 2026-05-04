@@ -73,6 +73,7 @@ pub async fn azure_section() -> anyhow::Result<AzureConfig> {
             environment: Some(naming_env),
         },
         skip_role_assignments: false,
+        resources: AzureExistingResources::default(),
     })
 }
 

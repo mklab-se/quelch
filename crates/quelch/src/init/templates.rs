@@ -37,6 +37,7 @@ pub fn minimal_template() -> Config {
                 environment: Some("prod".to_string()),
             },
             skip_role_assignments: false,
+            resources: AzureExistingResources::default(),
         },
         cosmos: CosmosConfig::default(),
         search: SearchConfig::default(),
