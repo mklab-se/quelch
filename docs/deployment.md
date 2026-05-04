@@ -11,15 +11,15 @@ Before your first `quelch azure deploy` you need:
 
 1. **The Quelch CLI installed** locally (`brew install mklab-se/tap/quelch` or `cargo install quelch`).
 2. **The Azure CLI installed and logged in** (`az login`). Quelch uses your `az` credentials for all Azure operations — there's no separate Quelch identity to provision.
-3. **An Azure subscription** that you have at least the `Contributor` role on. `Owner` is needed if you want Quelch to create Microsoft Entra ID role assignments for managed identities (the default — see [Authentication chain](#authentication-chain) below). If you only have `Contributor`, set `azure.skip_role_assignments: true` in the config and have a subscription owner apply the role assignments separately (Quelch emits a script).
-4. **A pre-existing Azure OpenAI account** with an embedding model deployment (`text-embedding-3-large` recommended). Quelch points at it via `openai.endpoint`; it does not provision OpenAI itself (capacity quotas make that fragile to script).
+3. **An Azure subscription** that you have at least the `Contributor` role on the resource group. `Owner` (or User Access Administrator) is needed if you want Quelch to grant the Container App's managed identity RBAC on Cosmos / AI Search / Key Vault / the AI provider — see [Authentication chain](#authentication-chain) below. If you only have `Contributor`, set `azure.skip_role_assignments: true` in the config and have someone with the right role apply the role assignments separately.
+4. **All required Azure resources pre-provisioned** in the same resource group: Cosmos DB account, AI Search service (Basic+ with semantic ranker enabled), a Microsoft Foundry project or Azure OpenAI account containing your embedding + chat deployments, a Container Apps environment, an Application Insights component, and a Key Vault. See [getting-started.md "Prerequisites"](getting-started.md#0-prerequisites) for the exact `az` commands. **Quelch does not provision any of these — it only configures their internals and creates the Container App that runs ingest/MCP.**
 5. **Source-system credentials** in your local environment as env vars referenced by `quelch.yaml`:
    - Jira Cloud: `JIRA_EMAIL`, `JIRA_API_TOKEN`.
    - Jira Data Center: `JIRA_PAT`.
    - Confluence Cloud: `CONFLUENCE_EMAIL`, `CONFLUENCE_API_TOKEN`.
    - Confluence Data Center: `CONFLUENCE_PAT`.
 
-   Quelch reads these env vars at deploy time, writes them into the deployment's Key Vault, and configures the Container App to read them from Key Vault at runtime. Your laptop's env vars never touch the deployed container directly.
+   Quelch reads these env vars at deploy time, writes them into the pre-existing Key Vault, and configures the Container App to read them from Key Vault at runtime. Your laptop's env vars never touch the deployed container directly.
 6. **A Git repo** for `quelch.yaml` (and the generated `.quelch/azure/` and `rigg/` directories).
 
 Then:
