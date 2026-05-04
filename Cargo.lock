@@ -1973,15 +1973,14 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "openssl"
-version = "0.10.78"
+version = "0.10.79"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f38c4372413cdaaf3cc79dd92d29d7d9f5ab09b51b10dded508fb90bb70b9222"
+checksum = "bf0b434746ee2832f4f0baf10137e1cabb18cbe6912c69e2e33263c45250f542"
 dependencies = [
  "bitflags 2.11.1",
  "cfg-if",
  "foreign-types",
  "libc",
- "once_cell",
  "openssl-macros",
  "openssl-sys",
 ]
@@ -2005,9 +2004,9 @@ checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
 name = "openssl-sys"
-version = "0.9.114"
+version = "0.9.115"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "13ce1245cd07fcc4cfdb438f7507b0c7e4f3849a69fd84d52374c66d83741bb6"
+checksum = "158fe5b292746440aa6e7a7e690e55aeb72d41505e2804c23c6973ad0e9c9781"
 dependencies = [
  "cc",
  "libc",
@@ -2265,7 +2264,7 @@ dependencies = [
 
 [[package]]
 name = "quelch"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "ailloy",
  "anyhow",
@@ -2687,7 +2686,9 @@ dependencies = [
 
 [[package]]
 name = "rigg-client"
-version = "0.16.1"
+version = "0.16.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d2a48f40675a20ae34d901175c6f2d3440209195d48986bbbce35037377bc57"
 dependencies = [
  "ailloy",
  "anyhow",
@@ -2704,7 +2705,9 @@ dependencies = [
 
 [[package]]
 name = "rigg-core"
-version = "0.16.1"
+version = "0.16.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "31ded144170034ba24257eaa6c64804baed82b3a6e53ccee92e44c2898f2cb59"
 dependencies = [
  "anyhow",
  "chrono",

@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-05-04
+
+### Fixed
+
+- Workspace `Cargo.toml` referenced rigg-core / rigg-client via a hard-coded local
+  path (`/Users/kristofer/repos/rigg/...`), which broke `cargo metadata` on any
+  machine that wasn't the developer's. Switched to the now-published `rigg-core`
+  and `rigg-client` 0.16.2 from crates.io. v0.9.0's release CI failed at the
+  metadata step because of this; v0.9.1 is the de-facto v0.9.0 release.
+
 ## [0.9.0] - 2026-05-03
 
 ### Breaking

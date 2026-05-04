@@ -5,7 +5,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.9.0"
+version = "0.9.1"
 edition = "2024"
 authors = ["Kristofer Liljeblad <kristofer@mklab.se>"]
 license = "MIT"
@@ -62,10 +62,8 @@ trait-variant = "0.1"
 colored = "2.1"
 
 # rigg as a library — manages Azure AI Search and Foundry config
-# NOTE: rigg-core/rigg-client 0.16.1 is committed in the rigg repo locally but not yet
-# published to crates.io. Use a path dep for now; switch to version dep when rigg is published.
-rigg-core   = { path = "/Users/kristofer/repos/rigg/crates/rigg-core",   version = "0.16.1" }
-rigg-client = { path = "/Users/kristofer/repos/rigg/crates/rigg-client", version = "0.16.1" }
+rigg-core   = "0.16.2"
+rigg-client = "0.16.2"
 
 # MCP server transport
 axum = { version = "0.8", features = ["macros"] }
