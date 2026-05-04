@@ -15,7 +15,7 @@
 //!
 //! Auth is obtained via `rigg-client`'s [`rigg_client::auth::get_auth_provider`].
 //!
-//! TODO(phase-11): These methods could migrate into `rigg_client::AzureSearchClient`
+//! TODO(rigg-client): These methods could migrate into `rigg_client::AzureSearchClient`
 //! for consistency. For now they live here to keep the transport self-contained.
 
 use async_trait::async_trait;
@@ -162,7 +162,7 @@ impl SearchApiAdapter for AzureSearchAdapter {
         // POST {service}/knowledgebases/{name}/retrieve?api-version=...
         // This is the Azure AI Search Agentic Retrieval (Knowledge Base search) endpoint.
         // Ref: https://learn.microsoft.com/azure/search/knowledge-store-concept-intro (preview)
-        // TODO(phase-11): verify exact endpoint path and body schema against GA docs.
+        // TODO: verify exact endpoint path and body schema against GA docs.
         let url = format!(
             "{}/knowledgebases/{}/retrieve?api-version={}",
             self.service_url, knowledge_base_name, self.api_version,

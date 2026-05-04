@@ -1,9 +1,3 @@
-// TODO(quelch v2 phase 3+): re-enable v1 commands as they are replaced by v2 equivalents.
-//
-// The v1 CLI commands (sync, watch, setup, reset-indexes, status, search, sim,
-// generate-agent) are stubbed for the v2 config layer work (Phase 1).
-// Each will be replaced by v2 commands in Phases 3–8.
-
 mod cli;
 
 use anyhow::Result;

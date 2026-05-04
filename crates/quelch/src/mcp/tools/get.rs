@@ -10,7 +10,7 @@
 //! caller only provides the document ID, we use a cross-partition SQL query
 //! (`WHERE c.id = @id`) which is slower but always correct. Production
 //! deployments with high throughput may want to encode the partition key into
-//! the ID and parse it back, but that optimisation is out of scope for v2.
+//! the ID and parse it back, but that optimisation is out of scope for now.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

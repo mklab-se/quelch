@@ -1,4 +1,4 @@
-/// Config validation rules for Quelch v2.
+/// Config validation rules.
 ///
 /// Three invariants are checked:
 /// 1. Every source referenced in a deployment exists in `sources`.

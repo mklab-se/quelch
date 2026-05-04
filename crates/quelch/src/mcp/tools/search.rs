@@ -31,7 +31,7 @@
 //! and results are merged/sorted by score.  For the Knowledge Base path,
 //! a single KB call is made (the KB handles fan-out server-side).
 //!
-//! TODO(v2-follow-up): parallel fan-out with merged cursor for multi-index.
+//! TODO(perf): parallel fan-out with merged cursor for multi-index.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -252,7 +252,7 @@ pub async fn run(
             .await?;
 
         // KB hits don't carry a per-hit data_source; use the first resolved source.
-        // TODO(v2-follow-up): KB responses may include an index name per hit.
+        // TODO: KB responses may include an index name per hit; thread through.
         let data_source_name = sources
             .first()
             .map(|(n, _)| n.as_str())
@@ -269,7 +269,7 @@ pub async fn run(
     }
 
     // Direct per-index fan-out.
-    // TODO(v2-follow-up): run in parallel; for now sequential is correct and simple.
+    // TODO(perf): run in parallel; for now sequential is correct and simple.
     let mut all_hits: Vec<(String, RawHit)> = Vec::new();
     let mut total_estimate: u64 = 0;
     let mut last_cursor: Option<String> = None;
@@ -333,14 +333,13 @@ pub async fn run(
         .map(|(source, hit)| map_single_hit(hit, &source, req.include_content))
         .collect();
 
-    // TODO(v2-follow-up): encode per-index cursors into a single cursor token.
-    // For v1, just pass through the last single-source cursor if there was only
-    // one source.
+    // TODO(multi-index-cursor): encode per-index cursors into a single cursor
+    // token. For now, just pass through the last single-source cursor if there
+    // was only one source.
     let next_cursor = if sources.len() == 1 {
         last_cursor
     } else {
-        // Multi-source: cursor is not yet implemented; omit.
-        // TODO(v2-follow-up): encode per-index map.
+        // Multi-source: cursor encoding not yet implemented; omit.
         None
     };
 
@@ -384,7 +383,7 @@ fn map_single_hit(hit: RawHit, data_source: &str, content: IncludeContent) -> Se
         .and_then(Value::as_str)
         .map(String::from)
         .unwrap_or_else(|| {
-            // TODO(v2-follow-up): synthesise a real URL from the index name + id.
+            // TODO: synthesise a real URL from the index name + id.
             format!("urn:quelch:{}:{}", data_source, hit.id)
         });
 

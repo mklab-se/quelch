@@ -1,4 +1,4 @@
-//! Layout and drawing helpers for the v2 fleet-dashboard TUI.
+//! Layout and drawing helpers for the fleet-dashboard TUI.
 
 use chrono::Utc;
 use ratatui::{

@@ -1,4 +1,4 @@
-//! Keyboard input handling for the v2 read-only fleet dashboard.
+//! Keyboard input handling for the read-only fleet dashboard.
 //!
 //! The only actions are navigation (↑/↓), quit (q/Esc/Ctrl-C), and help (?).
 

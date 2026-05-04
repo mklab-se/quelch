@@ -16,7 +16,7 @@
 //! catalog lists `group_by` as an array field, element-level fan-out is
 //! performed.
 //!
-//! TODO(quelch v2 follow-up): for large Cosmos containers, emit the JOIN-based
+//! TODO(perf): for large Cosmos containers, emit the JOIN-based
 //! GROUP BY SQL to push the aggregation down to the server.  The in-process
 //! approach works correctly but doesn't scale.
 
@@ -117,7 +117,7 @@ pub async fn run(
         where_sql = " WHERE (NOT IS_DEFINED(c._deleted) OR c._deleted = false)".to_string();
     }
 
-    // TODO(quelch v2 follow-up): multi-container fan-out.
+    // TODO(multi-container): fan out across all backing containers when a data
     let container = &resolved.backed_by[0].container;
 
     // Fetch all matching documents for in-process aggregation.

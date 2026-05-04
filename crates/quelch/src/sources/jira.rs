@@ -1,4 +1,4 @@
-//! Jira source connector — v2 implementation.
+//! Jira source connector.
 //!
 //! Implements the [`SourceConnector`] trait for both Jira Cloud and Data Center.
 //! Uses the Jira REST API v2 (`/rest/api/2/`) for issues and Jira Agile API

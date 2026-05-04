@@ -603,7 +603,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_minimal_v2_config() {
+    fn parses_minimal_config() {
         let yaml = r#"
 azure:
   subscription_id: "sub-123"
@@ -644,7 +644,7 @@ deployments:
     }
 
     #[test]
-    fn parses_full_v2_config() {
+    fn parses_full_config() {
         let yaml = r#"
 azure:
   subscription_id: "sub-456"

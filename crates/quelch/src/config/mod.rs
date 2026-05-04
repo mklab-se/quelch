@@ -1,4 +1,4 @@
-/// Quelch v2 configuration: schema, loader, and validation.
+/// Quelch configuration: schema, loader, and validation.
 ///
 /// Entry point: [`load_config`].
 pub mod data_sources;

@@ -59,7 +59,7 @@ pub struct Companions {
 /// Trait implemented by each source connector (Jira, Confluence, …).
 ///
 /// All methods are `async` and `Send`-safe via `trait_variant::make`.
-/// The v2 trait replaces v1's `fetch_changes` / `fetch_all_ids` pair with:
+/// The trait surface is split into four operations:
 ///
 /// - `fetch_window` — closed minute-resolution incremental window
 /// - `fetch_backfill_page` — cursor-paged historical backfill

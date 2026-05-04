@@ -1,4 +1,4 @@
-//! App state for the v2 fleet-dashboard TUI.
+//! App state for the fleet-dashboard TUI.
 //!
 //! State is derived from polling `cosmos::meta::list_all`; there is no
 //! tracing-event pipeline. The TUI is read-only.

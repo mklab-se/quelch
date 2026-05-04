@@ -16,8 +16,8 @@
 //!
 //! # Multi-container fan-out
 //!
-//! TODO(quelch v2 follow-up): implement proper multi-container fan-out with
-//! merged cursors. Currently only the first backing container is queried.
+//! TODO(multi-container): implement proper multi-container fan-out with merged
+//! cursors. Currently only the first backing container is queried.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -127,8 +127,8 @@ pub async fn run(
         sql.push_str(&parts.join(", "));
     }
 
-    // TODO(quelch v2 follow-up): multi-container fan-out with merged cursors.
-    // For now, query only the first backing container.
+    // TODO(multi-container): fan out with merged cursors. For now, query only
+    // the first backing container.
     let container = &resolved.backed_by[0].container;
 
     if req.count_only {
