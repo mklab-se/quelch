@@ -96,8 +96,16 @@ where
         {
             Ok(p) => p,
             Err(e) => {
-                // Persist whatever progress has been made so far.
-                let _ = meta::save(cosmos, &cfg.meta_container, key, &cursor).await;
+                // Persist whatever progress has been made so far. If saving the
+                // cursor itself fails too, log it — there's nothing else to do
+                // before returning the original error.
+                if let Err(save_err) = meta::save(cosmos, &cfg.meta_container, key, &cursor).await {
+                    tracing::warn!(
+                        error = %save_err,
+                        key = %key.id(),
+                        "could not persist backfill cursor after fetch failure"
+                    );
+                }
                 return CycleOutcome::Failed {
                     error: format!("fetch_backfill_page: {e}"),
                 };
@@ -119,7 +127,13 @@ where
             .bulk_upsert(connector.primary_container(), docs)
             .await
         {
-            let _ = meta::save(cosmos, &cfg.meta_container, key, &cursor).await;
+            if let Err(save_err) = meta::save(cosmos, &cfg.meta_container, key, &cursor).await {
+                tracing::warn!(
+                    error = %save_err,
+                    key = %key.id(),
+                    "could not persist backfill cursor after upsert failure"
+                );
+            }
             return CycleOutcome::Failed {
                 error: format!("upsert (backfill): {e}"),
             };

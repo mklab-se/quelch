@@ -133,8 +133,28 @@ where
     }
 
     // Companions (sprints, fix_versions, projects, spaces). Fetch once per cycle.
-    if let Ok(companions) = connector.fetch_companions(&key.subsource).await {
-        upsert_companions(cosmos, &companions, cfg).await.ok();
+    // Failures here are non-fatal — primary docs already landed and the cycle
+    // shouldn't be marked failed because a sprint list 500'd. Log so an operator
+    // notices recurring drift.
+    match connector.fetch_companions(&key.subsource).await {
+        Ok(companions) => {
+            if let Err(e) = upsert_companions(cosmos, &companions, cfg).await {
+                tracing::warn!(
+                    error = %e,
+                    source = connector.source_name(),
+                    subsource = %key.subsource,
+                    "companion upsert failed; primary docs unaffected"
+                );
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                source = connector.source_name(),
+                subsource = %key.subsource,
+                "companion fetch failed; primary docs unaffected"
+            );
+        }
     }
 
     // Advance cursor — only on full success.

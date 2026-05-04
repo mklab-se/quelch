@@ -80,13 +80,21 @@ where
         deleted += 1;
     }
 
-    // Update cursor with reconciliation metadata.
+    // Update cursor with reconciliation metadata. Failures are non-fatal: the
+    // soft-deletes already landed in Cosmos, but we want a record of when the
+    // reconciliation last ran so the operator dashboard reflects it.
     let mut cursor = meta::load(cosmos, &cfg.meta_container, key)
         .await
         .unwrap_or_default();
     cursor.last_reconciliation_at = Some(now);
     cursor.last_reconciliation_deleted = deleted;
-    let _ = meta::save(cosmos, &cfg.meta_container, key, &cursor).await;
+    if let Err(e) = meta::save(cosmos, &cfg.meta_container, key, &cursor).await {
+        tracing::warn!(
+            error = %e,
+            key = %key.id(),
+            "could not persist reconciliation cursor metadata"
+        );
+    }
 
     Ok(deleted)
 }
