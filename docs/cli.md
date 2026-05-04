@@ -396,6 +396,35 @@ Flags:
 - `--format [agent|skill|both]` — override the target's default form.
 - `--output <dir>` — output directory (default `./agent-bundle/`).
 
+## `quelch mcp-key`
+
+Manage the Q-MCP API key for a deployment. The key is the bearer token agents present in `Authorization: Bearer ...` when calling Q-MCP.
+
+```bash
+# Generate + store a fresh key, restart the running Q-MCP if it's in Azure:
+quelch mcp-key set --deployment mcp
+
+# Use a specific value (e.g. one your secret manager already minted):
+quelch mcp-key set --deployment mcp --value "$(cat ~/.config/quelch/mcp.key)"
+
+# Generate a new value and replace the stored one (alias for set without --value):
+quelch mcp-key rotate --deployment mcp
+
+# Print the current value (Azure deployments only — on-prem stores are local-only):
+quelch mcp-key show --deployment mcp
+```
+
+Behaviour by deployment target:
+
+- **`target: azure`** — `set` / `rotate` shell out to `az keyvault secret set --name quelch-mcp-api-key`, then `az containerapp revision restart` so the new value takes effect within seconds. `show` reads the secret back via `az keyvault secret show`. Your operator identity needs `Key Vault Secrets Officer` on the deployment's vault.
+- **`target: onprem`** — `set` / `rotate` print the generated value plus copy-pasteable docker / systemd / k8s commands to apply it locally. `show` is rejected — Quelch can't read secrets out of a remote on-prem secret store.
+
+Flags:
+
+- `--deployment <name>` — required; must be a `role: mcp` deployment in the loaded config.
+- `--value <key>` — `set` only; supply a specific value instead of generating one.
+- `--quiet` — `set` and `rotate`; suppress printing the new key to stdout.
+
 ## Embedded helpers
 
 ### `quelch ai`

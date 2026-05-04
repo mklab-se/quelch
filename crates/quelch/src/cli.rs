@@ -236,6 +236,53 @@ pub enum Commands {
         #[arg(long)]
         api_key: Option<String>,
     },
+    /// Manage the Q-MCP API key for a deployment.
+    ///
+    /// Sets, rotates, or reads back the value the running Q-MCP expects in
+    /// `Authorization: Bearer ...`. Dispatches by deployment target — Azure
+    /// deployments shell out to `az keyvault secret set/show` against the
+    /// deployment's Key Vault; on-prem deployments print the value with
+    /// instructions on where to set the env var.
+    #[command(name = "mcp-key")]
+    McpKey {
+        #[command(subcommand)]
+        command: McpKeyCommand,
+    },
+}
+
+/// `quelch mcp-key` subcommands.
+#[derive(clap::Subcommand)]
+pub enum McpKeyCommand {
+    /// Set the Q-MCP API key for a deployment.
+    ///
+    /// Without `--value`, generates a fresh random key (32 random base64 bytes).
+    Set {
+        /// Deployment name (must be a `role: mcp` deployment in the config).
+        #[arg(long)]
+        deployment: String,
+        /// Use this exact value instead of generating one.
+        #[arg(long)]
+        value: Option<String>,
+        /// Don't print the new key to stdout — useful for CI / scripts that
+        /// already know the value (`--value`).
+        #[arg(long)]
+        quiet: bool,
+    },
+    /// Rotate the Q-MCP API key — generate a new value and store it.
+    Rotate {
+        /// Deployment name.
+        #[arg(long)]
+        deployment: String,
+        /// Don't print the new key to stdout.
+        #[arg(long)]
+        quiet: bool,
+    },
+    /// Print the current Q-MCP API key for a deployment.
+    Show {
+        /// Deployment name.
+        #[arg(long)]
+        deployment: String,
+    },
 }
 
 /// On-prem target for `quelch generate-deployment`.

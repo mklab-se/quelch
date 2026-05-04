@@ -217,6 +217,22 @@ async fn main() -> Result<()> {
             }
             quelch::mcp::run_server(&config, &deployment, &format!("{bind}:{port}")).await
         }
+        Commands::McpKey { command } => {
+            let cfg = config::load_config(&cli.config)?;
+            match command {
+                cli::McpKeyCommand::Set {
+                    deployment,
+                    value,
+                    quiet,
+                } => quelch::commands::mcp_key::set(&cfg, &deployment, value, quiet).await,
+                cli::McpKeyCommand::Rotate { deployment, quiet } => {
+                    quelch::commands::mcp_key::rotate(&cfg, &deployment, quiet).await
+                }
+                cli::McpKeyCommand::Show { deployment } => {
+                    quelch::commands::mcp_key::show(&cfg, &deployment).await
+                }
+            }
+        }
         Commands::Azure { command } => match command {
             AzureCommands::Plan {
                 deployment,
