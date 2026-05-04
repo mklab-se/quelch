@@ -600,10 +600,15 @@ azure:
   naming:
     prefix: "quelch"
     environment: "prod"
-openai:
+ai:
+  provider: azure_openai
   endpoint: "https://test.openai.azure.com"
-  embedding_deployment: "text-embedding-3-large"
-  embedding_dimensions: 3072
+  embedding:
+    deployment: "text-embedding-3-large"
+    dimensions: 3072
+  chat:
+    deployment: "gpt-4.1-mini"
+    model_name: "gpt-4.1-mini"
 sources:
   - type: jira
     name: jira-cloud
@@ -645,10 +650,15 @@ cosmos:
 search:
   service: "quelch-prod-search"
   sku: "standard"
-openai:
+ai:
+  provider: azure_openai
   endpoint: "https://test.openai.azure.com"
-  embedding_deployment: "text-embedding-3-large"
-  embedding_dimensions: 3072
+  embedding:
+    deployment: "text-embedding-3-large"
+    dimensions: 3072
+  chat:
+    deployment: "gpt-4.1-mini"
+    model_name: "gpt-4.1-mini"
 sources:
   - type: jira
     name: jira-cloud
@@ -701,10 +711,15 @@ azure:
   subscription_id: "sub-test"
   resource_group: "rg-test"
   region: "swedencentral"
-openai:
+ai:
+  provider: azure_openai
   endpoint: "https://test.openai.azure.com"
-  embedding_deployment: "text-embedding-3-large"
-  embedding_dimensions: 3072
+  embedding:
+    deployment: "text-embedding-3-large"
+    dimensions: 3072
+  chat:
+    deployment: "gpt-4.1-mini"
+    model_name: "gpt-4.1-mini"
 sources:
   - type: jira
     name: jira-dc
@@ -807,10 +822,15 @@ azure:
   resource_group: "rg-test"
   region: "swedencentral"
   skip_role_assignments: true
-openai:
+ai:
+  provider: azure_openai
   endpoint: "https://test.openai.azure.com"
-  embedding_deployment: "text-embedding-3-large"
-  embedding_dimensions: 3072
+  embedding:
+    deployment: "text-embedding-3-large"
+    dimensions: 3072
+  chat:
+    deployment: "gpt-4.1-mini"
+    model_name: "gpt-4.1-mini"
 sources:
   - type: jira
     name: jira-cloud

@@ -48,10 +48,15 @@ search:
   service: "quelch-prod-search"
   sku: "basic"
 
-openai:
+ai:
+  provider: azure_openai
   endpoint: "https://test.openai.azure.com"
-  embedding_deployment: "text-embedding-3-large"
-  embedding_dimensions: 3072
+  embedding:
+    deployment: "text-embedding-3-large"
+    dimensions: 3072
+  chat:
+    deployment: "gpt-4.1-mini"
+    model_name: "gpt-4.1-mini"
 
 rigg:
   dir: "{rigg_dir}"
@@ -140,10 +145,15 @@ azure:
 cosmos:
   database: "quelch"
 
-openai:
+ai:
+  provider: azure_openai
   endpoint: "https://test.openai.azure.com"
-  embedding_deployment: "text-embedding-3-large"
-  embedding_dimensions: 3072
+  embedding:
+    deployment: "text-embedding-3-large"
+    dimensions: 3072
+  chat:
+    deployment: "gpt-4.1-mini"
+    model_name: "gpt-4.1-mini"
 
 rigg:
   dir: "{rigg_dir}"
@@ -252,10 +262,15 @@ azure:
 cosmos:
   database: "quelch"
 
-openai:
+ai:
+  provider: azure_openai
   endpoint: "https://test.openai.azure.com"
-  embedding_deployment: "text-embedding-3-large"
-  embedding_dimensions: 3072
+  embedding:
+    deployment: "text-embedding-3-large"
+    dimensions: 3072
+  chat:
+    deployment: "gpt-4.1-mini"
+    model_name: "gpt-4.1-mini"
 
 rigg:
   dir: "{rigg_dir}"
@@ -319,10 +334,15 @@ azure:
 cosmos:
   database: "quelch"
 
-openai:
+ai:
+  provider: azure_openai
   endpoint: "https://test.openai.azure.com"
-  embedding_deployment: "text-embedding-3-large"
-  embedding_dimensions: 3072
+  embedding:
+    deployment: "text-embedding-3-large"
+    dimensions: 3072
+  chat:
+    deployment: "gpt-4.1-mini"
+    model_name: "gpt-4.1-mini"
 
 rigg:
   dir: "{rigg_dir}"

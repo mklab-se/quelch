@@ -40,10 +40,19 @@ pub fn minimal_template() -> Config {
         },
         cosmos: CosmosConfig::default(),
         search: SearchConfig::default(),
-        openai: OpenAiConfig {
-            endpoint: "https://${AOI_ACCOUNT}.openai.azure.com".to_string(),
-            embedding_deployment: "text-embedding-3-large".to_string(),
-            embedding_dimensions: 3072,
+        ai: AiConfig {
+            provider: AiProvider::Foundry,
+            endpoint: "https://${FOUNDRY_PROJECT}.cognitiveservices.azure.com".to_string(),
+            embedding: AiEmbeddingConfig {
+                deployment: "text-embedding-3-large".to_string(),
+                dimensions: 3072,
+            },
+            chat: AiChatConfig {
+                deployment: "gpt-4.1-mini".to_string(),
+                model_name: "gpt-4.1-mini".to_string(),
+                retrieval_reasoning_effort: ReasoningEffort::Low,
+                output_mode: OutputMode::AnswerSynthesis,
+            },
         },
         sources: vec![SourceConfig::Jira(JiraSourceConfig {
             name: "jira-cloud".to_string(),

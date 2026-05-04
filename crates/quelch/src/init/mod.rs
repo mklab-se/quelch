@@ -2,6 +2,7 @@
 ///
 /// Entry point: [`run`].
 pub mod discover;
+pub mod prereq;
 pub mod prompts;
 pub mod templates;
 
@@ -68,27 +69,45 @@ async fn run_interactive() -> anyhow::Result<Config> {
     println!("Welcome to quelch init.");
     println!("This wizard will create a quelch.yaml for your environment.");
     println!();
+    println!(
+        "Quelch does not provision Azure infrastructure for you — it expects the\n\
+         resource group, Cosmos DB account, AI Search service, AI model provider\n\
+         (Foundry project or Azure OpenAI account), Container Apps environment,\n\
+         Application Insights component, and Key Vault to already exist. See\n\
+         docs/getting-started.md for the full prerequisites list and `az`\n\
+         commands."
+    );
+    println!();
 
     let azure = prompts::azure_section().await?;
-    let subscription_id = azure.subscription_id.clone();
-
-    let openai = prompts::openai_section(&azure, &subscription_id).await?;
+    let ai = prompts::ai_section(&azure).await?;
     let sources = prompts::sources_section().await?;
     let deployments = prompts::deployments_section(&sources).await?;
     let mcp = prompts::mcp_section(&deployments).await?;
 
-    Ok(Config {
+    let config = Config {
         azure,
         cosmos: crate::config::CosmosConfig::default(),
         search: crate::config::SearchConfig::default(),
-        openai,
+        ai,
         sources,
         ingest: IngestConfig::default(),
         deployments,
         mcp,
         rigg: RiggConfig::default(),
         state: StateConfig::default(),
-    })
+    };
+
+    let report = prereq::check_all(&config).await;
+    report.print();
+    if report.has_missing() {
+        println!(
+            "\nThe config has been written, but some prerequisites are missing.\n\
+             Create them in Azure, then run `quelch validate` to re-check."
+        );
+    }
+
+    Ok(config)
 }
 
 // ---------------------------------------------------------------------------
