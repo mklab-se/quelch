@@ -1,6 +1,6 @@
 # Sync correctness
 
-Incremental sync is the most error-prone part of any system that mirrors an external source. Quelch v1 hit specific bugs here, so this document spells out the v2 algorithm in full detail. If you read only one operational document, read this one.
+Incremental sync is the most error-prone part of any system that mirrors an external source. Earlier iterations of this codebase hit specific bugs here, so this document spells out the current algorithm in full detail. If you read only one operational document, read this one.
 
 ## The problem
 
@@ -89,7 +89,7 @@ The cursor only advances on full-window success. A crashed worker re-runs its cu
 
 ### Trade-offs
 
-- **Floor on freshness.** A brand-new issue takes at least `safety_lag_minutes` to land in Cosmos (and another `search.indexer.schedule.interval` after that to land in the AI Search index). For an agent / search use case this is fine. Real-time use cases (live dashboards) would need webhooks; out of scope for v1.
+- **Floor on freshness.** A brand-new issue takes at least `safety_lag_minutes` to land in Cosmos (and another `search.indexer.schedule.interval` after that to land in the AI Search index). For an agent / search use case this is fine. Real-time use cases (live dashboards) would need webhooks; out of scope.
 - **Boundary minute is re-queried.** Every cycle re-queries the minute equal to `last_complete_minute`. Idempotent but a small redundancy — typically a handful of issues per cycle. Acceptable.
 - **Long-running cycles don't shift their target.** A cycle whose window contains a million issues runs to completion against the fixed `window_end`. New updates between `window_end` and now land in the *next* cycle's window. Predictable; no slipping.
 - **Clock-skew tolerance bounded by `safety_lag_minutes`.** If Atlassian's clock is more than `safety_lag_minutes` ahead of ours, we could advance past minutes that haven't actually settled. Default 2 minutes is comfortably more than typical clock skew.

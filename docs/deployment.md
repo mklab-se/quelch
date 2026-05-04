@@ -12,7 +12,7 @@ Before your first `quelch azure deploy` you need:
 1. **The Quelch CLI installed** locally (`brew install mklab-se/tap/quelch` or `cargo install quelch`).
 2. **The Azure CLI installed and logged in** (`az login`). Quelch uses your `az` credentials for all Azure operations — there's no separate Quelch identity to provision.
 3. **An Azure subscription** that you have at least the `Contributor` role on. `Owner` is needed if you want Quelch to create Microsoft Entra ID role assignments for managed identities (the default — see [Authentication chain](#authentication-chain) below). If you only have `Contributor`, set `azure.skip_role_assignments: true` in the config and have a subscription owner apply the role assignments separately (Quelch emits a script).
-4. **A pre-existing Azure OpenAI account** with an embedding model deployment (`text-embedding-3-large` recommended). Quelch points at it via `openai.endpoint`; it does not provision OpenAI itself in v1 (capacity quotas make that fragile in code).
+4. **A pre-existing Azure OpenAI account** with an embedding model deployment (`text-embedding-3-large` recommended). Quelch points at it via `openai.endpoint`; it does not provision OpenAI itself (capacity quotas make that fragile to script).
 5. **Source-system credentials** in your local environment as env vars referenced by `quelch.yaml`:
    - Jira Cloud: `JIRA_EMAIL`, `JIRA_API_TOKEN`.
    - Jira Data Center: `JIRA_PAT`.

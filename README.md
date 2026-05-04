@@ -26,23 +26,32 @@
 
 ## What is Quelch?
 
-Quelch v2 is a knowledge-platform operator tool for teams using Jira and Confluence. It ingests data into **Cosmos DB** as the system of record, uses **Azure AI Search** (via the embedded [rigg](https://github.com/mklab-se/rigg) library) for hybrid semantic retrieval, and exposes a **five-tool MCP API** that agents (Copilot Studio, VS Code Copilot, Claude, Codex) can call directly.
+Quelch is a knowledge-platform operator tool for teams using Jira and Confluence. It ingests data into **Cosmos DB** as the system of record, uses **Azure AI Search** (via the embedded [rigg](https://github.com/mklab-se/rigg) library) for hybrid semantic retrieval, and exposes a **five-tool MCP API** that agents (Copilot Studio, VS Code Copilot, Claude, Codex) can call directly.
 
 One Rust binary, one YAML config file, three runtime roles: `quelch ingest`, `quelch mcp`, and the operator CLI.
 
 ## Architecture overview
 
 ```
-Sources → quelch ingest → Cosmos DB → AI Search Indexer → AI Search Index
-                              ↑                                ↑
-                              └─ quelch-meta (cursors)         │
-                                                               │
-                       quelch mcp ────────────────────────────┘
-                              ↑
-                       Agent (Copilot Studio / VS Code / Claude / etc.)
+                                              ┌─────────────────────────────┐
+                                              │  Azure AI Search            │
+                            ┌─────────────┐   │   ├─ Indexer (auto-vector)  │
+Sources ──quelch ingest──►  │  Cosmos DB  │◄──┤   └─ Knowledge Base         │
+                            │ (raw JSON)  │   │      (Agentic Retrieval)    │
+                            └──────┬──────┘   └─────────────┬───────────────┘
+                                   │ query · get             │ search
+                                   │ aggregate               │ (semantic)
+                                   ▼                         ▼
+                                 ┌────────────────────────────┐
+                                 │        quelch mcp          │
+                                 │ (per-tool routing; 5 tools)│
+                                 └─────────────┬──────────────┘
+                                               │  MCP Streamable HTTP
+                                               ▼
+                              Agent (Copilot Studio / VS Code / Claude / Codex / …)
 ```
 
-See [docs/architecture.md](docs/architecture.md) for details.
+The MCP server fans out **per tool**: `query`/`get`/`aggregate` hit Cosmos DB directly (exact, exhaustive); `search` routes through the Azure AI Search **Knowledge Base** (Agentic Retrieval — question decomposition, reranking, optional answer synthesis); `list_sources` answers from a cached schema catalog without any backend call. See [docs/architecture.md](docs/architecture.md) for full details.
 
 ## Features
 
@@ -73,27 +82,20 @@ cargo install quelch
 
 Download pre-built binaries from the [latest release](https://github.com/mklab-se/quelch/releases/latest).
 
-## Quick start
+## Quick check
+
+After installing, confirm the binary works and try Quelch entirely offline against the in-process simulator:
 
 ```bash
-# Generate a starter config interactively
-quelch init
-
-# Validate the generated config
-quelch validate
-
-# Plan Azure resources (Bicep + rigg files) — no Azure calls yet
-quelch azure plan ingest --no-what-if
-
-# Deploy to Azure (calls az + rigg-client)
-quelch azure deploy ingest
-
-# Run the ingest worker
-quelch ingest
-
-# Start the MCP server
-quelch mcp
+quelch --version
+quelch dev          # offline — sim + Cosmos mock + ingest + MCP, all in one process
 ```
+
+The TUI fleet dashboard appears; press `q` to exit. No Azure account or source credentials needed for `quelch dev`.
+
+## Getting started
+
+When you're ready to run Quelch against real Jira / Confluence and deploy to Azure, follow [docs/getting-started.md](docs/getting-started.md) — a step-by-step happy-path walkthrough covering prerequisites, `quelch init`, planning, deploying, and connecting an agent.
 
 ## CLI surface
 

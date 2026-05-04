@@ -32,7 +32,7 @@ https://quelch-prod-mcp.<region>.azurecontainerapps.io
 
 ## Authentication
 
-### v1 — API key
+### Current — API key
 
 The deployed Container App generates and stores an API key in Azure Key Vault. Clients pass it as a header:
 
@@ -48,7 +48,7 @@ quelch agent generate --target <...>     # the bundle includes the key
 az keyvault secret show --vault-name quelch-prod-kv --name mcp-api-key
 ```
 
-### v1.x — Microsoft Entra ID
+### Future — Microsoft Entra ID
 
 When `mcp.auth.mode: "entra"` is set, the Container App uses Container Apps' built-in Easy Auth integration. Agent platforms (Copilot Studio, VS Code MCP) acquire a token for the Quelch app registration and present it as a bearer token.
 

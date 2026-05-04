@@ -10,15 +10,15 @@ It does this by being three things at once:
 
 One binary, one config file, three modes: `quelch ingest`, `quelch mcp`, and the bare `quelch ...` CLI.
 
-## Why Quelch v2 looks different from v1
+## Why two stores
 
-Quelch v1 wrote directly from sources into Azure AI Search. That was simple, but it has a sharp ceiling: Azure AI Search is excellent at semantic search and weak at exact, exhaustive, aggregable queries — and *both* are needed when an agent has to answer a real question like "how many open Jira issues are assigned to me?" or "what's planned for the next sprint?".
+Azure AI Search is excellent at semantic search and weak at exact, exhaustive, aggregable queries — and *both* are needed when an agent has to answer a real question like "how many open Jira issues are assigned to me?" or "what's planned for the next sprint?".
 
-Quelch v2 keeps Azure AI Search for what it's good at (hybrid semantic search) and adds Cosmos DB underneath as the system of record:
+Quelch keeps Azure AI Search for what it's good at and adds Cosmos DB underneath as the system of record:
 
-- **Cosmos DB** holds the raw documents and answers exact, structured, and aggregable queries.
-- **Azure AI Search** sits on top of Cosmos DB via its built-in Indexer + integrated vectorization, and answers semantic queries.
-- **Quelch MCP** is the unified facade. Agents pick the right tool (`search`, `query`, `get`, `list_sources`, `aggregate`) and Quelch routes to the right backend.
+- **Cosmos DB** holds the raw documents and answers exact, structured, and aggregable queries (`query`, `get`, `aggregate` go here directly).
+- **Azure AI Search** sits on top of Cosmos DB via its Indexer + integrated vectorisation. The MCP `search` tool routes through the **Knowledge Base** (Agentic Retrieval) layer — built-in question decomposition, reranking, and optional answer synthesis — not the raw index.
+- **Quelch MCP** is the unified facade. Agents pick the right tool and Quelch routes per-tool to the right backend.
 
 Result: agents can answer both "find issues that talk about camera connection problems" *and* "list every Story assigned to me with no exception" — in the same conversation, against the same data.
 
@@ -26,6 +26,7 @@ Result: agents can answer both "find issues that talk about camera connection pr
 
 | If you want to … | Read |
 |---|---|
+| Set up Quelch from scratch — happy path | [getting-started.md](getting-started.md) |
 | Understand how Quelch fits together | [architecture.md](architecture.md) |
 | Write or edit the config file | [configuration.md](configuration.md) |
 | Look up a specific command | [cli.md](cli.md) |
@@ -71,4 +72,4 @@ That spins up the simulator, an in-memory mock for Cosmos and AI Search, and the
 
 ## Status
 
-This document describes the **target architecture** for Quelch v2. The implementation is in progress; v1 (direct-to-Azure-AI-Search) is the current shipping version. See the changelog for what's actually live.
+The architecture described here is what's implemented in the current shipping version. See [CHANGELOG.md](../CHANGELOG.md) for the per-release deltas.

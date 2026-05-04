@@ -167,7 +167,6 @@ agent-bundle/
 └── prompts.md                      — example user prompts
 ```
 
-This extends what today's `quelch generate-agent` does in v1.
 
 ### `claude-code` (skill form)
 

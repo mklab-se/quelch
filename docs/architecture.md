@@ -5,37 +5,43 @@ This document describes how Quelch is structured: the components, how data flows
 ## The big picture
 
 ```
-                                                    ┌──────────────────────┐
-   Source systems          ┌────────────────────┐   │  Azure AI Search     │
-   ───────────────         │  Cosmos DB         │   │  ────────────────    │
-   Jira / Confluence /     │  ───────────────   │   │  per-container       │
-   future connectors       │  jira-issues-*     │   │  Indexer + skillset  │
-        │                  │  confluence-*      │   │  (integrated         │
-        │  quelch ingest   │  jira-sprints      │   │   vectorisation via  │
-        │  (worker)   ────►│  jira-fix-versions │◄──┤   Azure OpenAI)      │
-        │                  │  jira-projects     │   │  Search Index        │
-        │                  │  confluence-spaces │   │     │                │
-        │                  │  quelch-meta       │   │     ▼                │
-        │                  └────────────────────┘   │  hybrid + vector     │
-        │                            ▲              │  search index        │
-        │                            │              └──────────┬───────────┘
-        │                            │                         │
-        │                            │  point-read             │  semantic /
-        │                            │  Cosmos SQL             │  hybrid query
-        │                            │                         │
-        │                  ┌─────────┴─────────────────────────┴──┐
-        │                  │  Quelch MCP server                   │
-        └─────────────────►│  (Container App)                     │
-                           │  Tools: search / query / get /       │
-                           │         list_sources / aggregate     │
-                           └──────────────────┬───────────────────┘
-                                              │  MCP Streamable HTTP
-                                              ▼
-                                  ┌──────────────────────────┐
-                                  │  Agent platforms         │
-                                  │  Copilot Studio / VS Code│
-                                  │  Claude Code / gh CLI    │
-                                  └──────────────────────────┘
+                                                    ┌──────────────────────────┐
+                                                    │  Azure AI Search         │
+                            ┌────────────────────┐  │  ──────────────────────  │
+   Source systems           │  Cosmos DB         │  │  Indexer + skillset      │
+   ───────────────          │  ───────────────   │  │  (integrated             │
+   Jira / Confluence /      │  jira-issues-*     │  │   vectorisation via      │
+   future connectors        │  confluence-*      │  │   Azure OpenAI)          │
+        │                   │  jira-sprints      │  │           │              │
+        │  quelch ingest    │  jira-fix-versions │◄─┤           ▼              │
+        │  (worker)   ─────►│  jira-projects     │  │  Search Index (vector +  │
+        │                   │  confluence-spaces │  │           │  full-text)  │
+        │                   │  quelch-meta       │  │           ▼              │
+        │                   └────────────────────┘  │  Knowledge Base          │
+        │                            ▲              │  (Agentic Retrieval)     │
+        │                            │              └──────────────┬───────────┘
+        │                            │                              │
+        │                            │  query · get                 │  search
+        │                            │  aggregate                   │  (semantic +
+        │                            │  (Cosmos SQL)                │   reranked +
+        │                            │                              │   optional answer)
+        │                            │                              │
+        │                   ┌────────┴──────────────────────────────┴┐
+        │                   │  Quelch MCP server                     │
+        └──────────────────►│  (Container App)                       │
+                            │  5 tools, per-tool routing:            │
+                            │   • search        → Knowledge Base     │
+                            │   • query/get/agg → Cosmos DB          │
+                            │   • list_sources  → cached SchemaCatalog │
+                            └──────────────────┬─────────────────────┘
+                                               │  MCP Streamable HTTP
+                                               ▼
+                                   ┌──────────────────────────┐
+                                   │  Agent platforms         │
+                                   │  Copilot Studio / VS Code│
+                                   │  Claude Code / Codex /   │
+                                   │  gh Copilot CLI          │
+                                   └──────────────────────────┘
 ```
 
 ## Roles
@@ -106,18 +112,18 @@ This means Quelch ingest is dumb on purpose: no model dependencies, no embedding
 ### Query (read path)
 
 ```
-Agent ──MCP─► quelch mcp ─┬─► AI Search   (search: hybrid semantic+keyword)
-                          ├─► Cosmos DB   (query / get / aggregate)
-                          └─► AI Search   (list_sources read-side)
+Agent ──MCP─► quelch mcp ─┬─► AI Search Knowledge Base   (search — Agentic Retrieval)
+                          ├─► Cosmos DB                  (query / get / aggregate)
+                          └─► (cached SchemaCatalog)     (list_sources)
 ```
 
 The MCP server picks a backend per tool:
 
-- `search` → AI Search (hybrid semantic+keyword). Use when the agent has natural language and wants the index's ranking.
+- `search` → AI Search **Knowledge Base** (Agentic Retrieval — question decomposition, hybrid semantic+keyword, reranking, optional answer synthesis). Use when the agent has natural language and wants the best answer. With `mcp.search.disable_agentic: true` the call falls back to the underlying index for raw hybrid search.
 - `query` → Cosmos SQL. Use when the agent has exact filters and needs all matches.
-- `get` → Cosmos point-read. Use when the agent has an id.
+- `get` → Cosmos cross-partition point-read. Use when the agent has an id.
 - `aggregate` → Cosmos SQL aggregations. Use for `COUNT`, `SUM`, `GROUP BY`.
-- `list_sources` → static metadata + a sample of values from Cosmos / AI Search.
+- `list_sources` → cached `SchemaCatalog` built at MCP server startup. Doesn't hit any backend at request time.
 
 The MCP layer translates each tool call into the appropriate backend call(s), resolves logical data-source names to physical containers/indexes (see [Two layers of names](#two-layers-of-names)), applies the deployment's exposure rules, paginates with cursors, and returns results with deep-link `source_link` fields so the agent can hand the user back to Jira/Confluence directly.
 
@@ -418,9 +424,9 @@ Distributed ingest workers are designed to be **disjoint by config**, not coordi
 
 ## Sync correctness
 
-Incremental sync against Atlassian APIs is the most error-prone part of the system. Atlassian's filter precision is per-minute, the document `updated` field is per-second, and Atlassian's own indexes lag — the obvious naive algorithm ("remember the latest `updated` seen, query everything ≥ that") is wrong on every one of those mismatches and was a real source of v1 bugs.
+Incremental sync against Atlassian APIs is the most error-prone part of the system. Atlassian's filter precision is per-minute, the document `updated` field is per-second, and Atlassian's own indexes lag — the obvious naive algorithm ("remember the latest `updated` seen, query everything ≥ that") is wrong on every one of those mismatches and was a real source of bugs in earlier iterations of this codebase.
 
-The v2 algorithm is:
+The algorithm is:
 
 - **Cursor at exact-minute resolution** (`last_complete_minute`), with the semantic "every change with `updated <= last_complete_minute` is durably in Cosmos".
 - **Sync in closed minute-resolution intervals** with a fixed safety lag (default 2 minutes) behind real time.
@@ -523,18 +529,18 @@ You can hand-edit anything under `rigg/` — Quelch will not overwrite hand-edit
 
 ## What carries over from v1
 
-Quelch v1 ships ~5,000 lines of Rust today. Most of it is reusable.
+The earlier direct-to-Azure-AI-Search architecture left ~5,000 lines of Rust we could reuse. Most of it carries over.
 
 ### Kept and extended
 
-| Module | Role in v2 |
+| Module | Role |
 |---|---|
 | `sources/jira.rs`, `sources/confluence.rs`, `sources/mod.rs` | The `SourceConnector` trait stays. We extend the connectors to populate companion containers (sprints, fix versions, spaces). |
 | `config/` | Stays as the YAML loader; new sections (`cosmos`, `openai`, `deployments`, `mcp`, `state`) added. |
 | `tui/` | Refocused: default UX of `quelch dev`, plus `quelch status --tui` becomes a fleet dashboard reading `quelch-meta`. |
 | `sim/` | Drives `quelch dev` and CI. |
 | `mock/` | Local Jira/Confluence HTTP server, used by `quelch dev` and integration tests. |
-| `ai.rs` (ailloy integration) | Stays as a dependency for future AI features. Not used in v2 ingest path. |
+| `ai.rs` (ailloy integration) | Stays as a dependency for future AI features. Not used on the ingest path. |
 | `copilot.rs` | Becomes the `copilot-studio` target of `quelch agent generate`. |
 
 ### Replaced or removed
@@ -561,7 +567,7 @@ Quelch v1 ships ~5,000 lines of Rust today. Most of it is reusable.
 ## Cross-cutting concerns
 
 - **Auth to Azure resources:** managed identity wherever possible (Container Apps → Cosmos / AI Search / OpenAI). API key fallbacks for local development. Keys are read from environment variables; the config never contains a literal secret.
-- **Auth to source systems:** unchanged from v1 (PAT for Data Center, email + API token for Cloud).
+- **Auth to source systems:** PAT for Data Center, email + API token for Cloud.
 - **Logging:** `tracing` + `tracing-subscriber`, JSON output in production, TUI-friendly fields. Per-document logs only at `debug!`.
 - **Errors:** typed per module with `thiserror`, `anyhow` at CLI boundaries (unchanged from v1).
 - **Versioning:** the Quelch CLI version pins the Container App image tag. `quelch 0.9.0 azure deploy` always deploys `ghcr.io/mklab-se/quelch:0.9.0`. No drift between operator and worker.

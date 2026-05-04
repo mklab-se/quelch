@@ -402,7 +402,7 @@ Flags:
 
 ### `quelch ai`
 
-Manages the `ailloy` integration. In v2 this is reserved for future AI features; embeddings happen in Azure AI Search, not here.
+Manages the `ailloy` integration. Reserved for future AI features in Quelch itself; embeddings happen in Azure AI Search, not here.
 
 ```bash
 quelch ai status
@@ -411,7 +411,7 @@ quelch ai config
 
 ### `quelch sim`
 
-Runs the activity simulator without the rest of the stack. Same flags as v1 (`--duration`, `--seed`, `--rate-multiplier`, `--fault-rate`, `--snapshot-to`).
+Runs the activity simulator without the rest of the stack. Currently a stub — superseded by `quelch dev`, which spins up the same simulator alongside an in-memory Cosmos backend, the ingest worker, and the MCP server in a single process.
 
 ### `quelch mock`
 

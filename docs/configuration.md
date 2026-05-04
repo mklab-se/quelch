@@ -188,7 +188,7 @@ ingest:
 | `max_concurrent_per_source` | `1` | Maximum concurrent in-flight requests to a single source instance. Atlassian rate-limits per account; concurrency rarely helps. |
 | `max_retries` | `5` | Retry cap for transient 5xx responses without `Retry-After`. 429s (and 5xx with `Retry-After`) honour the server's value. |
 
-These are global defaults. Future versions may allow per-source overrides; v1 keeps it global to make the system easier to reason about.
+These are global defaults. Future versions may allow per-source overrides; for now Quelch keeps it global to make the system easier to reason about.
 
 ## `deployments`
 
