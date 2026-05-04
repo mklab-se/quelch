@@ -147,8 +147,8 @@ ai:
     deployment: "text-embedding-3-large"
     dimensions: 3072
   chat:
-    deployment: "gpt-4.1-mini"
-    model_name: "gpt-4.1-mini"
+    deployment: "gpt-5-mini"
+    model_name: "gpt-5-mini"
 "#;
 
     #[test]

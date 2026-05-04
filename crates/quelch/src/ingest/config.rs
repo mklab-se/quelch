@@ -132,8 +132,8 @@ ai:
     deployment: "te"
     dimensions: 1536
   chat:
-    deployment: "gpt-4.1-mini"
-    model_name: "gpt-4.1-mini"
+    deployment: "gpt-5-mini"
+    model_name: "gpt-5-mini"
 ingest:
   poll_interval: "120s"
   safety_lag_minutes: 5
@@ -171,8 +171,8 @@ ai:
     deployment: "te"
     dimensions: 1536
   chat:
-    deployment: "gpt-4.1-mini"
-    model_name: "gpt-4.1-mini"
+    deployment: "gpt-5-mini"
+    model_name: "gpt-5-mini"
 ingest:
   poll_interval: "not-a-duration"
   max_cycle_duration: "also-bad"

@@ -95,8 +95,8 @@ ai:
     deployment: "text-embedding-3-large"
     dimensions: 3072
   chat:
-    deployment: "gpt-4.1-mini"
-    model_name: "gpt-4.1-mini"
+    deployment: "gpt-5-mini"
+    model_name: "gpt-5-mini"
     retrieval_reasoning_effort: low                          # minimal | low (default) | medium
     output_mode: answerSynthesis                             # answerSynthesis (default) | extractedData
 ```
@@ -104,7 +104,7 @@ ai:
 The `ai:` block points Quelch at an **existing** AI model provider — either a Microsoft Foundry project or an Azure OpenAI account — that holds two deployments:
 
 - **`embedding`** — used by the AI Search vectorizer / skillset to compute vectors during indexing. `text-embedding-3-large` (3072 dims) is recommended.
-- **`chat`** — bound to the AI Search Knowledge Base's `models[]` array. AI Search uses it for query planning during agentic retrieval and (when `output_mode: answerSynthesis`) for answer formulation. Supported chat models: `gpt-4o`, `gpt-4o-mini`, `gpt-4.1`, `gpt-4.1-nano`, `gpt-4.1-mini`, `gpt-5`, `gpt-5-nano`, `gpt-5-mini`.
+- **`chat`** — bound to the AI Search Knowledge Base's `models[]` array. AI Search uses it for query planning during agentic retrieval and (when `output_mode: answerSynthesis`) for answer formulation. Supported: `gpt-4o`, `gpt-4o-mini`, `gpt-4.1`, `gpt-4.1-nano`, `gpt-4.1-mini`, `gpt-5`, `gpt-5-nano`, `gpt-5-mini`. **`gpt-5-mini` is recommended** (newer, in Microsoft's portal-validated subset, similar cost/latency to `gpt-4.1-mini`).
 
 The `provider` field controls only what `quelch init` and `quelch validate` query when discovering existing accounts (`az cognitiveservices account list --kind OpenAI` vs `--kind AIServices`). The Bicep and rigg output is the same for both — only the `endpoint` URL differs. Authentication is via the Container App's managed identity + `Cognitive Services User` role on the AI provider; no API keys end up in the generated rigg files.
 
@@ -452,8 +452,8 @@ ai:
     deployment: "text-embedding-3-large"
     dimensions: 3072
   chat:
-    deployment: "gpt-4.1-mini"
-    model_name: "gpt-4.1-mini"
+    deployment: "gpt-5-mini"
+    model_name: "gpt-5-mini"
 
 sources:
   - type: jira

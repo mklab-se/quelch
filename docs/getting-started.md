@@ -39,13 +39,15 @@ All in the **same resource group** (this isn't strictly required by Azure, but i
 | **Cosmos DB account** (NoSQL API) | System of record. Quelch creates the database and containers inside. | `az cosmosdb create -n <name> -g <rg> --kind GlobalDocumentDB --capabilities EnableServerless` |
 | **Azure AI Search service** (Basic+, semantic ranker enabled) | Hosts the indexes and the agentic Knowledge Base. | `az search service create -n <name> -g <rg> --sku basic` then [enable semantic ranker](https://learn.microsoft.com/azure/search/semantic-how-to-enable-disable). |
 | **AI model provider** — pick one: |||
-| &nbsp;&nbsp;**Microsoft Foundry project** *(recommended)* | Holds the embedding deployment (used by the AI Search vectorizer) and the chat deployment (used by the Knowledge Base for query planning + answer synthesis). | Create in the [Foundry portal](https://ai.azure.com); deploy `text-embedding-3-large` + a supported chat model (e.g. `gpt-4.1-mini`). |
+| &nbsp;&nbsp;**Microsoft Foundry project** *(recommended)* | Holds the embedding deployment (used by the AI Search vectorizer) and the chat deployment (used by the Knowledge Base for query planning + answer synthesis). | Create in the [Foundry portal](https://ai.azure.com); deploy `text-embedding-3-large` + a supported chat model (e.g. `gpt-5-mini`). |
 | &nbsp;&nbsp;**Azure OpenAI account** | Same role as the Foundry project; older surface. | `az cognitiveservices account create -n <name> -g <rg> --kind OpenAI --sku S0 -l <region>`, then deploy embedding + chat models. |
 | **Container Apps environment** | Hosts the Quelch MCP and ingest Container Apps. | `az containerapp env create -n <name> -g <rg> -l <region>` (also creates a Log Analytics Workspace). |
 | **Application Insights** | Telemetry destination for the Container Apps. | `az monitor app-insights component create --app <name> -g <rg> -l <region>` |
 | **Key Vault** | Holds the MCP API key and the Jira / Confluence credentials. Quelch writes secrets into it; the Container App reads them via managed identity. | `az keyvault create -n <globally-unique-name> -g <rg> -l <region>` |
 
-**Supported chat models** (per the Azure AI Search 2025-11-01-preview): `gpt-4o`, `gpt-4o-mini`, `gpt-4.1`, `gpt-4.1-nano`, `gpt-4.1-mini`, `gpt-5`, `gpt-5-nano`, `gpt-5-mini`. Recommended embedding model: `text-embedding-3-large` (3072 dims).
+**Supported chat models** (per the Azure AI Search 2025-11-01-preview): `gpt-4o`, `gpt-4o-mini`, `gpt-4.1`, `gpt-4.1-nano`, `gpt-4.1-mini`, `gpt-5`, `gpt-5-nano`, `gpt-5-mini`. **Recommended: `gpt-5-mini`** — newer than the 4.1 family, in Microsoft's portal-validated subset, similar cost/latency tier. Use `gpt-5` if you need higher answer-synthesis quality and can absorb the cost; use `gpt-5-nano` for lowest latency when query complexity is moderate.
+
+**Recommended embedding model**: `text-embedding-3-large` (3072 dims).
 
 ### Source credentials
 

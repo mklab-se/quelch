@@ -49,8 +49,8 @@ pub fn minimal_template() -> Config {
                 dimensions: 3072,
             },
             chat: AiChatConfig {
-                deployment: "gpt-4.1-mini".to_string(),
-                model_name: "gpt-4.1-mini".to_string(),
+                deployment: "gpt-5-mini".to_string(),
+                model_name: "gpt-5-mini".to_string(),
                 retrieval_reasoning_effort: ReasoningEffort::Low,
                 output_mode: OutputMode::AnswerSynthesis,
             },

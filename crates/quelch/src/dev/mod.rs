@@ -255,8 +255,8 @@ fn build_dev_config(mock_jira_url: &str, mock_confluence_url: &str, _mcp_port: u
                 dimensions: 1536,
             },
             chat: AiChatConfig {
-                deployment: "gpt-4.1-mini".into(),
-                model_name: "gpt-4.1-mini".into(),
+                deployment: "gpt-5-mini".into(),
+                model_name: "gpt-5-mini".into(),
                 retrieval_reasoning_effort: ReasoningEffort::Low,
                 output_mode: OutputMode::AnswerSynthesis,
             },

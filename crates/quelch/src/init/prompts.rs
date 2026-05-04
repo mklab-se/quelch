@@ -285,7 +285,7 @@ fn pick_chat_deployment(available: &[discover::ModelDeployment]) -> anyhow::Resu
         }
         let dep: String = dialoguer::Input::new()
             .with_prompt("Chat deployment name")
-            .with_initial_text("gpt-4.1-mini")
+            .with_initial_text("gpt-5-mini")
             .interact_text()?;
         let model: String = dialoguer::Input::new()
             .with_prompt("Chat model name")
