@@ -99,38 +99,7 @@ When you're ready to run Quelch against real Jira / Confluence and deploy to Azu
 
 ## CLI surface
 
-```
-quelch — Cosmos + AI Search knowledge platform operator
-
-COMMANDS:
-  validate            Validate config without running
-  effective-config    Print the resolved config for a deployment
-  status              Show live ingest state from quelch-meta
-  ingest              Run the ingest worker
-  mcp                 Start the MCP HTTP server
-  dev                 Run sim + ingest + MCP in one process (no Azure needed)
-  azure plan          Show Bicep + rigg diff against live Azure
-  azure deploy        Apply Bicep + rigg to Azure
-  azure pull          Pull live rigg state to disk
-  azure indexer       Run / reset / status the AI Search Indexer
-  azure logs          Tail Container Apps log stream
-  azure destroy       Tear down all Azure resources for a deployment
-  query               Run a Cosmos SQL query from the CLI
-  search              Run a Knowledge Base search from the CLI
-  get                 Fetch a single document from Cosmos
-  reset               Reset ingest cursors
-  generate-deployment Generate docker-compose / systemd / k8s artefacts
-  agent generate      Generate agent or skill bundles for agent platforms
-  init                Interactive config wizard
-  ai                  Configure AI (ailloy) embedding model
-
-OPTIONS:
-  -c, --config <PATH>   Config file (default: quelch.yaml)
-  --help                Print help
-  --version             Print version
-```
-
-See [docs/cli.md](docs/cli.md) for every command and flag with examples.
+Run `quelch --help` for the live command list. See [docs/cli.md](docs/cli.md) for every command and flag with examples and discussion.
 
 ## Documentation
 
