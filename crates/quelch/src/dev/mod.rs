@@ -237,6 +237,7 @@ fn build_dev_config(mock_jira_url: &str, mock_confluence_url: &str, _mcp_port: u
             region: "swedencentral".into(),
             naming: NamingConfig::default(),
             skip_role_assignments: true,
+            resources: crate::config::AzureExistingResources::default(),
         },
         cosmos: CosmosConfig {
             account: None,

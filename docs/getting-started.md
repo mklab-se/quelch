@@ -10,7 +10,9 @@ If you just want to **evaluate Quelch locally** without touching Azure or your r
 
 ## 0. Prerequisites
 
-Before you start, make sure you have:
+Quelch deliberately does **not** provision the Azure infrastructure it depends on — it only configures internals (Cosmos containers, AI Search indexes / skillsets / knowledge sources / knowledge bases) and deploys the Container App that runs the MCP server. The rest you create up front in Azure. That's a deliberate split: it keeps the Quelch-managed surface small, makes role assignments transparent, and avoids fighting the quota and capacity issues that come with provisioning Cognitive Services accounts.
+
+### Tooling
 
 - **Quelch installed**:
   ```bash
@@ -24,15 +26,42 @@ Before you start, make sure you have:
   az account show       # confirm the right subscription is active
   ```
   Quelch uses your `az` credentials directly — there is no separate Quelch identity.
-- **At least Contributor on the Azure subscription** (or the resource group you'll deploy into). Owner is needed if you want Quelch to also create the role assignments that let Container Apps read Cosmos / AI Search / Key Vault. If you only have Contributor, set `azure.skip_role_assignments: true` in the config and have a subscription owner apply the role assignments manually (Quelch emits a script for this).
-- **An existing Azure OpenAI account** with an embedding model deployment. `text-embedding-3-large` (3072 dimensions) is the recommended default. Quelch will *not* provision the OpenAI account itself — capacity quotas make that fragile to script.
-- **Source credentials** for whichever sources you'll ingest:
-  - **Jira Cloud**: an Atlassian email + API token ([generate one here](https://id.atlassian.com/manage-profile/security/api-tokens))
-  - **Jira Data Center / Server**: a Personal Access Token from your Jira admin
-  - **Confluence Cloud / DC**: same as Jira (often the same token)
+- **At least Contributor on the resource group** you'll work in. **Owner** (or User Access Administrator) is needed if you want Quelch to grant the Container App's managed identity RBAC on Cosmos / AI Search / Key Vault / the AI provider — set `azure.skip_role_assignments: true` and apply the role assignments manually if you don't have that.
 - **A Git repository** to commit `quelch.yaml`, the generated `.quelch/` and `rigg/` directories. Treat the config as code.
 
-That's all. You don't need to pre-create the Cosmos DB account, the AI Search service, the Key Vault, or the Container Apps environment — Quelch will provision them.
+### Azure resources you must create before running `quelch init`
+
+All in the **same resource group** (this isn't strictly required by Azure, but it's what the docs and `quelch init` assume — saves you having to type cross-RG ARM IDs everywhere):
+
+| Resource | Why Quelch needs it | Create with |
+|---|---|---|
+| **Resource group** | Container for everything below | `az group create -n <rg> -l <region>` |
+| **Cosmos DB account** (NoSQL API) | System of record. Quelch creates the database and containers inside. | `az cosmosdb create -n <name> -g <rg> --kind GlobalDocumentDB --capabilities EnableServerless` |
+| **Azure AI Search service** (Basic+, semantic ranker enabled) | Hosts the indexes and the agentic Knowledge Base. | `az search service create -n <name> -g <rg> --sku basic` then [enable semantic ranker](https://learn.microsoft.com/azure/search/semantic-how-to-enable-disable). |
+| **AI model provider** — pick one: |||
+| &nbsp;&nbsp;**Microsoft Foundry project** *(recommended)* | Holds the embedding deployment (used by the AI Search vectorizer) and the chat deployment (used by the Knowledge Base for query planning + answer synthesis). | Create in the [Foundry portal](https://ai.azure.com); deploy `text-embedding-3-large` + a supported chat model (e.g. `gpt-4.1-mini`). |
+| &nbsp;&nbsp;**Azure OpenAI account** | Same role as the Foundry project; older surface. | `az cognitiveservices account create -n <name> -g <rg> --kind OpenAI --sku S0 -l <region>`, then deploy embedding + chat models. |
+| **Container Apps environment** | Hosts the Quelch MCP and ingest Container Apps. | `az containerapp env create -n <name> -g <rg> -l <region>` (also creates a Log Analytics Workspace). |
+| **Application Insights** | Telemetry destination for the Container Apps. | `az monitor app-insights component create --app <name> -g <rg> -l <region>` |
+| **Key Vault** | Holds the MCP API key and the Jira / Confluence credentials. Quelch writes secrets into it; the Container App reads them via managed identity. | `az keyvault create -n <globally-unique-name> -g <rg> -l <region>` |
+
+**Supported chat models** (per the Azure AI Search 2025-11-01-preview): `gpt-4o`, `gpt-4o-mini`, `gpt-4.1`, `gpt-4.1-nano`, `gpt-4.1-mini`, `gpt-5`, `gpt-5-nano`, `gpt-5-mini`. Recommended embedding model: `text-embedding-3-large` (3072 dims).
+
+### Source credentials
+
+For whichever sources you'll ingest:
+
+- **Jira Cloud**: an Atlassian email + API token ([generate one here](https://id.atlassian.com/manage-profile/security/api-tokens))
+- **Jira Data Center / Server**: a Personal Access Token from your Jira admin
+- **Confluence Cloud / DC**: same as Jira (often the same token)
+
+### Verify before continuing
+
+```bash
+az resource list -g <your-rg> -o table
+```
+
+You should see your Cosmos account, AI Search service, AI provider, ACA environment, App Insights, and Key Vault. `quelch init` and `quelch validate` will check this same list and tell you exactly what's missing.
 
 ---
 
@@ -45,10 +74,13 @@ quelch init
 
 The wizard:
 
-- Calls `az` to discover the subscriptions, resource groups, Cosmos accounts, AI Search services, and Azure OpenAI accounts you already have.
+- Calls `az` to discover your subscriptions and resource groups.
 - Asks which subscription / resource group / region to use.
-- Asks for source connections one at a time (Jira first, then Confluence). For each it will offer to test the credentials by hitting `/rest/api/2/myself`.
+- Asks whether your model deployments live in **Microsoft Foundry** or **Azure OpenAI**, lists the existing accounts/projects of that kind in the chosen RG, and lets you pick. If none are found it prints the `az` command you need.
+- Lists the **embedding** and **chat** deployments inside the selected provider so you can pick from supported models, and asks for retrieval reasoning effort + output mode for the Knowledge Base.
+- Asks for source connections one at a time (Jira first, then Confluence). For each it offers to test the credentials by hitting `/rest/api/2/myself`.
 - Asks for the deployment shape — for a first run pick **"single ingest + MCP, both in Azure"**.
+- Runs a final **prerequisite check** against `az` and prints a per-resource ✓/✗/? report. Missing items get a copy-pasteable `az` create command; "?" means `az` couldn't determine status (not signed in, transient, etc.).
 
 The wizard writes a `quelch.yaml` in the current directory.
 
@@ -117,8 +149,8 @@ Quelch generates Bicep into `.quelch/azure/` and `rigg/` files into `rigg/` from
 
 The output lists:
 
-- Bicep changes (new Cosmos account, new AI Search service, new Container Apps, role assignments, …)
-- rigg changes (new indexes, indexers, skillsets, Knowledge Sources, the Knowledge Base used for Agentic Retrieval)
+- Bicep changes — the Cosmos database + containers (created inside your existing Cosmos account), one user-assigned managed identity per deployment, role assignments on your existing resources, and the Container App that runs the MCP / ingest worker. **Quelch does not create the Cosmos account, AI Search service, Key Vault, ACA environment, App Insights, or AI provider** — they're referenced via `existing` in the generated Bicep.
+- rigg changes — new indexes, indexers, skillsets, Knowledge Sources, and the Knowledge Base used for Agentic Retrieval (with both the embedding deployment wired into the vectorizer and the chat deployment wired into `models[]`).
 
 Read the diff. Both `.quelch/azure/` and `rigg/` should be committed to your config repo so they're reviewable in PRs alongside `quelch.yaml`.
 

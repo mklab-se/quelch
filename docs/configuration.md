@@ -7,10 +7,10 @@ This document describes every section of the file.
 ## Top-level shape
 
 ```yaml
-azure:        { ... }   # subscription, resource group, region, naming
-cosmos:       { ... }   # account, database, default container names
-search:       { ... }   # AI Search service shell (name, SKU). Internals are rigg-managed.
-openai:       { ... }   # endpoint and embedding deployment used by the rigg-managed skillsets
+azure:        { ... }   # subscription, resource group, region, naming, references to existing resources
+cosmos:       { ... }   # Cosmos account name + database + default container names (account is pre-existing)
+search:       { ... }   # Azure AI Search service name (pre-existing) + indexer cadence
+ai:           { ... }   # AI provider (Foundry or Azure OpenAI) + embedding + chat deployments
 sources:      [ ... ]   # named source instances (Jira, Confluence)
 ingest:       { ... }   # global ingest worker behaviour (poll cadence, safety lag, reconcile)
 deployments:  [ ... ]   # named workers — each is a slice of `sources` with a target host
@@ -29,13 +29,22 @@ azure:
   resource_group: "rg-quelch-prod"
   region: "swedencentral"
   naming:
-    prefix: "quelch"          # all created resources will be named ${prefix}-...
+    prefix: "quelch"
     environment: "prod"
+  resources:
+    container_apps_env:    "quelch-prod-cae"     # name of the existing ACA environment
+    application_insights:  "quelch-prod-appi"    # name of the existing App Insights component
+    key_vault:             "quelch-prod-kv"      # name of the existing Key Vault
+  # skip_role_assignments: true                  # set if you don't have Owner / UAA on the resources
 ```
 
-`subscription_id` and `resource_group` together identify where Quelch creates and reconciles resources. `region` is the Azure region used when Quelch creates new resources; existing resources keep their region.
+`subscription_id` and `resource_group` identify the scope. `region` is used for the Container App and managed identity Quelch creates.
 
-`naming.prefix` and `naming.environment` are used to generate Azure resource names (e.g. `quelch-prod-cosmos`, `quelch-prod-search`). You can leave them out and supply names directly elsewhere if you want full control.
+`naming.prefix` and `naming.environment` are how Quelch derives default names (`quelch-prod-cosmos`, `quelch-prod-search`, `quelch-prod-cae`, `quelch-prod-appi`, `quelch-prod-kv`) when the explicit `resources.*` / `cosmos.account` / `search.service` fields are absent. The Container App + managed identity it creates always follow `{prefix}-{env}-{deployment_name}{-id}`.
+
+`resources.*` lets you point at resources that don't follow the naming convention. **All three plus `cosmos.account` and `search.service` must point at resources that already exist** — Quelch references them via Bicep `existing` and does not provision them.
+
+`skip_role_assignments: true` suppresses the `Microsoft.Authorization/roleAssignments` blocks in the generated Bicep. Use this when you don't have Owner / User Access Administrator on the target resources; ask someone who does to grant `Cosmos DB Built-in Data Contributor`, `Search Index Data Contributor`, `Key Vault Secrets User`, and `Cognitive Services User` to the deployment's managed identity manually.
 
 ## `cosmos`
 
@@ -76,16 +85,32 @@ search:
 
 `search.indexer.schedule.interval` is the cadence Quelch writes into the *generated* rigg indexer files. You can override per-indexer by hand-editing the rigg file once it's generated.
 
-## `openai`
+## `ai`
 
 ```yaml
-openai:
-  endpoint: "https://${AOI_ACCOUNT}.openai.azure.com"
-  embedding_deployment: "text-embedding-3-large"
-  embedding_dimensions: 3072
+ai:
+  provider: foundry                                          # foundry | azure_openai
+  endpoint: "https://${FOUNDRY_PROJECT}.cognitiveservices.azure.com"
+  embedding:
+    deployment: "text-embedding-3-large"
+    dimensions: 3072
+  chat:
+    deployment: "gpt-4.1-mini"
+    model_name: "gpt-4.1-mini"
+    retrieval_reasoning_effort: low                          # minimal | low (default) | medium
+    output_mode: answerSynthesis                             # answerSynthesis (default) | extractedData
 ```
 
-This is consumed by the rigg-managed skillsets — it's how the integrated vectoriser computes embeddings during indexing. Quelch ingest does not call OpenAI itself.
+The `ai:` block points Quelch at an **existing** AI model provider — either a Microsoft Foundry project or an Azure OpenAI account — that holds two deployments:
+
+- **`embedding`** — used by the AI Search vectorizer / skillset to compute vectors during indexing. `text-embedding-3-large` (3072 dims) is recommended.
+- **`chat`** — bound to the AI Search Knowledge Base's `models[]` array. AI Search uses it for query planning during agentic retrieval and (when `output_mode: answerSynthesis`) for answer formulation. Supported chat models: `gpt-4o`, `gpt-4o-mini`, `gpt-4.1`, `gpt-4.1-nano`, `gpt-4.1-mini`, `gpt-5`, `gpt-5-nano`, `gpt-5-mini`.
+
+The `provider` field controls only what `quelch init` and `quelch validate` query when discovering existing accounts (`az cognitiveservices account list --kind OpenAI` vs `--kind AIServices`). The Bicep and rigg output is the same for both — only the `endpoint` URL differs. Authentication is via the Container App's managed identity + `Cognitive Services User` role on the AI provider; no API keys end up in the generated rigg files.
+
+`retrieval_reasoning_effort` matches the Knowledge Base preview API: `minimal` skips the LLM (vector + keyword + semantic only), `low` is the portal default, `medium` enables follow-up subqueries.
+
+`output_mode` controls whether the Knowledge Base returns an LLM-formulated answer with citations (`answerSynthesis`) or raw ranked results (`extractedData`).
 
 ## `rigg`
 
@@ -420,10 +445,15 @@ search:
     schedule:
       interval: "PT15M"
 
-openai:
-  endpoint: "https://${AOI_ACCOUNT}.openai.azure.com"
-  embedding_deployment: "text-embedding-3-large"
-  embedding_dimensions: 3072
+ai:
+  provider: foundry
+  endpoint: "https://${FOUNDRY_PROJECT}.cognitiveservices.azure.com"
+  embedding:
+    deployment: "text-embedding-3-large"
+    dimensions: 3072
+  chat:
+    deployment: "gpt-4.1-mini"
+    model_name: "gpt-4.1-mini"
 
 sources:
   - type: jira
