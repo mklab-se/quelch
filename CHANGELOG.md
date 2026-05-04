@@ -6,6 +6,52 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-05-04
+
+### Added
+
+- **Cross-resource-group references**: every external resource Quelch
+  references gains an optional `_resource_group` sibling field that
+  overrides `azure.resource_group` for just that resource. Useful for
+  enterprise setups where a shared Foundry project, Cosmos account, or
+  Key Vault lives in a separate RG owned by another team.
+
+  New optional fields:
+  - `cosmos.account_resource_group`
+  - `search.service_resource_group`
+  - `ai.resource_group`
+  - `azure.resources.container_apps_env_resource_group`
+  - `azure.resources.application_insights_resource_group`
+  - `azure.resources.key_vault_resource_group`
+
+  Each defaults to `azure.resource_group` when absent. Threaded through
+  `quelch init` discovery, `quelch validate` prerequisite checks, and
+  the Bicep generator (which emits `scope: resourceGroup('rg-other')` on
+  the relevant `existing` block). Cross-subscription references are not
+  supported yet — separate ask if needed.
+
+- **`quelch mcp-key set / rotate / show`**: first-class commands to
+  manage the Q-MCP API key for a deployment. Closes the operator-UX
+  hole flagged in v0.10.1 (the docs documented the manual `az keyvault
+  secret set` flow but there was no first-class command).
+  - `set` / `rotate` generate 32 random bytes (base64-encoded), write
+    them to whichever secret store the deployment uses, and trigger a
+    Container App revision restart so the new value is live in seconds.
+  - `show` reads the value back (Azure deployments only — on-prem
+    secret stores are local-only and unreachable from Quelch).
+  - On-prem deployments print copy-pasteable docker / systemd / k8s
+    commands instead of trying to remote-write.
+
+### Changed
+
+- **Docs — terminology rollout completed**: `architecture.md`,
+  `configuration.md`, `cli.md`, `sync.md`, `examples.md`,
+  `agent-generation.md`, and `docs/README.md` now lead with the
+  Quelch MCP (Q-MCP) / Quelch Ingest (Q-Ingest) split that was
+  introduced in v0.10.1. The architecture diagram labels the MCP server
+  as Q-MCP. The sync doc notes explicitly that the algorithm it
+  describes is what Q-Ingest runs on every cycle.
+
 ## [0.10.1] - 2026-05-04
 
 ### Changed
