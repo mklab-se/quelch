@@ -18,6 +18,7 @@
 </p>
 
 <p align="center">
+  <a href="docs/getting-started.md"><strong>Getting started</strong></a> ·
   <a href="docs/README.md"><strong>Full documentation</strong></a> ·
   <a href="CHANGELOG.md"><strong>Changelog</strong></a>
 </p>
@@ -29,6 +30,8 @@
 Quelch is a knowledge-platform operator tool for teams using Jira and Confluence. It ingests data into **Cosmos DB** as the system of record, uses **Azure AI Search** (via the embedded [rigg](https://github.com/mklab-se/rigg) library) for hybrid semantic retrieval, and exposes a **five-tool MCP API** that agents (Copilot Studio, VS Code Copilot, Claude, Codex) can call directly.
 
 One Rust binary, one YAML config file, three runtime roles: `quelch ingest`, `quelch mcp`, and the operator CLI.
+
+> **New here?** Start with **[docs/getting-started.md](docs/getting-started.md)** — a step-by-step happy-path walkthrough from `brew install` to a deployed MCP server an agent can talk to.
 
 ## Architecture overview
 
