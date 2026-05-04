@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-05-04
+
+### Fixed
+
+- **CI**: replaced the v1 `Simulator smoke test` job (ran `quelch sim`,
+  which is stubbed in v2) with a v2-shaped binary smoke test that exercises
+  `validate`, `effective-config`, `agent generate --target markdown`, and
+  `azure plan --no-what-if`. All offline / no external services.
+- **Dockerfile**: bumped `rust:1.83-slim-bookworm` → `rust:slim-bookworm`.
+  Quelch's edition is `2024` which requires Rust 1.85+; pinning a stale
+  major broke the ghcr.io image build.
+
 ## [0.9.2] - 2026-05-04
 
 ### Fixed

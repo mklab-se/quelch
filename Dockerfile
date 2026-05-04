@@ -3,7 +3,7 @@
 # Stage 1: Build the release binary.
 # Stage 2: Minimal runtime image via distroless (glibc + libstdc++, no shell).
 
-FROM rust:1.83-slim-bookworm AS builder
+FROM rust:slim-bookworm AS builder
 WORKDIR /app
 
 # Install build dependencies (needed for linking).
