@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.11.3] - 2026-05-05
+
 ### Changed
 
 - **Source prompts in `quelch init` rewritten for clarity.**
