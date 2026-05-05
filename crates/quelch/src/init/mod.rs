@@ -70,19 +70,40 @@ async fn run_interactive() -> anyhow::Result<Config> {
     println!("This wizard will create a quelch.yaml for your environment.");
     println!();
     println!(
-        "Quelch does not provision Azure infrastructure for you — it expects the\n\
-         resource group, Cosmos DB account, AI Search service, AI model provider\n\
-         (Foundry project or Azure OpenAI account), Container Apps environment,\n\
-         Application Insights component, and Key Vault to already exist. See\n\
+        "What Quelch deploys for you:\n\
+         \x20 - Container Apps for Q-MCP and (optionally) Q-Ingest, via Bicep.\n\
+         \n\
+         What you must create up front (Quelch only references these — it does not\n\
+         provision them):\n\
+         \x20 - Cosmos DB account\n\
+         \x20 - Azure AI Search service\n\
+         \x20 - AI model provider (Microsoft Foundry project or Azure OpenAI account)\n\
+         \x20   with one embedding deployment and one chat deployment\n\
+         \x20 - Container Apps environment\n\
+         \x20 - Application Insights component\n\
+         \x20 - Key Vault\n\
+         \n\
+         These can each live in any resource group in your subscription — the\n\
+         wizard will let you point at each one individually. See\n\
          docs/getting-started.md for the full prerequisites list and `az`\n\
          commands."
     );
     println!();
 
-    let azure = prompts::azure_section().await?;
+    let mut azure = prompts::azure_section().await?;
     let ai = prompts::ai_section(&azure).await?;
     let sources = prompts::sources_section().await?;
     let deployments = prompts::deployments_section(&sources).await?;
+
+    // Region / naming-prefix / environment-tag only matter for Azure-targeted
+    // deployments — defer asking until we know the shape.
+    if deployments
+        .iter()
+        .any(|d| matches!(d.target, crate::config::DeploymentTarget::Azure))
+    {
+        prompts::azure_deploy_settings(&mut azure).await?;
+    }
+
     let mcp = prompts::mcp_section(&deployments).await?;
 
     let config = Config {

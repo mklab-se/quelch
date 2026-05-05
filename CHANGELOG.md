@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+
+- **`quelch init` wizard reshaped around what Quelch actually deploys.**
+  The intro now spells out that Quelch deploys Container Apps for Q-MCP
+  and (optionally) Q-Ingest, but does NOT provision Cosmos / AI Search /
+  AI provider / Container Apps environment / Application Insights / Key
+  Vault — those must already exist and may live in any resource group.
+- **Deployment resource group is now picked from `az group list`** with
+  a "Create new (enter name)…" escape hatch, so a typo can't silently
+  produce an empty discovery any more. Subscription was already
+  discovered; this brings RG to parity.
+- **AI provider picker supports cross-resource-group discovery.** The
+  Foundry / Azure OpenAI account list now offers
+  "Search a different resource group…" and "Enter endpoint manually…"
+  alongside the discovered candidates. Picking an account from a
+  different RG writes the existing `ai.resource_group` override into
+  the generated YAML and uses that RG for subsequent deployment-list
+  discovery.
+- **Region, naming prefix, and environment tag prompts moved to a
+  dedicated "Azure deployment settings" step** that runs only after the
+  deployment shape is known. The region defaults to the location of the
+  picked deployment RG (read from `az group list`) instead of the old
+  fixed `swedencentral` default.
+
 ## [0.11.1] - 2026-05-05
 
 ### Fixed

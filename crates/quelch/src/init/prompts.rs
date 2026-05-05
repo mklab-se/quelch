@@ -12,9 +12,20 @@ use std::collections::HashMap;
 // Azure section
 // ---------------------------------------------------------------------------
 
-/// Prompt for Azure subscription, resource group, and region.
+/// Prompt for Azure subscription and the resource group Quelch will deploy
+/// its own Container Apps into.
+///
+/// Region, naming prefix, and environment tag are deferred to
+/// [`azure_deploy_settings`] (called only if the chosen deployment shape
+/// includes any Azure-targeted deployments).
 pub async fn azure_section() -> anyhow::Result<AzureConfig> {
-    println!("\n=== Azure resources ===");
+    println!("\n=== Azure subscription & deployment resource group ===");
+    println!(
+        "First we need the subscription, and the resource group Quelch will deploy\n\
+         the Q-MCP / Q-Ingest Container Apps INTO. (Each external resource — Cosmos,\n\
+         AI Search, the AI provider, etc. — is picked separately and may live in any\n\
+         RG, even a different one from this deployment RG.)\n"
+    );
     println!("Discovering Azure subscriptions...");
 
     let subs = discover::list_subscriptions().await.unwrap_or_default();
@@ -41,12 +52,44 @@ pub async fn azure_section() -> anyhow::Result<AzureConfig> {
         inquire::Text::new("Subscription ID").prompt()?
     };
 
-    let resource_group: String = inquire::Text::new("Resource group name")
-        .with_initial_value("rg-quelch-prod")
-        .prompt()?;
+    let (resource_group, _location) = pick_resource_group(
+        &subscription_id,
+        "Resource group for Quelch's Container Apps",
+        None,
+    )
+    .await?;
 
-    let region: String = inquire::Text::new("Azure region")
-        .with_initial_value("swedencentral")
+    Ok(AzureConfig {
+        subscription_id,
+        resource_group,
+        region: String::new(),
+        naming: NamingConfig::default(),
+        skip_role_assignments: false,
+        resources: AzureExistingResources::default(),
+    })
+}
+
+/// Prompt for region, naming prefix, and environment tag — settings that only
+/// apply to Azure-targeted deployments. Called from [`deployments_section`]
+/// after the user has picked a deployment shape.
+///
+/// If a deployment RG was picked from `az group list`, its location is offered
+/// as the default region.
+pub async fn azure_deploy_settings(azure: &mut AzureConfig) -> anyhow::Result<()> {
+    println!("\n=== Azure deployment settings ===");
+    println!("These configure the Container Apps Quelch will create for Q-MCP / Q-Ingest.\n");
+
+    // Try to default the region to the deployment RG's location.
+    let default_region = discover::list_resource_groups(&azure.subscription_id)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .find(|rg| rg.name == azure.resource_group)
+        .map(|rg| rg.location)
+        .unwrap_or_else(|| "swedencentral".to_string());
+
+    azure.region = inquire::Text::new("Azure region (where the Container Apps will run)")
+        .with_initial_value(&default_region)
         .prompt()?;
 
     let naming_prefix: String = inquire::Text::new("Resource naming prefix")
@@ -57,17 +100,58 @@ pub async fn azure_section() -> anyhow::Result<AzureConfig> {
         .with_initial_value("prod")
         .prompt()?;
 
-    Ok(AzureConfig {
-        subscription_id,
-        resource_group,
-        region,
-        naming: NamingConfig {
-            prefix: Some(naming_prefix),
-            environment: Some(naming_env),
-        },
-        skip_role_assignments: false,
-        resources: AzureExistingResources::default(),
-    })
+    azure.naming = NamingConfig {
+        prefix: Some(naming_prefix),
+        environment: Some(naming_env),
+    };
+    Ok(())
+}
+
+/// Show a Select listing every resource group in the subscription, plus a
+/// "Create new (enter name)…" escape hatch. Returns the chosen RG name and —
+/// when the user picked an existing one — its Azure location for use as a
+/// region default.
+///
+/// `default_rg` is the RG whose entry should be highlighted when the prompt
+/// opens (e.g. the deployment RG when broadening discovery to a different one).
+async fn pick_resource_group(
+    subscription_id: &str,
+    prompt_text: &str,
+    default_rg: Option<&str>,
+) -> anyhow::Result<(String, Option<String>)> {
+    let groups = discover::list_resource_groups(subscription_id)
+        .await
+        .unwrap_or_default();
+
+    if groups.is_empty() {
+        println!("  (az returned no resource groups — enter the name manually)");
+        let name = inquire::Text::new(prompt_text).prompt()?;
+        return Ok((name, None));
+    }
+
+    const CREATE_NEW: &str = "Create new (enter name)…";
+    let mut labels: Vec<String> = groups
+        .iter()
+        .map(|g| format!("{}  ({})", g.name, g.location))
+        .collect();
+    labels.push(CREATE_NEW.to_string());
+
+    let starting_cursor = default_rg
+        .and_then(|name| groups.iter().position(|g| g.name == name))
+        .unwrap_or(0);
+
+    let idx = inquire::Select::new(prompt_text, labels)
+        .with_starting_cursor(starting_cursor)
+        .raw_prompt()?
+        .index;
+
+    if idx < groups.len() {
+        let g = &groups[idx];
+        Ok((g.name.clone(), Some(g.location.clone())))
+    } else {
+        let name = inquire::Text::new("New resource group name").prompt()?;
+        Ok((name, None))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -99,93 +183,18 @@ pub async fn ai_section(azure: &AzureConfig) -> anyhow::Result<AiConfig> {
         AiProvider::AzureOpenai
     };
 
-    let (endpoint, account_name) = match provider {
-        AiProvider::Foundry => {
-            println!(
-                "Looking for Foundry projects (Cognitive Services AIServices accounts) in '{}'...",
-                azure.resource_group
-            );
-            let projects =
-                discover::list_foundry_projects(&azure.subscription_id, &azure.resource_group)
-                    .await
-                    .unwrap_or_default();
-            if projects.is_empty() {
-                println!(
-                    "  ✗ No Foundry projects found in resource group '{}'.",
-                    azure.resource_group
-                );
-                println!(
-                    "    Create one in the Azure portal (https://ai.azure.com), \
-                     then re-run `quelch init`."
-                );
-                println!("    Falling back to manual endpoint entry...");
-                let endpoint: String = inquire::Text::new("Foundry project endpoint")
-                    .with_initial_value("https://YOUR-FOUNDRY.cognitiveservices.azure.com")
-                    .prompt()?;
-                (endpoint, None)
-            } else {
-                let labels: Vec<_> = projects
-                    .iter()
-                    .map(|p| format!("{} — {}", p.name, p.endpoint))
-                    .collect();
-                let chosen = inquire::Select::new("Foundry project", labels)
-                    .with_starting_cursor(0)
-                    .raw_prompt()?
-                    .index;
-                let p = &projects[chosen];
-                (p.endpoint.clone(), Some(p.name.clone()))
-            }
-        }
-        AiProvider::AzureOpenai => {
-            println!(
-                "Looking for Azure OpenAI accounts in '{}'...",
-                azure.resource_group
-            );
-            let accounts =
-                discover::list_openai_accounts(&azure.subscription_id, &azure.resource_group)
-                    .await
-                    .unwrap_or_default();
-            if accounts.is_empty() {
-                println!(
-                    "  ✗ No Azure OpenAI accounts found in resource group '{}'.",
-                    azure.resource_group
-                );
-                println!(
-                    "    Create one with:\n      \
-                     az cognitiveservices account create -n <name> -g {} \\\n        \
-                       --kind OpenAI --sku S0 -l {}",
-                    azure.resource_group, azure.region
-                );
-                println!(
-                    "    Then deploy the embedding + chat models you want and re-run `quelch init`."
-                );
-                println!("    Falling back to manual endpoint entry...");
-                let endpoint: String = inquire::Text::new("Azure OpenAI endpoint")
-                    .with_initial_value("https://YOUR-OPENAI.openai.azure.com")
-                    .prompt()?;
-                (endpoint, None)
-            } else {
-                let labels: Vec<_> = accounts
-                    .iter()
-                    .map(|a| format!("{} — {}", a.name, a.endpoint))
-                    .collect();
-                let chosen = inquire::Select::new("Azure OpenAI account", labels)
-                    .with_starting_cursor(0)
-                    .raw_prompt()?
-                    .index;
-                let a = &accounts[chosen];
-                (a.endpoint.clone(), Some(a.name.clone()))
-            }
-        }
-    };
+    let (endpoint, account_name, resource_group_override) =
+        pick_ai_account(azure, provider).await?;
 
-    // Discover deployments inside the chosen account/project (best-effort).
+    // Discover deployments inside the chosen account/project (best-effort) —
+    // looking in whichever RG that account lives in.
+    let lookup_rg = resource_group_override
+        .as_deref()
+        .unwrap_or(azure.resource_group.as_str());
     let deployments = match account_name {
-        Some(ref name) => {
-            discover::list_model_deployments(&azure.subscription_id, &azure.resource_group, name)
-                .await
-                .unwrap_or_default()
-        }
+        Some(ref name) => discover::list_model_deployments(&azure.subscription_id, lookup_rg, name)
+            .await
+            .unwrap_or_default(),
         None => Vec::new(),
     };
 
@@ -195,10 +204,100 @@ pub async fn ai_section(azure: &AzureConfig) -> anyhow::Result<AiConfig> {
     Ok(AiConfig {
         provider,
         endpoint,
-        resource_group: None,
+        resource_group: resource_group_override,
         embedding,
         chat,
     })
+}
+
+/// Pick a Foundry project or Azure OpenAI account, with the option to scan a
+/// different resource group than the deployment RG. Returns
+/// `(endpoint, account_name, resource_group_override)` where the override is
+/// `Some(rg)` only when the user picked an account from an RG different from
+/// `azure.resource_group`.
+async fn pick_ai_account(
+    azure: &AzureConfig,
+    provider: AiProvider,
+) -> anyhow::Result<(String, Option<String>, Option<String>)> {
+    const PICK_DIFFERENT_RG: &str = "Search a different resource group…";
+    const ENTER_MANUALLY: &str = "Enter endpoint manually…";
+
+    let kind = match provider {
+        AiProvider::Foundry => "Foundry project",
+        AiProvider::AzureOpenai => "Azure OpenAI account",
+    };
+
+    let mut current_rg = azure.resource_group.clone();
+    loop {
+        println!("Looking for {kind}s in '{current_rg}'...");
+        let candidates: Vec<(String, String)> = match provider {
+            AiProvider::Foundry => {
+                discover::list_foundry_projects(&azure.subscription_id, &current_rg)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|p| (p.name, p.endpoint))
+                    .collect()
+            }
+            AiProvider::AzureOpenai => {
+                discover::list_openai_accounts(&azure.subscription_id, &current_rg)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|a| (a.name, a.endpoint))
+                    .collect()
+            }
+        };
+
+        if candidates.is_empty() {
+            println!("  ✗ No {kind}s found in resource group '{current_rg}'.");
+        } else {
+            println!("  Found {} {kind}(s) in '{current_rg}'.", candidates.len());
+        }
+
+        let mut labels: Vec<String> = candidates
+            .iter()
+            .map(|(name, endpoint)| format!("{name} — {endpoint}"))
+            .collect();
+        let pick_rg_idx = labels.len();
+        labels.push(PICK_DIFFERENT_RG.to_string());
+        let manual_idx = labels.len();
+        labels.push(ENTER_MANUALLY.to_string());
+
+        let idx = inquire::Select::new(&format!("Pick a {kind}"), labels)
+            .with_starting_cursor(0)
+            .raw_prompt()?
+            .index;
+
+        if idx < candidates.len() {
+            let (name, endpoint) = candidates[idx].clone();
+            let rg_override = if current_rg != azure.resource_group {
+                Some(current_rg)
+            } else {
+                None
+            };
+            return Ok((endpoint, Some(name), rg_override));
+        } else if idx == pick_rg_idx {
+            let (rg, _location) = pick_resource_group(
+                &azure.subscription_id,
+                &format!("Resource group to scan for {kind}s"),
+                Some(&current_rg),
+            )
+            .await?;
+            current_rg = rg;
+            // Loop and re-discover.
+        } else {
+            debug_assert_eq!(idx, manual_idx);
+            let placeholder = match provider {
+                AiProvider::Foundry => "https://YOUR-FOUNDRY.cognitiveservices.azure.com",
+                AiProvider::AzureOpenai => "https://YOUR-OPENAI.openai.azure.com",
+            };
+            let endpoint: String = inquire::Text::new(&format!("{kind} endpoint"))
+                .with_initial_value(placeholder)
+                .prompt()?;
+            return Ok((endpoint, None, None));
+        }
+    }
 }
 
 /// Pick (or manually enter) an embedding deployment.
