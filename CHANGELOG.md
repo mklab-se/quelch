@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.11.4] - 2026-05-05
+
 ### Security / Changed
 
 - **`quelch init` no longer writes Jira / Confluence credentials to disk.**
