@@ -69,6 +69,11 @@ pub enum Commands {
     },
     /// Interactive wizard to scaffold a quelch.yaml config
     Init {
+        /// Folder to write `quelch.yaml` into. Defaults to the current
+        /// directory; `quelch init .` is the explicit form. The folder is
+        /// created if it does not already exist.
+        #[arg(default_value = ".")]
+        directory: PathBuf,
         /// Skip all prompts and write a template directly.
         #[arg(long)]
         non_interactive: bool,

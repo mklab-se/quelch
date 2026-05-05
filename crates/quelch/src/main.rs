@@ -1,6 +1,6 @@
 mod cli;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use quelch::azure::deploy::whatif::WhatIfReport;
 use quelch::config;
@@ -27,11 +27,16 @@ async fn main() -> Result<()> {
         Commands::Validate => cmd_validate(&cli.config).await,
         Commands::EffectiveConfig { name } => cmd_effective_config(&cli.config, &name),
         Commands::Init {
+            directory,
             non_interactive,
             from_template,
             force,
         } => {
-            let path = std::path::PathBuf::from("quelch.yaml");
+            if !directory.exists() {
+                std::fs::create_dir_all(&directory)
+                    .with_context(|| format!("creating directory {}", directory.display()))?;
+            }
+            let path = directory.join("quelch.yaml");
             quelch::init::run(
                 &path,
                 quelch::init::InitOptions {

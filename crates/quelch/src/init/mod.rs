@@ -74,7 +74,106 @@ pub async fn run(output_path: &Path, options: InitOptions) -> anyhow::Result<()>
              deployment (e.g. `az containerapp update --set-env-vars …`)."
         );
     }
+
+    // Offer git init + .gitignore. quelch.yaml has connection strings (and
+    // sometimes environment-var placeholders that hint at internal naming);
+    // keeping the file in a private repo or out of source control is the safe
+    // default. This is opt-in via Confirm.
+    let project_dir = output_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    offer_git_setup(&project_dir)?;
+
     println!("\nNext: run `quelch validate` to verify the config and prerequisites.");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Git / .gitignore bootstrap
+// ---------------------------------------------------------------------------
+
+/// Recommended `.gitignore` block for a Quelch project directory. Keeps the
+/// list short and curated — anything more is the user's call.
+const GITIGNORE_BLOCK: &str = "\
+# Quelch — keep secrets and generated artefacts out of version control.
+.env
+.env.*
+.quelch/
+";
+
+/// Offer to `git init` the project directory and write a recommended
+/// `.gitignore`. Idempotent: re-running on an already-initialised repo only
+/// touches `.gitignore`, and only if the Quelch block isn't already there.
+fn offer_git_setup(project_dir: &Path) -> anyhow::Result<()> {
+    let is_git_repo = project_dir.join(".git").exists();
+    let gitignore_path = project_dir.join(".gitignore");
+    let gitignore_has_block = std::fs::read_to_string(&gitignore_path)
+        .map(|s| s.contains("# Quelch"))
+        .unwrap_or(false);
+
+    // Nothing to do if the repo already exists and has our gitignore block.
+    if is_git_repo && gitignore_has_block {
+        return Ok(());
+    }
+
+    println!();
+    let prompt = if is_git_repo {
+        "Add a recommended .gitignore block to this repo? (keeps .env files and .quelch/ out of git)"
+    } else {
+        "Initialise this folder as a git repo and write a recommended .gitignore?"
+    };
+    let yes = inquire::Confirm::new(prompt).with_default(true).prompt()?;
+    if !yes {
+        return Ok(());
+    }
+
+    if !is_git_repo {
+        let status = std::process::Command::new("git")
+            .arg("init")
+            .arg("--initial-branch=main")
+            .arg(project_dir)
+            .status();
+        match status {
+            Ok(s) if s.success() => println!("✓ Initialised git repo at {}", project_dir.display()),
+            Ok(s) => {
+                println!("✗ git init exited with status {s}; skipping .gitignore");
+                return Ok(());
+            }
+            Err(e) => {
+                println!("✗ Could not run git ({e}); skipping .gitignore");
+                return Ok(());
+            }
+        }
+    }
+
+    write_or_append_gitignore(&gitignore_path)?;
+    Ok(())
+}
+
+/// Write `GITIGNORE_BLOCK` to `path` if the file does not exist, or append it
+/// to an existing file that does not already contain the block.
+fn write_or_append_gitignore(path: &Path) -> anyhow::Result<()> {
+    match std::fs::read_to_string(path) {
+        Err(_) => {
+            std::fs::write(path, GITIGNORE_BLOCK)?;
+            println!("✓ Wrote {}", path.display());
+        }
+        Ok(existing) if existing.contains("# Quelch") => {
+            println!("✓ {} already contains the Quelch block", path.display());
+        }
+        Ok(existing) => {
+            let mut s = existing;
+            if !s.ends_with('\n') {
+                s.push('\n');
+            }
+            s.push('\n');
+            s.push_str(GITIGNORE_BLOCK);
+            std::fs::write(path, s)?;
+            println!("✓ Appended Quelch block to {}", path.display());
+        }
+    }
     Ok(())
 }
 

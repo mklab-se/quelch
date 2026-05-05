@@ -51,19 +51,19 @@ pub async fn azure_section() -> anyhow::Result<AzureConfig> {
             })
             .collect();
         let default_idx = subs.iter().position(|s| s.is_default).unwrap_or(0);
-        let chosen = inquire::Select::new("Subscription", names)
+        let chosen = inquire::Select::new("Subscription:", names)
             .with_starting_cursor(default_idx)
             .raw_prompt()?
             .index;
         subs[chosen].id.clone()
     } else {
         println!("  (az not available or no subscriptions found — enter manually)");
-        inquire::Text::new("Subscription ID").prompt()?
+        inquire::Text::new("Subscription ID:").prompt()?
     };
 
     let (resource_group, _location) = pick_resource_group(
         &subscription_id,
-        "Resource group for Quelch's Container Apps",
+        "Resource group for Quelch's Container Apps:",
         None,
     )
     .await?;
@@ -97,11 +97,11 @@ pub async fn naming_settings(azure: &mut AzureConfig) -> anyhow::Result<()> {
          have to override anything; otherwise edit the generated yaml later.\n"
     );
 
-    let naming_prefix: String = inquire::Text::new("Resource naming prefix")
+    let naming_prefix: String = inquire::Text::new("Resource naming prefix:")
         .with_initial_value("quelch")
         .prompt()?;
 
-    let naming_env: String = inquire::Text::new("Environment tag (e.g. prod, staging, dev)")
+    let naming_env: String = inquire::Text::new("Environment tag (e.g. prod, staging, dev):")
         .with_initial_value("prod")
         .prompt()?;
 
@@ -154,7 +154,7 @@ async fn pick_resource_group(
         let g = &groups[idx];
         Ok((g.name.clone(), Some(g.location.clone())))
     } else {
-        let name = inquire::Text::new("New resource group name").prompt()?;
+        let name = inquire::Text::new("New resource group name:").prompt()?;
         Ok((name, None))
     }
 }
@@ -269,7 +269,7 @@ async fn pick_ai_account(
         let manual_idx = labels.len();
         labels.push(ENTER_MANUALLY.to_string());
 
-        let idx = inquire::Select::new(&format!("Pick a {kind}"), labels)
+        let idx = inquire::Select::new(&format!("Pick a {kind}:"), labels)
             .with_starting_cursor(0)
             .raw_prompt()?
             .index;
@@ -285,7 +285,7 @@ async fn pick_ai_account(
         } else if idx == pick_rg_idx {
             let (rg, _location) = pick_resource_group(
                 &azure.subscription_id,
-                &format!("Resource group to scan for {kind}s"),
+                &format!("Resource group to scan for {kind}s:"),
                 Some(&current_rg),
             )
             .await?;
@@ -297,7 +297,7 @@ async fn pick_ai_account(
                 AiProvider::Foundry => "https://YOUR-FOUNDRY.cognitiveservices.azure.com",
                 AiProvider::AzureOpenai => "https://YOUR-OPENAI.openai.azure.com",
             };
-            let endpoint: String = inquire::Text::new(&format!("{kind} endpoint"))
+            let endpoint: String = inquire::Text::new(&format!("{kind} endpoint:"))
                 .with_initial_value(placeholder)
                 .prompt()?;
             return Ok((endpoint, None, None));
@@ -318,7 +318,7 @@ fn pick_embedding_deployment(
         if !available.is_empty() {
             println!("  (no embedding deployments found in the chosen account)");
         }
-        inquire::Text::new("Embedding deployment name")
+        inquire::Text::new("Embedding deployment name:")
             .with_initial_value("text-embedding-3-large")
             .prompt()?
     } else {
@@ -326,14 +326,14 @@ fn pick_embedding_deployment(
             .iter()
             .map(|d| format!("{} ({})", d.name, d.model_name))
             .collect();
-        let chosen = inquire::Select::new("Embedding deployment", labels)
+        let chosen = inquire::Select::new("Embedding deployment:", labels)
             .with_starting_cursor(0)
             .raw_prompt()?
             .index;
         candidates[chosen].name.clone()
     };
 
-    let dims_str: String = inquire::Text::new("Embedding dimensions")
+    let dims_str: String = inquire::Text::new("Embedding dimensions:")
         .with_initial_value("3072")
         .prompt()?;
     let dimensions: u32 = dims_str
@@ -373,10 +373,10 @@ fn pick_chat_deployment(available: &[discover::ModelDeployment]) -> anyhow::Resu
                 SUPPORTED_CHAT_MODELS.join(", ")
             );
         }
-        let dep: String = inquire::Text::new("Chat deployment name")
+        let dep: String = inquire::Text::new("Chat deployment name:")
             .with_initial_value("gpt-5-mini")
             .prompt()?;
-        let model: String = inquire::Text::new("Chat model name")
+        let model: String = inquire::Text::new("Chat model name:")
             .with_initial_value(&dep)
             .prompt()?;
         (dep, model)
@@ -385,7 +385,7 @@ fn pick_chat_deployment(available: &[discover::ModelDeployment]) -> anyhow::Resu
             .iter()
             .map(|d| format!("{} ({})", d.name, d.model_name))
             .collect();
-        let chosen = inquire::Select::new("Chat (LLM) deployment", labels)
+        let chosen = inquire::Select::new("Chat (LLM) deployment:", labels)
             .with_starting_cursor(0)
             .raw_prompt()?
             .index;
@@ -565,7 +565,7 @@ fn prompt_credential_env_var(
              before running `quelch …`, both locally and on whatever runs Q-Ingest."
         );
         let name: String =
-            inquire::Text::new(&format!("  Env var name that will hold the {scope_text}"))
+            inquire::Text::new(&format!("  Env var name that will hold the {scope_text}:"))
                 .with_initial_value(default_name)
                 .prompt()?;
         return Ok(name);
@@ -599,7 +599,7 @@ fn prompt_credential_env_var(
     } else {
         debug_assert_eq!(idx, enter_name_idx);
         let name: String =
-            inquire::Text::new(&format!("  Env var name that will hold the {scope_text}"))
+            inquire::Text::new(&format!("  Env var name that will hold the {scope_text}:"))
                 .with_initial_value(default_name)
                 .prompt()?;
         Ok(name)
@@ -625,11 +625,11 @@ fn git_user_email() -> Option<String> {
 pub fn prompt_jira_source() -> anyhow::Result<JiraSourceConfig> {
     println!("\n  --- Jira source ---");
     let name: String =
-        inquire::Text::new("  Short identifier for this source (used in `quelch query --source`)")
+        inquire::Text::new("  Short identifier for this source (used in `quelch query --source`):")
             .with_initial_value("jira-cloud")
             .prompt()?;
 
-    let url: String = inquire::Text::new("  Base URL of your Jira instance")
+    let url: String = inquire::Text::new("  Base URL of your Jira instance:")
         .with_initial_value("https://your-org.atlassian.net")
         .prompt()?;
 
@@ -641,7 +641,8 @@ pub fn prompt_jira_source() -> anyhow::Result<JiraSourceConfig> {
          ingest issues from the projects you list here."
     );
     let projects_str: String =
-        inquire::Text::new("  Project keys to ingest (comma-separated, e.g. PROJ,ENG)").prompt()?;
+        inquire::Text::new("  Project keys to ingest (comma-separated, e.g. PROJ,ENG):")
+            .prompt()?;
     let projects: Vec<String> = projects_str
         .split(',')
         .map(|s| s.trim().to_string())
@@ -663,7 +664,7 @@ pub fn prompt_jira_source() -> anyhow::Result<JiraSourceConfig> {
         );
         let email_default = git_user_email().unwrap_or_default();
         let mut email_prompt =
-            inquire::Text::new("  Atlassian account email (the API-token owner)");
+            inquire::Text::new("  Atlassian account email (the API-token owner):");
         if !email_default.is_empty() {
             email_prompt = email_prompt.with_initial_value(&email_default);
         }
@@ -720,11 +721,11 @@ pub fn build_jira_source(
 pub fn prompt_confluence_source() -> anyhow::Result<ConfluenceSourceConfig> {
     println!("\n  --- Confluence source ---");
     let name: String =
-        inquire::Text::new("  Short identifier for this source (used in `quelch query --source`)")
+        inquire::Text::new("  Short identifier for this source (used in `quelch query --source`):")
             .with_initial_value("confluence-cloud")
             .prompt()?;
 
-    let url: String = inquire::Text::new("  Base URL of your Confluence instance")
+    let url: String = inquire::Text::new("  Base URL of your Confluence instance:")
         .with_initial_value("https://your-org.atlassian.net/wiki")
         .prompt()?;
 
@@ -736,7 +737,7 @@ pub fn prompt_confluence_source() -> anyhow::Result<ConfluenceSourceConfig> {
          spaces you list here."
     );
     let spaces_str: String =
-        inquire::Text::new("  Space keys to ingest (comma-separated, e.g. ENG,DOCS)").prompt()?;
+        inquire::Text::new("  Space keys to ingest (comma-separated, e.g. ENG,DOCS):").prompt()?;
     let spaces: Vec<String> = spaces_str
         .split(',')
         .map(|s| s.trim().to_string())
@@ -758,7 +759,7 @@ pub fn prompt_confluence_source() -> anyhow::Result<ConfluenceSourceConfig> {
         );
         let email_default = git_user_email().unwrap_or_default();
         let mut email_prompt =
-            inquire::Text::new("  Atlassian account email (the API-token owner)");
+            inquire::Text::new("  Atlassian account email (the API-token owner):");
         if !email_default.is_empty() {
             email_prompt = email_prompt.with_initial_value(&email_default);
         }
@@ -824,7 +825,7 @@ pub async fn deployments_section(
         "Custom (configure each deployment manually)",
     ];
 
-    let chosen = inquire::Select::new("Deployment shape", shapes)
+    let chosen = inquire::Select::new("Deployment shape:", shapes)
         .with_starting_cursor(0)
         .raw_prompt()?
         .index;

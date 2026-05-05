@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **`quelch init [DIRECTORY]` accepts an optional target folder.**
+  `quelch init` (no args) and `quelch init .` both write `quelch.yaml`
+  into the current directory; `quelch init my-folder` creates the
+  folder if missing and writes `my-folder/quelch.yaml`.
+- **`quelch init` now offers to `git init` the project folder and write
+  a recommended `.gitignore`.** The wizard never writes credentials,
+  but `quelch.yaml` still contains connection strings, so a private
+  repo or out-of-version-control file is the safe default. Idempotent:
+  if the folder is already a git repo, only the `.gitignore` is
+  touched (and only if the Quelch block isn't already there).
+
+### Changed
+
+- **Every wizard prompt now ends with `:`** so it's obvious where the
+  question ends and the user's input begins. The bare-message form
+  (`Resource naming prefix quelch <cursor>`) was easy to misread as
+  a single continuous string. Question-form prompts that already end
+  in `?` (e.g. "Add a source?") are left alone.
+
 ## [0.11.4] - 2026-05-05
 
 ### Security / Changed
