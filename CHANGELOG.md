@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Security / Changed
+
+- **`quelch init` no longer writes Jira / Confluence credentials to disk.**
+  The wizard always stores `${ENV_VAR_NAME}` placeholders (resolved at
+  config-load time by `shellexpand`) instead of literal PATs / API
+  tokens. Behaviour:
+  - The wizard scans the user's current shell env for variable names
+    matching the product (e.g. `JIRA`, `CONFLUENCE`) AND containing
+    `PAT` / `TOKEN` / `API_KEY` (case-insensitive). Matches are
+    presented in a Select with `(set)` / `(empty!)` markers — values
+    are never read or displayed, only names.
+  - If no match is found (or the user picks "Use a different env var
+    (enter name)…"), the wizard asks for the env-var name to use,
+    pre-filling a sensible default like `JIRA_CLOUD_PAT` derived from
+    the source name.
+  - At the end of `quelch init`, the wizard scans the written YAML for
+    `${VAR}` references and prints a checklist with current
+    `set` / `NOT set` status and a reminder to attach the same vars on
+    the Container App that runs Q-Ingest.
+- **Atlassian Cloud email defaults from `git config user.email`** when
+  the Cloud variant is selected for a source — most users already have
+  the right email there.
+
 ## [0.11.3] - 2026-05-05
 
 ### Changed

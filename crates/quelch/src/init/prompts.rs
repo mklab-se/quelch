@@ -3,9 +3,17 @@
 /// Each `*_section` function drives one section of the wizard and returns
 /// the corresponding config struct. Credential testing is best-effort:
 /// if a test fails the user is warned but not blocked.
+///
+/// ## Credentials
+///
+/// Wizard-collected secrets (PATs, API tokens) are NEVER written to disk.
+/// The wizard always stores `${ENV_VAR_NAME}` placeholders in the generated
+/// YAML; `config::env::substitute_env_vars` resolves them at load time.
+/// See [`find_token_env_vars`] / [`prompt_credential_env_var`].
 use crate::config::*;
 
 use super::discover;
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
@@ -483,6 +491,136 @@ fn prompt_hosting_kind(product: &str) -> anyhow::Result<bool> {
     Ok(idx == 0)
 }
 
+/// Scan the current process env for variable names that look like they hold
+/// a credential for the given product. Matches case-insensitively on names
+/// that contain `product_hint` (e.g. "jira") AND at least one of
+/// "PAT" / "TOKEN" / "API_KEY" / "APIKEY".
+///
+/// **Reads env-var names only, never values.** Sorted alphabetically,
+/// duplicates removed.
+pub(crate) fn find_token_env_vars(product_hint: &str) -> Vec<String> {
+    let names = std::env::vars_os().filter_map(|(k, _)| k.into_string().ok());
+    match_token_env_var_names(product_hint, names)
+}
+
+/// Pure-function core of [`find_token_env_vars`] — separated for testing.
+fn match_token_env_var_names<I>(product_hint: &str, names: I) -> Vec<String>
+where
+    I: IntoIterator<Item = String>,
+{
+    let hint = product_hint.to_ascii_uppercase();
+    let mut hits: BTreeSet<String> = BTreeSet::new();
+    for name in names {
+        let upper = name.to_ascii_uppercase();
+        if !upper.contains(&hint) {
+            continue;
+        }
+        if upper.contains("PAT")
+            || upper.contains("TOKEN")
+            || upper.contains("API_KEY")
+            || upper.contains("APIKEY")
+        {
+            hits.insert(name);
+        }
+    }
+    hits.into_iter().collect()
+}
+
+/// Convert a source name into a sensible default env-var name suffix:
+/// uppercase, non-alphanumerics replaced with `_`. E.g. `jira-cloud` →
+/// `JIRA_CLOUD`.
+fn env_var_stem_from_source_name(source_name: &str) -> String {
+    source_name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// Prompt the user to pick (or name) the env var that will hold a credential.
+/// Returns the env-var name — never the value.
+///
+/// `product_hint` filters which existing env vars to suggest (e.g. "jira").
+/// `default_name` is the suggested name when the user picks "Use a different
+/// env var" (typically derived from the source name).
+/// `scope_text` is a short description of what the credential will be used
+/// for, included in the prompt copy ("Personal Access Token for PROJ, ENG").
+fn prompt_credential_env_var(
+    product_hint: &str,
+    default_name: &str,
+    scope_text: &str,
+) -> anyhow::Result<String> {
+    let candidates = find_token_env_vars(product_hint);
+    const ENTER_NAME: &str = "Use a different env var (enter name)…";
+
+    if candidates.is_empty() {
+        println!(
+            "  No {product_hint}-related env vars found in your shell. Quelch will\n  \
+             store a `${{<NAME>}}` placeholder in quelch.yaml — set the env var\n  \
+             before running `quelch …`, both locally and on whatever runs Q-Ingest."
+        );
+        let name: String =
+            inquire::Text::new(&format!("  Env var name that will hold the {scope_text}"))
+                .with_initial_value(default_name)
+                .prompt()?;
+        return Ok(name);
+    }
+
+    println!(
+        "  Found {} env var(s) that look like a {product_hint} credential.\n  \
+         (Quelch only reads the NAME — the value is not displayed or written\n  \
+         to quelch.yaml; only `${{<NAME>}}` is.)",
+        candidates.len()
+    );
+
+    let mut labels: Vec<String> = candidates
+        .iter()
+        .map(|name| {
+            let set = std::env::var(name).map(|v| !v.is_empty()).unwrap_or(false);
+            let marker = if set { "(set)" } else { "(empty!)" };
+            format!("{name}  {marker}")
+        })
+        .collect();
+    let enter_name_idx = labels.len();
+    labels.push(ENTER_NAME.to_string());
+
+    let idx = inquire::Select::new(&format!("  Which env var holds the {scope_text}?"), labels)
+        .with_starting_cursor(0)
+        .raw_prompt()?
+        .index;
+
+    if idx < candidates.len() {
+        Ok(candidates[idx].clone())
+    } else {
+        debug_assert_eq!(idx, enter_name_idx);
+        let name: String =
+            inquire::Text::new(&format!("  Env var name that will hold the {scope_text}"))
+                .with_initial_value(default_name)
+                .prompt()?;
+        Ok(name)
+    }
+}
+
+/// Best-effort: read `git config user.email` from the user's git config to
+/// suggest as a default for the Atlassian Cloud email field. Returns `None`
+/// if git is missing or no email is configured.
+fn git_user_email() -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["config", "--get", "user.email"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let email = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    if email.is_empty() { None } else { Some(email) }
+}
+
 /// Prompt for a Jira source and return a built `JiraSourceConfig`.
 pub fn prompt_jira_source() -> anyhow::Result<JiraSourceConfig> {
     println!("\n  --- Jira source ---");
@@ -516,29 +654,43 @@ pub fn prompt_jira_source() -> anyhow::Result<JiraSourceConfig> {
         projects.join(", ")
     };
 
+    let env_stem = env_var_stem_from_source_name(&name);
     let auth = if is_cloud {
         println!(
-            "\n  Atlassian Cloud uses email + API token. Create one at\n\
+            "\n  Atlassian Cloud uses email + API token. Create the token at\n\
              https://id.atlassian.com/manage-profile/security/api-tokens — the\n\
-             account that owns the token must have read access to {project_list}."
+             account that owns it must have read access to {project_list}."
         );
-        let email: String =
-            inquire::Text::new("  Atlassian account email (the API-token owner)").prompt()?;
-        let api_token: String =
-            inquire::Password::new(&format!("  Paste the API token for {email}"))
-                .without_confirmation()
-                .prompt()?;
-        AuthConfig::Cloud { email, api_token }
+        let email_default = git_user_email().unwrap_or_default();
+        let mut email_prompt =
+            inquire::Text::new("  Atlassian account email (the API-token owner)");
+        if !email_default.is_empty() {
+            email_prompt = email_prompt.with_initial_value(&email_default);
+        }
+        let email: String = email_prompt.prompt()?;
+        let var = prompt_credential_env_var(
+            "jira",
+            &format!("{env_stem}_API_TOKEN"),
+            &format!("Atlassian Cloud API token for {project_list}"),
+        )?;
+        AuthConfig::Cloud {
+            email,
+            api_token: format!("${{{var}}}"),
+        }
     } else {
         println!(
             "\n  Jira Data Center uses a Personal Access Token (PAT). Generate one\n\
-             from your Jira profile → Personal Access Tokens. The token's owner\n\
+             from your Jira profile → Personal Access Tokens. The PAT's owner\n\
              must have read access to {project_list}."
         );
-        let pat: String = inquire::Password::new("  Paste the PAT")
-            .without_confirmation()
-            .prompt()?;
-        AuthConfig::DataCenter { pat }
+        let var = prompt_credential_env_var(
+            "jira",
+            &format!("{env_stem}_PAT"),
+            &format!("Jira Data Center PAT for {project_list}"),
+        )?;
+        AuthConfig::DataCenter {
+            pat: format!("${{{var}}}"),
+        }
     };
 
     Ok(build_jira_source(name, url, auth, projects))
@@ -597,29 +749,43 @@ pub fn prompt_confluence_source() -> anyhow::Result<ConfluenceSourceConfig> {
         spaces.join(", ")
     };
 
+    let env_stem = env_var_stem_from_source_name(&name);
     let auth = if is_cloud {
         println!(
-            "\n  Atlassian Cloud uses email + API token. Create one at\n\
+            "\n  Atlassian Cloud uses email + API token. Create the token at\n\
              https://id.atlassian.com/manage-profile/security/api-tokens — the\n\
-             account that owns the token must have read access to {space_list}."
+             account that owns it must have read access to {space_list}."
         );
-        let email: String =
-            inquire::Text::new("  Atlassian account email (the API-token owner)").prompt()?;
-        let api_token: String =
-            inquire::Password::new(&format!("  Paste the API token for {email}"))
-                .without_confirmation()
-                .prompt()?;
-        AuthConfig::Cloud { email, api_token }
+        let email_default = git_user_email().unwrap_or_default();
+        let mut email_prompt =
+            inquire::Text::new("  Atlassian account email (the API-token owner)");
+        if !email_default.is_empty() {
+            email_prompt = email_prompt.with_initial_value(&email_default);
+        }
+        let email: String = email_prompt.prompt()?;
+        let var = prompt_credential_env_var(
+            "confluence",
+            &format!("{env_stem}_API_TOKEN"),
+            &format!("Atlassian Cloud API token for {space_list}"),
+        )?;
+        AuthConfig::Cloud {
+            email,
+            api_token: format!("${{{var}}}"),
+        }
     } else {
         println!(
             "\n  Confluence Data Center uses a Personal Access Token (PAT). Generate\n\
-             one from your Confluence profile → Personal Access Tokens. The token's\n\
+             one from your Confluence profile → Personal Access Tokens. The PAT's\n\
              owner must have read access to {space_list}."
         );
-        let pat: String = inquire::Password::new("  Paste the PAT")
-            .without_confirmation()
-            .prompt()?;
-        AuthConfig::DataCenter { pat }
+        let var = prompt_credential_env_var(
+            "confluence",
+            &format!("{env_stem}_PAT"),
+            &format!("Confluence Data Center PAT for {space_list}"),
+        )?;
+        AuthConfig::DataCenter {
+            pat: format!("${{{var}}}"),
+        }
     };
 
     Ok(build_confluence_source(name, url, auth, spaces))
@@ -826,12 +992,108 @@ pub async fn mcp_section(deployments: &[DeploymentConfig]) -> anyhow::Result<Mcp
 }
 
 // ---------------------------------------------------------------------------
+// Env-var summary helpers — used by the post-init "before running Quelch" hint
+// ---------------------------------------------------------------------------
+
+/// Scan a YAML string for `${VAR_NAME}` references and return the unique set
+/// of variable names. Hand-rolled (cheaper than pulling in `regex`) and
+/// matches what `shellexpand` will resolve at config-load time.
+pub(crate) fn collect_env_var_refs(yaml: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    let bytes = yaml.as_bytes();
+    let mut i = 0;
+    while i + 2 < bytes.len() {
+        if bytes[i] == b'$' && bytes[i + 1] == b'{' {
+            let start = i + 2;
+            if let Some(end_offset) = bytes[start..].iter().position(|&b| b == b'}') {
+                let name = &yaml[start..start + end_offset];
+                let valid = !name.is_empty()
+                    && name
+                        .bytes()
+                        .next()
+                        .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+                    && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
+                if valid {
+                    out.insert(name.to_string());
+                }
+                i = start + end_offset + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn match_token_env_var_names_finds_jira_pat_variants() {
+        let names = vec![
+            "PATH".to_string(),
+            "JIRA_PAT".to_string(),
+            "JIRA_CLOUD_PAT".to_string(),
+            "jira_pat_lowercase".to_string(),
+            "CONFLUENCE_PAT".to_string(),
+            "BITBUCKET_PAT".to_string(),
+            "JIRA_API_TOKEN".to_string(),
+            "JIRA_HOME".to_string(),
+            "MY_jira_token_lowercase".to_string(),
+        ];
+        let hits = match_token_env_var_names("jira", names);
+        assert_eq!(
+            hits,
+            vec![
+                "JIRA_API_TOKEN".to_string(),
+                "JIRA_CLOUD_PAT".to_string(),
+                "JIRA_PAT".to_string(),
+                "MY_jira_token_lowercase".to_string(),
+                "jira_pat_lowercase".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn match_token_env_var_names_excludes_path_substring_only_match() {
+        // "PATH" contains "PAT" but not the product hint — must not match.
+        let names = vec!["PATH".to_string(), "EDITOR".to_string()];
+        let hits = match_token_env_var_names("jira", names);
+        assert!(hits.is_empty(), "PATH must not match jira-pat search");
+    }
+
+    #[test]
+    fn env_var_stem_uppercases_and_replaces_punctuation() {
+        assert_eq!(env_var_stem_from_source_name("jira-cloud"), "JIRA_CLOUD");
+        assert_eq!(
+            env_var_stem_from_source_name("confluence.dc"),
+            "CONFLUENCE_DC"
+        );
+        assert_eq!(env_var_stem_from_source_name("MyJira"), "MYJIRA");
+    }
+
+    #[test]
+    fn collect_env_var_refs_finds_all_unique_placeholders() {
+        let yaml =
+            "auth:\n  pat: ${JIRA_PAT}\n  other: ${JIRA_PAT}\n  api: ${CONFLUENCE_API_TOKEN}\n";
+        let refs = collect_env_var_refs(yaml);
+        assert_eq!(refs.len(), 2);
+        assert!(refs.contains("JIRA_PAT"));
+        assert!(refs.contains("CONFLUENCE_API_TOKEN"));
+    }
+
+    #[test]
+    fn collect_env_var_refs_ignores_malformed() {
+        // Unterminated, leading-digit, empty — none should appear.
+        let yaml = "${UNTERMINATED\nfoo: ${1BADNAME}\nbar: ${}\nok: ${GOOD}\n";
+        let refs = collect_env_var_refs(yaml);
+        assert_eq!(refs.iter().collect::<Vec<_>>(), vec!["GOOD"]);
+    }
 
     #[test]
     fn build_jira_source_creates_correct_config() {

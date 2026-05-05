@@ -54,10 +54,27 @@ pub async fn run(output_path: &Path, options: InitOptions) -> anyhow::Result<()>
 
     let config = run_interactive().await?;
     write_yaml(&config, output_path)?;
-    println!("Wrote {}", output_path.display());
-    println!(
-        "Next steps: review the config, fill in any ${{}}-placeholders, then run `quelch validate`."
-    );
+    println!("\nWrote {}", output_path.display());
+
+    // List every `${VAR}` placeholder the wizard wrote, with current set/unset
+    // status, so the user knows exactly what env vars to export before running.
+    let yaml = serde_yaml::to_string(&config)?;
+    let env_refs = prompts::collect_env_var_refs(&yaml);
+    if !env_refs.is_empty() {
+        println!("\nBefore running Quelch, set these env vars (locally and on Q-Ingest):");
+        for name in &env_refs {
+            let status = match std::env::var(name) {
+                Ok(v) if !v.is_empty() => "✓ set in current shell",
+                _ => "✗ NOT set in current shell",
+            };
+            println!("  - {name}   {status}");
+        }
+        println!(
+            "\nFor a Container App, attach these as secrets / env vars on the\n\
+             deployment (e.g. `az containerapp update --set-env-vars …`)."
+        );
+    }
+    println!("\nNext: run `quelch validate` to verify the config and prerequisites.");
     Ok(())
 }
 
