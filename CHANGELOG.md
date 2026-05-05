@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.11.5] - 2026-05-05
+
 ### Added
 
 - **`quelch init [DIRECTORY]` accepts an optional target folder.**
