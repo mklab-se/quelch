@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-05-05
+
+### Fixed
+
+- **`quelch init`: arrow keys now work on Linux**. The wizard previously
+  built on `dialoguer`, whose underlying `console` crate parses escape
+  sequences with a zero-timeout poll between bytes — a race that Linux
+  TTYs lose when a multi-byte arrow sequence (`ESC [ A`) is delivered
+  across separate poll cycles. Symptoms: arrow keys silently no-op in
+  `Select` prompts and inject literal `A`/`B`/`C`/`D` into `Input`
+  prompts on Linux/Ghostty (macOS happens to win the race). Migrated all
+  ~30 wizard prompts plus the apply/destroy/reset confirms to `inquire`
+  (built on `crossterm`), which uses a non-zero ESC timeout and proper
+  CSI/SS3 handling.
+
 ## [0.11.0] - 2026-05-04
 
 ### Added
