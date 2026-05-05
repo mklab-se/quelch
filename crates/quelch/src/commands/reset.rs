@@ -53,10 +53,9 @@ pub async fn run(config: &Config, options: ResetOptions) -> anyhow::Result<()> {
     }
 
     if !options.yes {
-        let confirmed = dialoguer::Confirm::new()
-            .with_prompt("Continue?")
-            .default(false)
-            .interact()?;
+        let confirmed = inquire::Confirm::new("Continue?")
+            .with_default(false)
+            .prompt()?;
         if !confirmed {
             println!("Aborted.");
             return Ok(());

@@ -495,13 +495,12 @@ async fn deploy_one(
 
     // Prompt unless --yes.
     if !yes {
-        let confirmed = dialoguer::Confirm::new()
-            .with_prompt(format!(
-                "Apply changes to deployment '{}'?",
-                deployment.name
-            ))
-            .default(false)
-            .interact()?;
+        let confirmed = inquire::Confirm::new(&format!(
+            "Apply changes to deployment '{}'?",
+            deployment.name
+        ))
+        .with_default(false)
+        .prompt()?;
         if !confirmed {
             println!("Aborted.");
             return Ok(());
@@ -696,12 +695,11 @@ async fn cmd_azure_destroy(config_path: &Path, deployment: &str, yes: bool) -> R
         .ok_or_else(|| anyhow::anyhow!("deployment '{}' not found", deployment))?;
 
     if !yes {
-        let confirmed = dialoguer::Confirm::new()
-            .with_prompt(format!(
-                "Destroy Container App for deployment '{deployment}'?"
-            ))
-            .default(false)
-            .interact()?;
+        let confirmed = inquire::Confirm::new(&format!(
+            "Destroy Container App for deployment '{deployment}'?"
+        ))
+        .with_default(false)
+        .prompt()?;
         if !confirmed {
             println!("Aborted.");
             return Ok(());

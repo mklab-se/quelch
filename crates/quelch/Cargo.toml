@@ -57,7 +57,7 @@ reqwest-retry = { workspace = true }
 reqwest-middleware = { workspace = true }
 schemars = { workspace = true }
 async-trait = { workspace = true }
-dialoguer = { workspace = true }
+inquire = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

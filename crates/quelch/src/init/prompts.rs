@@ -31,38 +31,31 @@ pub async fn azure_section() -> anyhow::Result<AzureConfig> {
             })
             .collect();
         let default_idx = subs.iter().position(|s| s.is_default).unwrap_or(0);
-        let chosen = dialoguer::Select::new()
-            .with_prompt("Subscription")
-            .items(&names)
-            .default(default_idx)
-            .interact()?;
+        let chosen = inquire::Select::new("Subscription", names)
+            .with_starting_cursor(default_idx)
+            .raw_prompt()?
+            .index;
         subs[chosen].id.clone()
     } else {
         println!("  (az not available or no subscriptions found — enter manually)");
-        dialoguer::Input::new()
-            .with_prompt("Subscription ID")
-            .interact_text()?
+        inquire::Text::new("Subscription ID").prompt()?
     };
 
-    let resource_group: String = dialoguer::Input::new()
-        .with_prompt("Resource group name")
-        .with_initial_text("rg-quelch-prod")
-        .interact_text()?;
+    let resource_group: String = inquire::Text::new("Resource group name")
+        .with_initial_value("rg-quelch-prod")
+        .prompt()?;
 
-    let region: String = dialoguer::Input::new()
-        .with_prompt("Azure region")
-        .with_initial_text("swedencentral")
-        .interact_text()?;
+    let region: String = inquire::Text::new("Azure region")
+        .with_initial_value("swedencentral")
+        .prompt()?;
 
-    let naming_prefix: String = dialoguer::Input::new()
-        .with_prompt("Resource naming prefix")
-        .with_initial_text("quelch")
-        .interact_text()?;
+    let naming_prefix: String = inquire::Text::new("Resource naming prefix")
+        .with_initial_value("quelch")
+        .prompt()?;
 
-    let naming_env: String = dialoguer::Input::new()
-        .with_prompt("Environment tag (e.g. prod, staging)")
-        .with_initial_text("prod")
-        .interact_text()?;
+    let naming_env: String = inquire::Text::new("Environment tag (e.g. prod, staging)")
+        .with_initial_value("prod")
+        .prompt()?;
 
     Ok(AzureConfig {
         subscription_id,
@@ -95,12 +88,11 @@ pub async fn ai_section(azure: &AzureConfig) -> anyhow::Result<AiConfig> {
     println!("  - a chat / LLM (used for query planning + answer synthesis)");
     println!("Both can live in the same Azure OpenAI account or Microsoft Foundry project.\n");
 
-    let providers = ["Microsoft Foundry  (recommended)", "Azure OpenAI"];
-    let provider_idx = dialoguer::Select::new()
-        .with_prompt("Where do your model deployments live?")
-        .items(&providers)
-        .default(0)
-        .interact()?;
+    let providers = vec!["Microsoft Foundry  (recommended)", "Azure OpenAI"];
+    let provider_idx = inquire::Select::new("Where do your model deployments live?", providers)
+        .with_starting_cursor(0)
+        .raw_prompt()?
+        .index;
     let provider = if provider_idx == 0 {
         AiProvider::Foundry
     } else {
@@ -127,21 +119,19 @@ pub async fn ai_section(azure: &AzureConfig) -> anyhow::Result<AiConfig> {
                      then re-run `quelch init`."
                 );
                 println!("    Falling back to manual endpoint entry...");
-                let endpoint: String = dialoguer::Input::new()
-                    .with_prompt("Foundry project endpoint")
-                    .with_initial_text("https://YOUR-FOUNDRY.cognitiveservices.azure.com")
-                    .interact_text()?;
+                let endpoint: String = inquire::Text::new("Foundry project endpoint")
+                    .with_initial_value("https://YOUR-FOUNDRY.cognitiveservices.azure.com")
+                    .prompt()?;
                 (endpoint, None)
             } else {
                 let labels: Vec<_> = projects
                     .iter()
                     .map(|p| format!("{} — {}", p.name, p.endpoint))
                     .collect();
-                let chosen = dialoguer::Select::new()
-                    .with_prompt("Foundry project")
-                    .items(&labels)
-                    .default(0)
-                    .interact()?;
+                let chosen = inquire::Select::new("Foundry project", labels)
+                    .with_starting_cursor(0)
+                    .raw_prompt()?
+                    .index;
                 let p = &projects[chosen];
                 (p.endpoint.clone(), Some(p.name.clone()))
             }
@@ -170,21 +160,19 @@ pub async fn ai_section(azure: &AzureConfig) -> anyhow::Result<AiConfig> {
                     "    Then deploy the embedding + chat models you want and re-run `quelch init`."
                 );
                 println!("    Falling back to manual endpoint entry...");
-                let endpoint: String = dialoguer::Input::new()
-                    .with_prompt("Azure OpenAI endpoint")
-                    .with_initial_text("https://YOUR-OPENAI.openai.azure.com")
-                    .interact_text()?;
+                let endpoint: String = inquire::Text::new("Azure OpenAI endpoint")
+                    .with_initial_value("https://YOUR-OPENAI.openai.azure.com")
+                    .prompt()?;
                 (endpoint, None)
             } else {
                 let labels: Vec<_> = accounts
                     .iter()
                     .map(|a| format!("{} — {}", a.name, a.endpoint))
                     .collect();
-                let chosen = dialoguer::Select::new()
-                    .with_prompt("Azure OpenAI account")
-                    .items(&labels)
-                    .default(0)
-                    .interact()?;
+                let chosen = inquire::Select::new("Azure OpenAI account", labels)
+                    .with_starting_cursor(0)
+                    .raw_prompt()?
+                    .index;
                 let a = &accounts[chosen];
                 (a.endpoint.clone(), Some(a.name.clone()))
             }
@@ -226,27 +214,24 @@ fn pick_embedding_deployment(
         if !available.is_empty() {
             println!("  (no embedding deployments found in the chosen account)");
         }
-        dialoguer::Input::<String>::new()
-            .with_prompt("Embedding deployment name")
-            .with_initial_text("text-embedding-3-large")
-            .interact_text()?
+        inquire::Text::new("Embedding deployment name")
+            .with_initial_value("text-embedding-3-large")
+            .prompt()?
     } else {
         let labels: Vec<_> = candidates
             .iter()
             .map(|d| format!("{} ({})", d.name, d.model_name))
             .collect();
-        let chosen = dialoguer::Select::new()
-            .with_prompt("Embedding deployment")
-            .items(&labels)
-            .default(0)
-            .interact()?;
+        let chosen = inquire::Select::new("Embedding deployment", labels)
+            .with_starting_cursor(0)
+            .raw_prompt()?
+            .index;
         candidates[chosen].name.clone()
     };
 
-    let dims_str: String = dialoguer::Input::new()
-        .with_prompt("Embedding dimensions")
-        .with_initial_text("3072")
-        .interact_text()?;
+    let dims_str: String = inquire::Text::new("Embedding dimensions")
+        .with_initial_value("3072")
+        .prompt()?;
     let dimensions: u32 = dims_str
         .parse()
         .map_err(|_| anyhow::anyhow!("embedding dimensions must be a number"))?;
@@ -284,50 +269,45 @@ fn pick_chat_deployment(available: &[discover::ModelDeployment]) -> anyhow::Resu
                 SUPPORTED_CHAT_MODELS.join(", ")
             );
         }
-        let dep: String = dialoguer::Input::new()
-            .with_prompt("Chat deployment name")
-            .with_initial_text("gpt-5-mini")
-            .interact_text()?;
-        let model: String = dialoguer::Input::new()
-            .with_prompt("Chat model name")
-            .with_initial_text(&dep)
-            .interact_text()?;
+        let dep: String = inquire::Text::new("Chat deployment name")
+            .with_initial_value("gpt-5-mini")
+            .prompt()?;
+        let model: String = inquire::Text::new("Chat model name")
+            .with_initial_value(&dep)
+            .prompt()?;
         (dep, model)
     } else {
         let labels: Vec<_> = candidates
             .iter()
             .map(|d| format!("{} ({})", d.name, d.model_name))
             .collect();
-        let chosen = dialoguer::Select::new()
-            .with_prompt("Chat (LLM) deployment")
-            .items(&labels)
-            .default(0)
-            .interact()?;
+        let chosen = inquire::Select::new("Chat (LLM) deployment", labels)
+            .with_starting_cursor(0)
+            .raw_prompt()?
+            .index;
         let c = candidates[chosen];
         (c.name.clone(), c.model_name.clone())
     };
 
-    let efforts = ["minimal", "low (default)", "medium"];
-    let effort_idx = dialoguer::Select::new()
-        .with_prompt("Retrieval reasoning effort")
-        .items(&efforts)
-        .default(1)
-        .interact()?;
+    let efforts = vec!["minimal", "low (default)", "medium"];
+    let effort_idx = inquire::Select::new("Retrieval reasoning effort", efforts)
+        .with_starting_cursor(1)
+        .raw_prompt()?
+        .index;
     let retrieval_reasoning_effort = match effort_idx {
         0 => ReasoningEffort::Minimal,
         1 => ReasoningEffort::Low,
         _ => ReasoningEffort::Medium,
     };
 
-    let modes = [
+    let modes = vec![
         "answerSynthesis (LLM-generated answer with citations)",
         "extractedData (raw ranked results)",
     ];
-    let mode_idx = dialoguer::Select::new()
-        .with_prompt("Knowledge Base output mode")
-        .items(&modes)
-        .default(0)
-        .interact()?;
+    let mode_idx = inquire::Select::new("Knowledge Base output mode", modes)
+        .with_starting_cursor(0)
+        .raw_prompt()?
+        .index;
     let output_mode = if mode_idx == 0 {
         OutputMode::AnswerSynthesis
     } else {
@@ -352,11 +332,13 @@ pub async fn sources_section() -> anyhow::Result<Vec<SourceConfig>> {
     let mut sources = Vec::new();
 
     loop {
-        let add = dialoguer::Select::new()
-            .with_prompt("Add a source?")
-            .items(&["Jira", "Confluence", "Done (no more sources)"])
-            .default(0)
-            .interact()?;
+        let add = inquire::Select::new(
+            "Add a source?",
+            vec!["Jira", "Confluence", "Done (no more sources)"],
+        )
+        .with_starting_cursor(0)
+        .raw_prompt()?
+        .index;
 
         match add {
             0 => sources.push(SourceConfig::Jira(prompt_jira_source()?)),
@@ -371,41 +353,35 @@ pub async fn sources_section() -> anyhow::Result<Vec<SourceConfig>> {
 /// Prompt for a Jira source and return a built `JiraSourceConfig`.
 pub fn prompt_jira_source() -> anyhow::Result<JiraSourceConfig> {
     println!("  --- Jira source ---");
-    let name: String = dialoguer::Input::new()
-        .with_prompt("  Source name (unique identifier)")
-        .with_initial_text("jira-cloud")
-        .interact_text()?;
+    let name: String = inquire::Text::new("  Source name (unique identifier)")
+        .with_initial_value("jira-cloud")
+        .prompt()?;
 
-    let url: String = dialoguer::Input::new()
-        .with_prompt("  Jira URL")
-        .with_initial_text("https://your-org.atlassian.net")
-        .interact_text()?;
+    let url: String = inquire::Text::new("  Jira URL")
+        .with_initial_value("https://your-org.atlassian.net")
+        .prompt()?;
 
-    let is_cloud = dialoguer::Confirm::new()
-        .with_prompt("  Is this Atlassian Cloud (yes) or Data Center (no)?")
-        .default(true)
-        .interact()?;
+    let is_cloud = inquire::Confirm::new("  Is this Atlassian Cloud (yes) or Data Center (no)?")
+        .with_default(true)
+        .prompt()?;
 
     let auth = if is_cloud {
-        let email: String = dialoguer::Input::new()
-            .with_prompt("  Atlassian account email")
-            .interact_text()?;
-        let api_token: String = dialoguer::Password::new()
-            .with_prompt(
-                "  API token (https://id.atlassian.com/manage-profile/security/api-tokens)",
-            )
-            .interact()?;
+        let email: String = inquire::Text::new("  Atlassian account email").prompt()?;
+        let api_token: String = inquire::Password::new(
+            "  API token (https://id.atlassian.com/manage-profile/security/api-tokens)",
+        )
+        .without_confirmation()
+        .prompt()?;
         AuthConfig::Cloud { email, api_token }
     } else {
-        let pat: String = dialoguer::Password::new()
-            .with_prompt("  Personal Access Token")
-            .interact()?;
+        let pat: String = inquire::Password::new("  Personal Access Token")
+            .without_confirmation()
+            .prompt()?;
         AuthConfig::DataCenter { pat }
     };
 
-    let projects_str: String = dialoguer::Input::new()
-        .with_prompt("  Project keys (comma-separated, e.g. PROJ,ENG)")
-        .interact_text()?;
+    let projects_str: String =
+        inquire::Text::new("  Project keys (comma-separated, e.g. PROJ,ENG)").prompt()?;
     let projects: Vec<String> = projects_str
         .split(',')
         .map(|s| s.trim().to_string())
@@ -438,39 +414,33 @@ pub fn build_jira_source(
 /// Prompt for a Confluence source and return a built `ConfluenceSourceConfig`.
 pub fn prompt_confluence_source() -> anyhow::Result<ConfluenceSourceConfig> {
     println!("  --- Confluence source ---");
-    let name: String = dialoguer::Input::new()
-        .with_prompt("  Source name (unique identifier)")
-        .with_initial_text("confluence-cloud")
-        .interact_text()?;
+    let name: String = inquire::Text::new("  Source name (unique identifier)")
+        .with_initial_value("confluence-cloud")
+        .prompt()?;
 
-    let url: String = dialoguer::Input::new()
-        .with_prompt("  Confluence URL")
-        .with_initial_text("https://your-org.atlassian.net/wiki")
-        .interact_text()?;
+    let url: String = inquire::Text::new("  Confluence URL")
+        .with_initial_value("https://your-org.atlassian.net/wiki")
+        .prompt()?;
 
-    let is_cloud = dialoguer::Confirm::new()
-        .with_prompt("  Is this Atlassian Cloud (yes) or Data Center (no)?")
-        .default(true)
-        .interact()?;
+    let is_cloud = inquire::Confirm::new("  Is this Atlassian Cloud (yes) or Data Center (no)?")
+        .with_default(true)
+        .prompt()?;
 
     let auth = if is_cloud {
-        let email: String = dialoguer::Input::new()
-            .with_prompt("  Atlassian account email")
-            .interact_text()?;
-        let api_token: String = dialoguer::Password::new()
-            .with_prompt("  API token")
-            .interact()?;
+        let email: String = inquire::Text::new("  Atlassian account email").prompt()?;
+        let api_token: String = inquire::Password::new("  API token")
+            .without_confirmation()
+            .prompt()?;
         AuthConfig::Cloud { email, api_token }
     } else {
-        let pat: String = dialoguer::Password::new()
-            .with_prompt("  Personal Access Token")
-            .interact()?;
+        let pat: String = inquire::Password::new("  Personal Access Token")
+            .without_confirmation()
+            .prompt()?;
         AuthConfig::DataCenter { pat }
     };
 
-    let spaces_str: String = dialoguer::Input::new()
-        .with_prompt("  Space keys (comma-separated, e.g. ENG,DOCS)")
-        .interact_text()?;
+    let spaces_str: String =
+        inquire::Text::new("  Space keys (comma-separated, e.g. ENG,DOCS)").prompt()?;
     let spaces: Vec<String> = spaces_str
         .split(',')
         .map(|s| s.trim().to_string())
@@ -507,17 +477,16 @@ pub async fn deployments_section(
 ) -> anyhow::Result<Vec<DeploymentConfig>> {
     println!("\n=== Deployments ===");
 
-    let shapes = [
+    let shapes = vec![
         "All in Azure (ingest + MCP both as Azure Container Apps)",
         "Ingest on-prem + MCP in Azure",
         "Custom (configure each deployment manually)",
     ];
 
-    let chosen = dialoguer::Select::new()
-        .with_prompt("Deployment shape")
-        .items(&shapes)
-        .default(0)
-        .interact()?;
+    let chosen = inquire::Select::new("Deployment shape", shapes)
+        .with_starting_cursor(0)
+        .raw_prompt()?
+        .index;
 
     match chosen {
         0 => Ok(all_azure_deployments(sources)),
