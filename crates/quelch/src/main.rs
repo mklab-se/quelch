@@ -291,7 +291,9 @@ async fn cmd_validate(config_path: &Path) -> Result<()> {
     println!("Config is valid.");
     println!("  Azure subscription: {}", config.azure.subscription_id);
     println!("  Resource group:     {}", config.azure.resource_group);
-    println!("  Region:             {}", config.azure.region);
+    if !config.azure.region.is_empty() {
+        println!("  Region:             {}", config.azure.region);
+    }
     println!("  Sources:            {}", config.sources.len());
     for source in &config.sources {
         println!("    - {}", source.name());

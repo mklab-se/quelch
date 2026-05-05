@@ -40,7 +40,10 @@ fn validate_no_bicep_unsafe_chars(config: &Config) -> Result<(), ConfigError> {
     };
 
     check("azure.resource_group", &config.azure.resource_group)?;
-    check("azure.region", &config.azure.region)?;
+    // azure.region is intentionally not required: the Bicep template defaults
+    // `param location` to `resourceGroup().location`, and Quelch never passes
+    // `--parameters location=...` to `az deployment group create`. The field
+    // is kept for back-compat but unused by the deploy code.
     if let Some(ref prefix) = config.azure.naming.prefix {
         check("azure.naming.prefix", prefix)?;
     }

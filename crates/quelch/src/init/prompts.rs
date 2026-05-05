@@ -15,9 +15,10 @@ use std::collections::HashMap;
 /// Prompt for Azure subscription and the resource group Quelch will deploy
 /// its own Container Apps into.
 ///
-/// Region, naming prefix, and environment tag are deferred to
-/// [`azure_deploy_settings`] (called only if the chosen deployment shape
-/// includes any Azure-targeted deployments).
+/// The naming prefix and environment tag are deferred to [`naming_settings`]
+/// (called only if the chosen deployment shape includes any Azure-targeted
+/// deployments). Region is not asked at all — see the doc comment on
+/// [`naming_settings`] for why.
 pub async fn azure_section() -> anyhow::Result<AzureConfig> {
     println!("\n=== Azure subscription & deployment resource group ===");
     println!(
@@ -69,34 +70,30 @@ pub async fn azure_section() -> anyhow::Result<AzureConfig> {
     })
 }
 
-/// Prompt for region, naming prefix, and environment tag — settings that only
-/// apply to Azure-targeted deployments. Called from [`deployments_section`]
-/// after the user has picked a deployment shape.
+/// Prompt for the resource-naming prefix and environment tag — used when
+/// generating the names of the Container Apps Quelch creates (e.g. with
+/// prefix `quelch` and env `prod`, the MCP container app is named
+/// `quelch-prod-mcp`). Called from [`deployments_section`] after the user
+/// picks a shape that includes any Azure-targeted deployment.
 ///
-/// If a deployment RG was picked from `az group list`, its location is offered
-/// as the default region.
-pub async fn azure_deploy_settings(azure: &mut AzureConfig) -> anyhow::Result<()> {
-    println!("\n=== Azure deployment settings ===");
-    println!("These configure the Container Apps Quelch will create for Q-MCP / Q-Ingest.\n");
-
-    // Try to default the region to the deployment RG's location.
-    let default_region = discover::list_resource_groups(&azure.subscription_id)
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .find(|rg| rg.name == azure.resource_group)
-        .map(|rg| rg.location)
-        .unwrap_or_else(|| "swedencentral".to_string());
-
-    azure.region = inquire::Text::new("Azure region (where the Container Apps will run)")
-        .with_initial_value(&default_region)
-        .prompt()?;
+/// Region is *not* asked: the Bicep template's `location` parameter defaults
+/// to `resourceGroup().location`, and Quelch never overrides it at deploy
+/// time, so any value the user typed here would be ignored.
+pub async fn naming_settings(azure: &mut AzureConfig) -> anyhow::Result<()> {
+    println!("\n=== Resource naming for the Container Apps Quelch will create ===");
+    println!(
+        "The Container Apps Quelch deploys are named <prefix>-<env>-<role>, e.g.\n\
+         quelch-prod-mcp and quelch-prod-ingest. The prefix and env tag below also\n\
+         feed the default names of the existing resources Quelch references — if\n\
+         your Container Apps environment is called `cae-quelch-prod` you don't\n\
+         have to override anything; otherwise edit the generated yaml later.\n"
+    );
 
     let naming_prefix: String = inquire::Text::new("Resource naming prefix")
         .with_initial_value("quelch")
         .prompt()?;
 
-    let naming_env: String = inquire::Text::new("Environment tag (e.g. prod, staging)")
+    let naming_env: String = inquire::Text::new("Environment tag (e.g. prod, staging, dev)")
         .with_initial_value("prod")
         .prompt()?;
 
@@ -388,11 +385,23 @@ fn pick_chat_deployment(available: &[discover::ModelDeployment]) -> anyhow::Resu
         (c.name.clone(), c.model_name.clone())
     };
 
-    let efforts = vec!["minimal", "low (default)", "medium"];
-    let effort_idx = inquire::Select::new("Retrieval reasoning effort", efforts)
-        .with_starting_cursor(1)
-        .raw_prompt()?
-        .index;
+    println!(
+        "\nThe Knowledge Base uses your chat deployment for two things — query\n\
+         planning (turning the user's question into search queries) and, optionally,\n\
+         answer synthesis. The two questions below tune that behaviour."
+    );
+    let efforts = vec![
+        "Minimal — skip the LLM, just run vector + keyword + semantic search",
+        "Low — single-pass query plan (Azure portal default)",
+        "Medium — allow follow-up subqueries when the first plan looks thin",
+    ];
+    let effort_idx = inquire::Select::new(
+        "How hard should the LLM think when planning queries?",
+        efforts,
+    )
+    .with_starting_cursor(1)
+    .raw_prompt()?
+    .index;
     let retrieval_reasoning_effort = match effort_idx {
         0 => ReasoningEffort::Minimal,
         1 => ReasoningEffort::Low,
@@ -400,10 +409,10 @@ fn pick_chat_deployment(available: &[discover::ModelDeployment]) -> anyhow::Resu
     };
 
     let modes = vec![
-        "answerSynthesis (LLM-generated answer with citations)",
-        "extractedData (raw ranked results)",
+        "Synthesised answer with citations (Azure portal default)",
+        "Raw ranked search results — no LLM-side composition",
     ];
-    let mode_idx = inquire::Select::new("Knowledge Base output mode", modes)
+    let mode_idx = inquire::Select::new("What should the MCP `search` tool return?", modes)
         .with_starting_cursor(0)
         .raw_prompt()?
         .index;
@@ -428,6 +437,13 @@ fn pick_chat_deployment(available: &[discover::ModelDeployment]) -> anyhow::Resu
 /// Prompt to add one or more Jira/Confluence sources.
 pub async fn sources_section() -> anyhow::Result<Vec<SourceConfig>> {
     println!("\n=== Source connections ===");
+    println!(
+        "A source is one Jira or Confluence instance Quelch will ingest from.\n\
+         You can add as many as you like — for example one Jira Cloud + one\n\
+         Confluence Data Center. Quelch needs read-only access (an API token\n\
+         for Cloud, a personal access token for Data Center) to whichever\n\
+         projects / spaces you point it at.\n"
+    );
     let mut sources = Vec::new();
 
     loop {
@@ -449,43 +465,81 @@ pub async fn sources_section() -> anyhow::Result<Vec<SourceConfig>> {
     Ok(sources)
 }
 
+/// Prompt for whether a source is Atlassian Cloud or Data Center. Replaces
+/// the historic yes/no Confirm with a Select — the Confirm phrasing
+/// ("yes = Cloud, no = Data Center") was confusing because the answer isn't
+/// a yes/no question.
+fn prompt_hosting_kind(product: &str) -> anyhow::Result<bool> {
+    let idx = inquire::Select::new(
+        &format!("  Where is your {product} hosted?"),
+        vec![
+            "Atlassian Cloud (*.atlassian.net)",
+            "Data Center / Server (self-hosted)",
+        ],
+    )
+    .with_starting_cursor(0)
+    .raw_prompt()?
+    .index;
+    Ok(idx == 0)
+}
+
 /// Prompt for a Jira source and return a built `JiraSourceConfig`.
 pub fn prompt_jira_source() -> anyhow::Result<JiraSourceConfig> {
-    println!("  --- Jira source ---");
-    let name: String = inquire::Text::new("  Source name (unique identifier)")
-        .with_initial_value("jira-cloud")
-        .prompt()?;
+    println!("\n  --- Jira source ---");
+    let name: String =
+        inquire::Text::new("  Short identifier for this source (used in `quelch query --source`)")
+            .with_initial_value("jira-cloud")
+            .prompt()?;
 
-    let url: String = inquire::Text::new("  Jira URL")
+    let url: String = inquire::Text::new("  Base URL of your Jira instance")
         .with_initial_value("https://your-org.atlassian.net")
         .prompt()?;
 
-    let is_cloud = inquire::Confirm::new("  Is this Atlassian Cloud (yes) or Data Center (no)?")
-        .with_default(true)
-        .prompt()?;
+    let is_cloud = prompt_hosting_kind("Jira")?;
 
-    let auth = if is_cloud {
-        let email: String = inquire::Text::new("  Atlassian account email").prompt()?;
-        let api_token: String = inquire::Password::new(
-            "  API token (https://id.atlassian.com/manage-profile/security/api-tokens)",
-        )
-        .without_confirmation()
-        .prompt()?;
-        AuthConfig::Cloud { email, api_token }
-    } else {
-        let pat: String = inquire::Password::new("  Personal Access Token")
-            .without_confirmation()
-            .prompt()?;
-        AuthConfig::DataCenter { pat }
-    };
-
+    println!(
+        "\n  Jira project keys are the short uppercase prefixes you see in issue\n\
+         keys (e.g. issue PROJ-123 belongs to project PROJ). Quelch will only\n\
+         ingest issues from the projects you list here."
+    );
     let projects_str: String =
-        inquire::Text::new("  Project keys (comma-separated, e.g. PROJ,ENG)").prompt()?;
+        inquire::Text::new("  Project keys to ingest (comma-separated, e.g. PROJ,ENG)").prompt()?;
     let projects: Vec<String> = projects_str
         .split(',')
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
+
+    let project_list = if projects.is_empty() {
+        "the projects above".to_string()
+    } else {
+        projects.join(", ")
+    };
+
+    let auth = if is_cloud {
+        println!(
+            "\n  Atlassian Cloud uses email + API token. Create one at\n\
+             https://id.atlassian.com/manage-profile/security/api-tokens — the\n\
+             account that owns the token must have read access to {project_list}."
+        );
+        let email: String =
+            inquire::Text::new("  Atlassian account email (the API-token owner)").prompt()?;
+        let api_token: String =
+            inquire::Password::new(&format!("  Paste the API token for {email}"))
+                .without_confirmation()
+                .prompt()?;
+        AuthConfig::Cloud { email, api_token }
+    } else {
+        println!(
+            "\n  Jira Data Center uses a Personal Access Token (PAT). Generate one\n\
+             from your Jira profile → Personal Access Tokens. The token's owner\n\
+             must have read access to {project_list}."
+        );
+        let pat: String = inquire::Password::new("  Paste the PAT")
+            .without_confirmation()
+            .prompt()?;
+        AuthConfig::DataCenter { pat }
+    };
 
     Ok(build_jira_source(name, url, auth, projects))
 }
@@ -512,39 +566,61 @@ pub fn build_jira_source(
 
 /// Prompt for a Confluence source and return a built `ConfluenceSourceConfig`.
 pub fn prompt_confluence_source() -> anyhow::Result<ConfluenceSourceConfig> {
-    println!("  --- Confluence source ---");
-    let name: String = inquire::Text::new("  Source name (unique identifier)")
-        .with_initial_value("confluence-cloud")
-        .prompt()?;
+    println!("\n  --- Confluence source ---");
+    let name: String =
+        inquire::Text::new("  Short identifier for this source (used in `quelch query --source`)")
+            .with_initial_value("confluence-cloud")
+            .prompt()?;
 
-    let url: String = inquire::Text::new("  Confluence URL")
+    let url: String = inquire::Text::new("  Base URL of your Confluence instance")
         .with_initial_value("https://your-org.atlassian.net/wiki")
         .prompt()?;
 
-    let is_cloud = inquire::Confirm::new("  Is this Atlassian Cloud (yes) or Data Center (no)?")
-        .with_default(true)
-        .prompt()?;
+    let is_cloud = prompt_hosting_kind("Confluence")?;
 
-    let auth = if is_cloud {
-        let email: String = inquire::Text::new("  Atlassian account email").prompt()?;
-        let api_token: String = inquire::Password::new("  API token")
-            .without_confirmation()
-            .prompt()?;
-        AuthConfig::Cloud { email, api_token }
-    } else {
-        let pat: String = inquire::Password::new("  Personal Access Token")
-            .without_confirmation()
-            .prompt()?;
-        AuthConfig::DataCenter { pat }
-    };
-
+    println!(
+        "\n  Confluence space keys are the short identifiers shown in space URLs\n\
+         (e.g. /spaces/ENG/ → key `ENG`). Quelch will only ingest pages from the\n\
+         spaces you list here."
+    );
     let spaces_str: String =
-        inquire::Text::new("  Space keys (comma-separated, e.g. ENG,DOCS)").prompt()?;
+        inquire::Text::new("  Space keys to ingest (comma-separated, e.g. ENG,DOCS)").prompt()?;
     let spaces: Vec<String> = spaces_str
         .split(',')
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
+
+    let space_list = if spaces.is_empty() {
+        "the spaces above".to_string()
+    } else {
+        spaces.join(", ")
+    };
+
+    let auth = if is_cloud {
+        println!(
+            "\n  Atlassian Cloud uses email + API token. Create one at\n\
+             https://id.atlassian.com/manage-profile/security/api-tokens — the\n\
+             account that owns the token must have read access to {space_list}."
+        );
+        let email: String =
+            inquire::Text::new("  Atlassian account email (the API-token owner)").prompt()?;
+        let api_token: String =
+            inquire::Password::new(&format!("  Paste the API token for {email}"))
+                .without_confirmation()
+                .prompt()?;
+        AuthConfig::Cloud { email, api_token }
+    } else {
+        println!(
+            "\n  Confluence Data Center uses a Personal Access Token (PAT). Generate\n\
+             one from your Confluence profile → Personal Access Tokens. The token's\n\
+             owner must have read access to {space_list}."
+        );
+        let pat: String = inquire::Password::new("  Paste the PAT")
+            .without_confirmation()
+            .prompt()?;
+        AuthConfig::DataCenter { pat }
+    };
 
     Ok(build_confluence_source(name, url, auth, spaces))
 }

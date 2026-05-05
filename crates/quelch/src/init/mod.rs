@@ -101,7 +101,7 @@ async fn run_interactive() -> anyhow::Result<Config> {
         .iter()
         .any(|d| matches!(d.target, crate::config::DeploymentTarget::Azure))
     {
-        prompts::azure_deploy_settings(&mut azure).await?;
+        prompts::naming_settings(&mut azure).await?;
     }
 
     let mcp = prompts::mcp_section(&deployments).await?;

@@ -6,6 +6,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Source prompts in `quelch init` rewritten for clarity.**
+  - The "Cloud or Data Center?" choice is now a Select with explicit
+    "Atlassian Cloud (*.atlassian.net)" / "Data Center / Server
+    (self-hosted)" labels, instead of a yes/no Confirm whose mapping
+    was non-obvious.
+  - Project / space keys are now asked **before** the credentials, so
+    the API-token / PAT prompt can name the projects or spaces the
+    token will need access to ("Paste the PAT … the token's owner
+    must have read access to PROJ, ENG").
+  - Each prompt now leads with a one-paragraph explanation of what the
+    field does and where to find the value (e.g. how to generate a
+    Cloud API token, what a project key actually is).
+- **`quelch init` no longer asks for `azure.region`.** The Bicep
+  template's `location` parameter defaults to
+  `resourceGroup().location`, and Quelch never overrides it at deploy
+  time, so the field has been dead config since the deploy code
+  landed. `quelch validate` no longer requires the field, and
+  `quelch validate`'s status output skips printing it when empty.
+  Existing configs that already set `azure.region` continue to parse;
+  the value is just ignored.
+- **Knowledge Base reasoning-effort and output-mode prompts rewritten.**
+  Self-explanatory option labels ("Skip the LLM, just run vector +
+  keyword + semantic search" instead of "minimal") and a one-line
+  intro that explains what the chat deployment is actually being used
+  for in agentic retrieval.
+- **`azure_deploy_settings` renamed to `naming_settings`** to reflect
+  what it actually does post-region-removal.
+
 ## [0.11.2] - 2026-05-05
 
 ### Changed
