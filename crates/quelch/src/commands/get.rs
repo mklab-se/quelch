@@ -1,9 +1,10 @@
 //! `quelch get` — fetch a single document by ID.
 //!
-//! Operator command. Picks the first MCP instance in the config (so that
-//! the same `expose:` rules apply that an agent would see), builds a Cosmos
-//! client, and calls the `get` tool implementation.
+//! Operator command. Resolves the MCP instance (auto-selecting it when the
+//! config has exactly one) so the same `expose:` rules apply that an agent
+//! would see, builds a Cosmos client, and calls the `get` tool implementation.
 
+use crate::cli_helpers::resolve_instance;
 use crate::config::Config;
 use crate::config::schema::InstanceKind;
 use crate::cosmos::factory::build_cosmos_backend;
@@ -17,11 +18,15 @@ pub struct GetOptions {
     pub data_source: String,
     pub include_deleted: bool,
     pub json: bool,
+    /// Optional MCP instance name; auto-detected when the config declares
+    /// exactly one MCP instance.
+    pub instance: Option<String>,
 }
 
 /// Run `quelch get`.
 pub async fn run(config: &Config, options: GetOptions) -> anyhow::Result<()> {
-    let mcp_instance_name = pick_mcp_instance_name(config)?;
+    let mcp_instance_name =
+        resolve_instance(config, options.instance.as_deref(), InstanceKind::Mcp)?.to_string();
     let sliced = crate::config::slice::slice_for_instance(config, &mcp_instance_name)?;
 
     let cosmos = build_cosmos_backend(&sliced).await?;
@@ -50,21 +55,6 @@ pub async fn run(config: &Config, options: GetOptions) -> anyhow::Result<()> {
     }
 
     Ok(())
-}
-
-/// Return the name of the first MCP instance in the config, or error if
-/// none exist.
-fn pick_mcp_instance_name(config: &Config) -> anyhow::Result<String> {
-    config
-        .instances
-        .iter()
-        .find(|i| i.kind() == InstanceKind::Mcp)
-        .map(|i| i.name.clone())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "quelch get requires an MCP instance in the config (none found in instances:)"
-            )
-        })
 }
 
 #[cfg(test)]

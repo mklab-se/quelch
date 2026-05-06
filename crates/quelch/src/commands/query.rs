@@ -1,11 +1,13 @@
 //! `quelch query` — structured query against a Cosmos-backed data source.
 //!
-//! Operator command. Picks the first MCP instance in the config (so that
-//! the same `expose:` rules apply that an agent would see), builds a Cosmos
-//! client, and calls the `query` tool implementation.
+//! Operator command. Resolves the MCP instance (auto-selecting it when the
+//! config has exactly one) so the same `expose:` rules apply that an agent
+//! would see, builds a Cosmos client, and calls the `query` tool
+//! implementation.
 
 use serde_json::Value;
 
+use crate::cli_helpers::resolve_instance;
 use crate::config::Config;
 use crate::config::schema::InstanceKind;
 use crate::cosmos::factory::build_cosmos_backend;
@@ -24,11 +26,15 @@ pub struct QueryOptions {
     pub count_only: bool,
     pub include_deleted: bool,
     pub json: bool,
+    /// Optional MCP instance name; auto-detected when the config declares
+    /// exactly one MCP instance.
+    pub instance: Option<String>,
 }
 
 /// Run `quelch query`.
 pub async fn run(config: &Config, options: QueryOptions) -> anyhow::Result<()> {
-    let mcp_instance_name = pick_mcp_instance_name(config)?;
+    let mcp_instance_name =
+        resolve_instance(config, options.instance.as_deref(), InstanceKind::Mcp)?.to_string();
     let sliced = crate::config::slice::slice_for_instance(config, &mcp_instance_name)?;
     let cosmos = build_cosmos_backend(&sliced).await?;
     let expose = ExposeResolver::from_sliced(&sliced, &mcp_instance_name)
@@ -72,20 +78,6 @@ pub async fn run(config: &Config, options: QueryOptions) -> anyhow::Result<()> {
     }
 
     Ok(())
-}
-
-/// Pick the first MCP instance, or error if none exists.
-fn pick_mcp_instance_name(config: &Config) -> anyhow::Result<String> {
-    config
-        .instances
-        .iter()
-        .find(|i| i.kind() == InstanceKind::Mcp)
-        .map(|i| i.name.clone())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "quelch query requires an MCP instance in the config (none found in instances:)"
-            )
-        })
 }
 
 /// Parse a `field:dir` order-by string into an [`OrderBy`].

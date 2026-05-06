@@ -1,11 +1,13 @@
 //! `quelch search` — semantic / hybrid search via Azure AI Search.
 //!
-//! Operator command. Picks the first MCP instance in the config (so that
-//! the same `expose:` rules apply that an agent would see), builds the real
-//! Azure AI Search adapter, and calls the `search` tool implementation.
+//! Operator command. Resolves the MCP instance (auto-selecting it when the
+//! config has exactly one) so the same `expose:` rules apply that an agent
+//! would see, builds the real Azure AI Search adapter, and calls the
+//! `search` tool implementation.
 
 use serde_json::Value;
 
+use crate::cli_helpers::resolve_instance;
 use crate::config::Config;
 use crate::config::schema::{InstanceKind, InstanceSpec};
 use crate::mcp::expose::ExposeResolver;
@@ -44,11 +46,15 @@ pub struct SearchOptions {
     pub include_content: IncludeContentArg,
     pub include_deleted: bool,
     pub json: bool,
+    /// Optional MCP instance name; auto-detected when the config declares
+    /// exactly one MCP instance.
+    pub instance: Option<String>,
 }
 
 /// Run `quelch search`.
 pub async fn run(config: &Config, options: SearchOptions) -> anyhow::Result<()> {
-    let mcp_instance_name = pick_mcp_instance_name(config)?;
+    let mcp_instance_name =
+        resolve_instance(config, options.instance.as_deref(), InstanceKind::Mcp)?.to_string();
     let sliced = crate::config::slice::slice_for_instance(config, &mcp_instance_name)?;
 
     let mcp = match &sliced
@@ -58,7 +64,7 @@ pub async fn run(config: &Config, options: SearchOptions) -> anyhow::Result<()> 
         .spec
     {
         InstanceSpec::Mcp(m) => m.clone(),
-        InstanceSpec::Ingest(_) => unreachable!("pick_mcp_instance_name guarantees mcp"),
+        InstanceSpec::Ingest(_) => unreachable!("resolve_instance guarantees kind=mcp"),
     };
 
     let endpoint = sliced
@@ -111,20 +117,6 @@ pub async fn run(config: &Config, options: SearchOptions) -> anyhow::Result<()> 
     }
 
     Ok(())
-}
-
-/// Pick the first MCP instance, or error if none exists.
-fn pick_mcp_instance_name(config: &Config) -> anyhow::Result<String> {
-    config
-        .instances
-        .iter()
-        .find(|i| i.kind() == InstanceKind::Mcp)
-        .map(|i| i.name.clone())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "quelch search requires an MCP instance in the config (none found in instances:)"
-            )
-        })
 }
 
 #[cfg(test)]

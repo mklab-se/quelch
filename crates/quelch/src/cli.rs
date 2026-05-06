@@ -125,6 +125,10 @@ pub enum Commands {
         /// Emit machine-readable JSON
         #[arg(long)]
         json: bool,
+        /// MCP instance name; auto-detected when the config declares
+        /// exactly one MCP instance.
+        #[arg(long)]
+        instance: Option<String>,
     },
     /// Semantic / hybrid search via Azure AI Search
     Search {
@@ -151,6 +155,10 @@ pub enum Commands {
         /// Emit machine-readable JSON
         #[arg(long)]
         json: bool,
+        /// MCP instance name; auto-detected when the config declares
+        /// exactly one MCP instance.
+        #[arg(long)]
+        instance: Option<String>,
     },
     /// Fetch a single document by ID from a data source
     Get {
@@ -165,6 +173,10 @@ pub enum Commands {
         /// Emit machine-readable JSON
         #[arg(long)]
         json: bool,
+        /// MCP instance name; auto-detected when the config declares
+        /// exactly one MCP instance.
+        #[arg(long)]
+        instance: Option<String>,
     },
     /// All-in-one local development mode (sim + ingest + MCP in one process).
     ///

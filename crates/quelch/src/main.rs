@@ -92,6 +92,7 @@ async fn main() -> Result<()> {
             count_only,
             include_deleted,
             json,
+            instance,
         } => {
             let config = quelch::config::load_config(&cli.config)?;
             let where_val = parse_where_arg(r#where.as_deref(), where_file.as_deref())?;
@@ -110,6 +111,7 @@ async fn main() -> Result<()> {
                     count_only,
                     include_deleted,
                     json,
+                    instance,
                 },
             )
             .await
@@ -123,6 +125,7 @@ async fn main() -> Result<()> {
             include_content,
             include_deleted,
             json,
+            instance,
         } => {
             let config = quelch::config::load_config(&cli.config)?;
             let where_val = parse_where_arg(r#where.as_deref(), None)?;
@@ -140,6 +143,7 @@ async fn main() -> Result<()> {
                     include_content,
                     include_deleted,
                     json,
+                    instance,
                 },
             )
             .await
@@ -149,6 +153,7 @@ async fn main() -> Result<()> {
             data_source,
             include_deleted,
             json,
+            instance,
         } => {
             let config = quelch::config::load_config(&cli.config)?;
             quelch::commands::get::run(
@@ -158,6 +163,7 @@ async fn main() -> Result<()> {
                     data_source,
                     include_deleted,
                     json,
+                    instance,
                 },
             )
             .await
