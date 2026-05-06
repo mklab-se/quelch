@@ -49,15 +49,25 @@ pub enum Commands {
         #[arg(long)]
         tui: bool,
     },
-    /// Reset sync state (force full re-sync on next run)
+    /// Reset sync state for a single `(source, subsource)` cursor.
+    ///
+    /// The instance must already own the cursor — pass `--take-ownership`
+    /// to rewrite the cursor's owner from another instance to this one.
     Reset {
-        /// Source name to reset (omit to reset all)
+        /// Instance that owns (or wants to own) the cursor.
         #[arg(long)]
-        source: Option<String>,
-        /// Only reset a single subsource (project or space key) within the source
+        instance: String,
+        /// Source connection name as defined in `quelch.yaml`.
         #[arg(long)]
-        subsource: Option<String>,
-        /// Skip the interactive confirmation prompt
+        source: String,
+        /// Subsource (project key for Jira, space key for Confluence).
+        #[arg(long)]
+        subsource: String,
+        /// Rewrite the cursor's `owner_instance` to this instance even if a
+        /// different instance currently owns it.
+        #[arg(long)]
+        take_ownership: bool,
+        /// Skip the interactive confirmation prompt.
         #[arg(long)]
         yes: bool,
     },

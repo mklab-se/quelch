@@ -1,56 +1,61 @@
-//! `quelch reset` — clear cursor state for selected sources.
+//! `quelch reset` — clear cursor state for a single `(source, subsource)` pair.
 //!
-//! Removes progress from `quelch-meta` so the next ingest cycle starts a
-//! fresh backfill.  Asks for confirmation unless `--yes` is passed.
+//! Resets only cursors that this instance already owns. To rewrite a cursor
+//! that another instance currently claims (transfer ownership), pass
+//! `--take-ownership`.
 
 use crate::config::Config;
-use crate::cosmos::{factory::build_cosmos_backend, meta};
+use crate::cosmos::meta::{Cursor, CursorKey};
+use crate::cosmos::{CosmosBackend, factory::build_cosmos_backend, meta};
 
 /// Options for `quelch reset`.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ResetOptions {
-    /// Only reset cursors belonging to this source name.
-    pub source: Option<String>,
-    /// Only reset the named subsource within the matching source(s).
-    pub subsource: Option<String>,
+    /// Name of the Q-Ingest instance issuing the reset.
+    pub instance: String,
+    /// Source connection name (matches `quelch.yaml`).
+    pub source: String,
+    /// Subsource (project or space key).
+    pub subsource: String,
+    /// Rewrite the cursor's `owner_instance` to `instance` even if a different
+    /// instance currently owns it.
+    pub take_ownership: bool,
     /// Skip the interactive confirmation prompt.
     pub yes: bool,
 }
 
-/// Run `quelch reset`.
+/// Run `quelch reset` against the configured Cosmos account.
 pub async fn run(config: &Config, options: ResetOptions) -> anyhow::Result<()> {
     let cosmos = build_cosmos_backend(config).await?;
-    let all = meta::list_all(cosmos.as_ref(), &config.azure.cosmos.meta_container).await?;
+    let key = CursorKey {
+        source_name: options.source.clone(),
+        subsource: options.subsource.clone(),
+    };
 
-    let to_reset: Vec<_> = all
-        .iter()
-        .filter(|(key, _)| {
-            if let Some(src) = &options.source
-                && &key.source_name != src
-            {
-                return false;
-            }
-            if let Some(sub) = &options.subsource
-                && &key.subsource != sub
-            {
-                return false;
-            }
-            true
-        })
-        .collect();
+    let existing =
+        meta::try_load(cosmos.as_ref(), &config.azure.cosmos.meta_container, &key).await?;
 
-    if to_reset.is_empty() {
-        println!("Nothing to reset.");
-        return Ok(());
-    }
-
-    println!("Will reset cursors for:");
-    for (key, _) in &to_reset {
-        println!("  • {} :: {}", key.source_name, key.subsource);
+    if let Some(c) = &existing
+        && let Some(owner) = &c.owner_instance
+        && owner != &options.instance
+        && !options.take_ownership
+    {
+        anyhow::bail!(
+            "cursor {}::{} owned by '{}', refusing to reset from '{}'. \
+             Pass --take-ownership to override.",
+            key.source_name,
+            key.subsource,
+            owner,
+            options.instance,
+        );
     }
 
     if !options.yes {
-        let confirmed = inquire::Confirm::new("Continue?")
+        let prompt = format!(
+            "Reset cursor {}::{} for instance '{}'?",
+            key.source_name, key.subsource, options.instance
+        );
+        let confirmed = inquire::Confirm::new(&prompt)
             .with_default(false)
             .prompt()?;
         if !confirmed {
@@ -59,18 +64,36 @@ pub async fn run(config: &Config, options: ResetOptions) -> anyhow::Result<()> {
         }
     }
 
-    for (key, _) in &to_reset {
-        let cleared = meta::Cursor::default();
-        meta::save(
-            cosmos.as_ref(),
-            &config.azure.cosmos.meta_container,
-            key,
-            &cleared,
-        )
-        .await?;
-    }
+    reset_cursor(
+        cosmos.as_ref(),
+        &config.azure.cosmos.meta_container,
+        &options.instance,
+        &key,
+    )
+    .await?;
 
-    println!("Reset {} cursor(s).", to_reset.len());
+    println!(
+        "reset cursor {}::{} (owner: {})",
+        key.source_name, key.subsource, options.instance
+    );
+    Ok(())
+}
+
+/// Internal helper that performs the cursor write.
+///
+/// The wrapper is reused by tests that bring their own `CosmosBackend` and
+/// don't want to construct a full [`Config`].
+async fn reset_cursor(
+    backend: &dyn CosmosBackend,
+    meta_container: &str,
+    instance: &str,
+    key: &CursorKey,
+) -> anyhow::Result<()> {
+    let cleared = Cursor {
+        owner_instance: Some(instance.to_string()),
+        ..Default::default()
+    };
+    meta::save(backend, meta_container, key, &cleared).await?;
     Ok(())
 }
 
@@ -83,184 +106,159 @@ mod tests {
     use super::*;
     use crate::cosmos::InMemoryCosmos;
     use crate::cosmos::meta::{Cursor, CursorKey, load, save};
-    use chrono::Utc;
 
     const META: &str = "quelch-meta";
 
-    fn key(_deployment: &str, source: &str, subsource: &str) -> CursorKey {
+    fn key(source: &str, subsource: &str) -> CursorKey {
         CursorKey {
             source_name: source.to_string(),
             subsource: subsource.to_string(),
         }
     }
 
-    /// Build a config stub with an in-memory state backend so `build_cosmos_backend`
-    /// isn't called (tests call the cosmos layer directly).
-    async fn run_reset_directly(
-        cosmos: &InMemoryCosmos,
-        meta_container: &str,
-        options: ResetOptions,
+    /// Test-only entry point that mirrors `run` but takes a backend and an
+    /// already-resolved meta container — it skips config loading and the
+    /// interactive prompt so it can be exercised in unit tests.
+    async fn reset(
+        backend: &dyn CosmosBackend,
+        instance: &str,
+        source: &str,
+        subsource: &str,
+        take_ownership: bool,
     ) -> anyhow::Result<()> {
-        let all = meta::list_all(cosmos, meta_container).await?;
-
-        let to_reset: Vec<_> = all
-            .iter()
-            .filter(|(k, _)| {
-                if let Some(src) = &options.source
-                    && &k.source_name != src
-                {
-                    return false;
-                }
-                if let Some(sub) = &options.subsource
-                    && &k.subsource != sub
-                {
-                    return false;
-                }
-                true
-            })
-            .collect();
-
-        if to_reset.is_empty() {
-            return Ok(());
+        let k = CursorKey {
+            source_name: source.into(),
+            subsource: subsource.into(),
+        };
+        let existing = meta::try_load(backend, META, &k).await?;
+        if let Some(c) = &existing
+            && let Some(owner) = &c.owner_instance
+            && owner != instance
+            && !take_ownership
+        {
+            anyhow::bail!(
+                "cursor owned by '{}', refusing to reset from '{}'. \
+                 Pass --take-ownership to override.",
+                owner,
+                instance,
+            );
         }
-
-        for (k, _) in &to_reset {
-            let cleared = Cursor::default();
-            save(cosmos, meta_container, k, &cleared).await?;
-        }
-
-        Ok(())
+        reset_cursor(backend, META, instance, &k).await
     }
 
     #[tokio::test]
     async fn reset_clears_cursor_for_subsource() {
         let cosmos = InMemoryCosmos::new();
 
-        let k = key("prod", "jira-cloud", "DO");
+        let k = key("jira-cloud", "DO");
         let c = Cursor {
+            owner_instance: Some("ingest-internal".into()),
             documents_synced_total: 500,
-            last_complete_minute: Some(Utc::now()),
             backfill_in_progress: true,
             ..Default::default()
         };
         save(&cosmos, META, &k, &c).await.unwrap();
 
-        // Verify it's there.
-        let before = load(&cosmos, META, &k).await.unwrap();
-        assert_eq!(before.documents_synced_total, 500);
-        assert!(before.last_complete_minute.is_some());
-
         // Reset.
-        run_reset_directly(
-            &cosmos,
-            META,
-            ResetOptions {
-                source: Some("jira-cloud".to_string()),
-                subsource: Some("DO".to_string()),
-                yes: true,
-            },
-        )
-        .await
-        .unwrap();
+        reset(&cosmos, "ingest-internal", "jira-cloud", "DO", false)
+            .await
+            .unwrap();
 
         let after = load(&cosmos, META, &k).await.unwrap();
-        assert!(
-            after.last_complete_minute.is_none(),
-            "last_complete_minute should be cleared after reset"
+        assert_eq!(
+            after.documents_synced_total, 0,
+            "documents_synced_total should be cleared"
         );
         assert!(!after.backfill_in_progress);
+        assert_eq!(after.owner_instance.as_deref(), Some("ingest-internal"));
     }
 
     #[tokio::test]
-    async fn reset_with_yes_skips_prompt() {
-        // This test verifies the `--yes` flag short-circuits the prompt.
-        // We exercise the logic path directly (no TTY available in tests).
-        let cosmos = InMemoryCosmos::new();
-
-        let k = key("prod", "jira-cloud", "DO");
-        let c = Cursor {
-            documents_synced_total: 100,
-            last_complete_minute: Some(Utc::now()),
-            ..Default::default()
-        };
-        save(&cosmos, META, &k, &c).await.unwrap();
-
-        // With --yes: should reset without asking.
-        run_reset_directly(
-            &cosmos,
+    async fn reset_without_take_ownership_refuses_other_instance_cursor() {
+        let backend = InMemoryCosmos::new();
+        save(
+            &backend,
             META,
-            ResetOptions {
-                source: None,
-                subsource: None,
-                yes: true,
+            &CursorKey {
+                source_name: "jira-x".into(),
+                subsource: "DO".into(),
+            },
+            &Cursor {
+                owner_instance: Some("instance-a".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let err = reset(&backend, "instance-b", "jira-x", "DO", false)
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("instance-a"), "missing 'instance-a': {msg}");
+        assert!(
+            msg.contains("--take-ownership"),
+            "missing --take-ownership hint: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn reset_with_take_ownership_rewrites_owner() {
+        let backend = InMemoryCosmos::new();
+        save(
+            &backend,
+            META,
+            &CursorKey {
+                source_name: "jira-x".into(),
+                subsource: "DO".into(),
+            },
+            &Cursor {
+                owner_instance: Some("instance-a".into()),
+                documents_synced_total: 999,
+                ..Default::default()
             },
         )
         .await
         .unwrap();
 
-        let after = load(&cosmos, META, &k).await.unwrap();
-        assert!(
-            after.last_complete_minute.is_none(),
-            "cursor should be cleared with --yes"
-        );
-    }
+        reset(&backend, "instance-b", "jira-x", "DO", true)
+            .await
+            .unwrap();
 
-    #[tokio::test]
-    async fn reset_source_filter_only_affects_matching_sources() {
-        let cosmos = InMemoryCosmos::new();
-
-        let k_jira = key("prod", "jira-cloud", "DO");
-        let k_conf = key("prod", "confluence", "DOCS");
-
-        let c = Cursor {
-            last_complete_minute: Some(Utc::now()),
-            ..Default::default()
-        };
-        save(&cosmos, META, &k_jira, &c).await.unwrap();
-        save(&cosmos, META, &k_conf, &c).await.unwrap();
-
-        // Reset only jira-cloud.
-        run_reset_directly(
-            &cosmos,
+        let stored = load(
+            &backend,
             META,
-            ResetOptions {
-                source: Some("jira-cloud".to_string()),
-                subsource: None,
-                yes: true,
+            &CursorKey {
+                source_name: "jira-x".into(),
+                subsource: "DO".into(),
             },
         )
         .await
         .unwrap();
 
-        let jira_after = load(&cosmos, META, &k_jira).await.unwrap();
-        let conf_after = load(&cosmos, META, &k_conf).await.unwrap();
-
-        assert!(
-            jira_after.last_complete_minute.is_none(),
-            "jira-cloud cursor should be cleared"
-        );
-        assert!(
-            conf_after.last_complete_minute.is_some(),
-            "confluence cursor should be untouched"
+        assert_eq!(stored.owner_instance.as_deref(), Some("instance-b"));
+        assert_eq!(
+            stored.documents_synced_total, 0,
+            "reset clears progress after ownership transfer"
         );
     }
 
     #[tokio::test]
-    async fn reset_nothing_to_reset_when_no_cursors() {
-        let cosmos = InMemoryCosmos::new();
-        // No cursors exist.
-        let result = run_reset_directly(
-            &cosmos,
+    async fn reset_creates_cursor_when_none_exists() {
+        let backend = InMemoryCosmos::new();
+        reset(&backend, "instance-a", "jira-x", "DO", false)
+            .await
+            .unwrap();
+
+        let stored = load(
+            &backend,
             META,
-            ResetOptions {
-                source: None,
-                subsource: None,
-                yes: true,
+            &CursorKey {
+                source_name: "jira-x".into(),
+                subsource: "DO".into(),
             },
         )
-        .await;
-
-        // Should succeed silently.
-        assert!(result.is_ok());
+        .await
+        .unwrap();
+        assert_eq!(stored.owner_instance.as_deref(), Some("instance-a"));
     }
 }

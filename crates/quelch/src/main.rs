@@ -63,16 +63,20 @@ async fn main() -> Result<()> {
             .await
         }
         Commands::Reset {
+            instance,
             source,
             subsource,
+            take_ownership,
             yes,
         } => {
             let config = quelch::config::load_config(&cli.config)?;
             quelch::commands::reset::run(
                 &config,
                 quelch::commands::reset::ResetOptions {
+                    instance,
                     source,
                     subsource,
+                    take_ownership,
                     yes,
                 },
             )
