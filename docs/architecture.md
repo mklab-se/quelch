@@ -186,7 +186,7 @@ source_connections:
   - name: jira-cloud
     type: jira
     base_url: https://example.atlassian.net/
-    auth: { kind: basic, email: ${JIRA_EMAIL}, api_token: ${JIRA_TOKEN} }
+    auth: { kind: basic, email: ${JIRA_EMAIL}, token: ${JIRA_TOKEN} }
     projects: [PUBLIC]
     # no override → goes to default `jira-issues`
 ```

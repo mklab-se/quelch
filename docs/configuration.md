@@ -124,7 +124,7 @@ source_connections:
     auth:
       kind: basic
       email: ${JIRA_EMAIL}
-      api_token: ${JIRA_API_TOKEN}
+      token: ${JIRA_API_TOKEN}
     projects: [PUBLIC, INT]
 ```
 
@@ -147,7 +147,7 @@ source_connections:
 | `base_url` | Source-system base URL (with trailing slash). |
 | `auth.kind` | `pat` (Personal Access Token; Data Center) or `basic` (Cloud — email + API token). |
 | `auth.token` | PAT value, env-var reference. (`pat` kind only.) |
-| `auth.email`, `auth.api_token` | Cloud credentials, env-var references. (`basic` kind only.) |
+| `auth.email`, `auth.token` | Cloud credentials, env-var references. (`basic` kind only.) |
 | `projects` | (Jira) List of project keys to ingest. Each becomes a `(source, subsource)` cursor. |
 | `spaces` | (Confluence) List of space keys to ingest. Each becomes a `(source, subsource)` cursor. |
 | `container` | Optional override of the default Cosmos container for this connection's primary entities. Defaults from `azure.cosmos.containers`. |
@@ -397,7 +397,7 @@ source_connections:
     auth:
       kind: basic
       email: ${JIRA_EMAIL}
-      api_token: ${JIRA_API_TOKEN}
+      token: ${JIRA_API_TOKEN}
     projects: [DO, INT]
 
   - name: confluence-cloud
@@ -406,7 +406,7 @@ source_connections:
     auth:
       kind: basic
       email: ${JIRA_EMAIL}
-      api_token: ${JIRA_API_TOKEN}
+      token: ${JIRA_API_TOKEN}
     spaces: [ENG, DOCS]
 
 instances:
