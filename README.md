@@ -123,7 +123,8 @@ Run `quelch --help` for the live command list. See [docs/cli.md](docs/cli.md) fo
 | [docs/cli.md](docs/cli.md) | Every command + flag |
 | [docs/sync.md](docs/sync.md) | Sync correctness algorithm |
 | [docs/mcp-api.md](docs/mcp-api.md) | Five MCP tools, schemas, pagination |
-| [docs/deployment.md](docs/deployment.md) | Azure plan/deploy + on-prem artefacts |
+| [docs/hosting.md](docs/hosting.md) | Hosting Q-Ingest / Q-MCP yourself (Docker, systemd, k8s, Container Apps) |
+| [docs/api-key.md](docs/api-key.md) | Generating, storing, and rotating the Q-MCP API key |
 | [docs/agent-generation.md](docs/agent-generation.md) | `quelch agent generate` targets |
 | [docs/examples.md](docs/examples.md) | End-to-end agent usage walkthroughs |
 

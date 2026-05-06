@@ -32,7 +32,8 @@ Result: agents can answer both "find issues that talk about camera connection pr
 | Look up a specific command | [cli.md](cli.md) |
 | Understand or debug incremental sync | [sync.md](sync.md) |
 | Build an agent or skill that talks to Quelch | [mcp-api.md](mcp-api.md) and [agent-generation.md](agent-generation.md) |
-| Deploy Quelch to Azure or on-prem | [deployment.md](deployment.md) |
+| Host Q-Ingest / Q-MCP on Docker, systemd, k8s, Container Apps | [hosting.md](hosting.md) |
+| Generate, store, and rotate the Q-MCP API key | [api-key.md](api-key.md) |
 | See real questions answered end-to-end | [examples.md](examples.md) |
 
 ## Five-minute overview
