@@ -1,8 +1,19 @@
+//! `quelch query` — structured query against a Cosmos-backed data source.
+//!
+//! Operator command. Picks the first MCP instance in the config (so that
+//! the same `expose:` rules apply that an agent would see), builds a Cosmos
+//! client, and calls the `query` tool implementation.
+
 use serde_json::Value;
 
 use crate::config::Config;
+use crate::config::schema::InstanceKind;
+use crate::cosmos::factory::build_cosmos_backend;
+use crate::mcp::expose::ExposeResolver;
+use crate::mcp::tools::query::{QueryRequest, run as query_run};
 use crate::mcp::tools::{OrderBy, SortDir};
 
+/// Options for `quelch query`.
 #[derive(Debug)]
 pub struct QueryOptions {
     pub data_source: String,
@@ -15,10 +26,69 @@ pub struct QueryOptions {
     pub json: bool,
 }
 
-pub async fn run(_config: &Config, _options: QueryOptions) -> anyhow::Result<()> {
-    todo!("phase 7: rewire `quelch query` against the new instances schema")
+/// Run `quelch query`.
+pub async fn run(config: &Config, options: QueryOptions) -> anyhow::Result<()> {
+    let mcp_instance_name = pick_mcp_instance_name(config)?;
+    let sliced = crate::config::slice::slice_for_instance(config, &mcp_instance_name)?;
+    let cosmos = build_cosmos_backend(&sliced).await?;
+    let expose = ExposeResolver::from_sliced(&sliced, &mcp_instance_name)
+        .map_err(|e| anyhow::anyhow!("expose resolver: {e}"))?;
+
+    let order_by = if options.order_by.is_empty() {
+        None
+    } else {
+        Some(options.order_by)
+    };
+
+    let req = QueryRequest {
+        data_source: options.data_source,
+        r#where: options.where_,
+        order_by,
+        top: options.top,
+        cursor: options.cursor,
+        count_only: options.count_only,
+        include_deleted: options.include_deleted,
+    };
+
+    let resp = query_run(cosmos.as_ref(), &expose, req)
+        .await
+        .map_err(|e| anyhow::anyhow!("query: {e}"))?;
+
+    if options.json {
+        let payload = serde_json::json!({
+            "items": resp.items,
+            "next_cursor": resp.next_cursor,
+            "total": resp.total,
+        });
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+    } else {
+        println!("{} document(s)", resp.total);
+        for item in &resp.items {
+            println!("{}", serde_json::to_string(item)?);
+        }
+        if let Some(c) = &resp.next_cursor {
+            println!("(next cursor: {c})");
+        }
+    }
+
+    Ok(())
 }
 
+/// Pick the first MCP instance, or error if none exists.
+fn pick_mcp_instance_name(config: &Config) -> anyhow::Result<String> {
+    config
+        .instances
+        .iter()
+        .find(|i| i.kind() == InstanceKind::Mcp)
+        .map(|i| i.name.clone())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "quelch query requires an MCP instance in the config (none found in instances:)"
+            )
+        })
+}
+
+/// Parse a `field:dir` order-by string into an [`OrderBy`].
 pub fn parse_order_by(s: &str) -> anyhow::Result<OrderBy> {
     let (field, dir) = match s.split_once(':') {
         Some((f, d)) => (f, d),

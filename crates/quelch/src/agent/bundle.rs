@@ -4,13 +4,11 @@
 //! per target: tool reference, schema cheatsheet, how-tos, example prompts,
 //! connection details, and the trigger description.
 
-#[cfg(test)]
 use std::collections::HashMap;
 
 use crate::config::Config;
-#[cfg(test)]
-use crate::config::data_sources::ResolvedDataSource;
-#[cfg(test)]
+use crate::config::data_sources::{ResolvedDataSource, resolve as resolve_data_sources};
+use crate::config::schema::InstanceSpec;
 use crate::mcp::schema::SchemaCatalog;
 
 use super::error::BundleError;
@@ -64,7 +62,6 @@ pub enum ConnectionAuthMode {
 pub const TRIGGER_DESCRIPTION: &str = "Use when the user asks about Jira issues, Confluence pages, sprints, releases, blockers, \
      sprint planning, or any other enterprise knowledge. Connect to the configured Quelch MCP server.";
 
-#[cfg(test)]
 const HOWTOS_MD: &str = r#"## How-tos
 
 ### Finding issues in a sprint
@@ -109,7 +106,6 @@ Call the `list_sources` tool with no arguments to see all data sources this depl
 including their schema and example calls.
 "#;
 
-#[cfg(test)]
 const EXAMPLE_PROMPTS_MD: &str = r#"## Example prompts
 
 - "What Jira issues are in the current sprint for project DO?"
@@ -135,16 +131,47 @@ const EXAMPLE_PROMPTS_MD: &str = r#"## Example prompts
 // Builder
 // ---------------------------------------------------------------------------
 
-/// Build a [`Bundle`] for the named MCP deployment.
+/// Build a [`Bundle`] for the named MCP instance.
 ///
 /// # Errors
-/// Returns [`BundleError::DeploymentNotFound`] if the deployment name is not
-/// in the config, or [`BundleError::NotMcpDeployment`] if it is not an MCP
-/// deployment.
-pub fn build(_config: &Config, _instance_name: &str) -> Result<Bundle, BundleError> {
-    todo!("phase 7: rewire agent bundle builder against the new instances schema")
+/// Returns [`BundleError::DeploymentNotFound`] if the instance name is not in
+/// the config, or [`BundleError::NotMcpDeployment`] if it is not an MCP
+/// instance.
+pub fn build(config: &Config, instance_name: &str) -> Result<Bundle, BundleError> {
+    let inst = config
+        .instances
+        .iter()
+        .find(|i| i.name == instance_name)
+        .ok_or_else(|| BundleError::DeploymentNotFound(instance_name.to_string()))?;
+
+    let mcp = match &inst.spec {
+        InstanceSpec::Mcp(m) => m,
+        InstanceSpec::Ingest(_) => {
+            return Err(BundleError::NotMcpDeployment(instance_name.to_string()));
+        }
+    };
+
+    let connection = build_connection(instance_name, mcp);
+    let exposed = exposed_data_sources(config, mcp);
+    let schema_catalog = SchemaCatalog::default();
+
+    let tool_reference = render_tool_reference(&exposed, &schema_catalog);
+    let schema_cheatsheet = render_schema_cheatsheet(&exposed, &schema_catalog);
+
+    Ok(Bundle {
+        connection,
+        tool_reference,
+        schema_cheatsheet,
+        howtos: HOWTOS_MD.to_string(),
+        example_prompts: EXAMPLE_PROMPTS_MD.to_string(),
+        trigger_description: TRIGGER_DESCRIPTION,
+    })
 }
 
+/// Build a [`Bundle`] with an explicit URL override.
+///
+/// Useful when the MCP server is reachable at a custom domain that the
+/// generator cannot infer from config.
 pub fn build_with_url(
     config: &Config,
     instance_name: &str,
@@ -156,12 +183,43 @@ pub fn build_with_url(
 }
 
 // ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+/// Build a default `BundleConnection` for an MCP instance.
+///
+/// The instance's config carries an `api_key` literal but never a URL, so we
+/// emit a placeholder `https://<instance>.example` that callers should
+/// override with the real URL via [`build_with_url`] or the `--url` CLI flag.
+fn build_connection(
+    instance_name: &str,
+    _mcp: &crate::config::schema::McpInstance,
+) -> BundleConnection {
+    BundleConnection {
+        url: format!("https://{instance_name}.example"),
+        auth_mode: ConnectionAuthMode::ApiKey,
+        api_key_secret_uri: None,
+    }
+}
+
+/// Filter the resolved-data-source map down to what the MCP instance exposes.
+fn exposed_data_sources(
+    config: &Config,
+    mcp: &crate::config::schema::McpInstance,
+) -> HashMap<String, ResolvedDataSource> {
+    let allow: std::collections::HashSet<&str> = mcp.expose.iter().map(String::as_str).collect();
+    resolve_data_sources(config)
+        .into_iter()
+        .filter(|(name, _)| allow.contains(name.as_str()))
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 // Renderers
 // ---------------------------------------------------------------------------
 
 /// Render the tool reference section, filtered to the tools relevant for the
 /// exposed data sources.
-#[cfg(test)]
 fn render_tool_reference(
     exposed: &HashMap<String, ResolvedDataSource>,
     catalog: &SchemaCatalog,
@@ -250,7 +308,6 @@ fn render_tool_reference(
 }
 
 /// Render the schema cheatsheet — one section per exposed data source.
-#[cfg(test)]
 fn render_schema_cheatsheet(
     exposed: &HashMap<String, ResolvedDataSource>,
     catalog: &SchemaCatalog,
