@@ -1,24 +1,50 @@
+//! Cross-field validation of the master [`Config`].
+//!
+//! Catches the two failure modes serde's per-field deserialisation cannot:
+//!
+//! - An ingest instance referencing an undeclared `source_connections[]`
+//!   entry.
+//! - Two ingest instances claiming the same `(source_type, base_url,
+//!   subsource)` triple — the source-of-truth conflict that would let a
+//!   second worker steal a cursor at runtime.
+//!
+//! Run via [`validate`]. The CLI calls this from `quelch validate`.
+
 use std::collections::BTreeMap;
 
 use crate::config::schema::{Config, InstanceSpec, SourceConnection, SourceType};
 
+/// Errors returned by [`validate`].
 #[derive(Debug, thiserror::Error)]
 pub enum ValidationError {
+    /// One or more `(source_type, base_url, subsource)` triples are claimed
+    /// by more than one ingest instance.
     #[error("conflicting subsource claims:\n{0}")]
     Conflicts(String),
+    /// An ingest instance references a connection that is not declared in
+    /// `source_connections[]`.
     #[error("instance '{instance}' references unknown connection '{connection}'")]
     UnknownConnection {
+        /// Name of the offending instance.
         instance: String,
+        /// The undefined connection name it tried to reference.
         connection: String,
     },
 }
 
+/// Run all cross-field validations against `cfg` and report the first
+/// failure.
+///
+/// # Errors
+/// See [`ValidationError`].
 pub fn validate(cfg: &Config) -> Result<(), ValidationError> {
     validate_connection_refs(cfg)?;
     validate_no_overlapping_claims(cfg)?;
     Ok(())
 }
 
+/// Verify every `instances[].connections[]` name resolves to a declared
+/// `source_connections[]` entry.
 fn validate_connection_refs(cfg: &Config) -> Result<(), ValidationError> {
     let names: std::collections::HashSet<_> =
         cfg.source_connections.iter().map(|c| &c.name).collect();
@@ -37,8 +63,12 @@ fn validate_connection_refs(cfg: &Config) -> Result<(), ValidationError> {
     Ok(())
 }
 
+/// `(source_type, base_url, subsource)` — uniquely identifies a logical
+/// thing being claimed by an ingest instance.
 type ClaimKey = (SourceType, String, String);
 
+/// Walk one connection and yield one [`ClaimKey`] per subsource (project for
+/// Jira, space for Confluence).
 fn claims_for_connection(c: &SourceConnection) -> impl Iterator<Item = ClaimKey> + '_ {
     let subsources: Vec<&String> = match c.source_type {
         SourceType::Jira => c.projects.iter().collect(),
@@ -49,6 +79,7 @@ fn claims_for_connection(c: &SourceConnection) -> impl Iterator<Item = ClaimKey>
         .map(move |s| (c.source_type, c.base_url.clone(), s.clone()))
 }
 
+/// Check that no two ingest instances claim the same subsource.
 fn validate_no_overlapping_claims(cfg: &Config) -> Result<(), ValidationError> {
     let conn_by_name: BTreeMap<&str, &SourceConnection> = cfg
         .source_connections

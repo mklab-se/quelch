@@ -54,13 +54,18 @@ pub fn list(cfg: &Config, out: &mut dyn Write) -> Result<()> {
         .max()
         .unwrap_or(0);
     for inst in &cfg.instances {
-        let kind = match inst.kind() {
-            InstanceKind::Ingest => "ingest",
-            InstanceKind::Mcp => "mcp",
-        };
+        let kind = kind_label(inst.kind());
         writeln!(out, "  {:<name_w$}  {kind}", inst.name)?;
     }
     Ok(())
+}
+
+/// Lowercase, user-facing label for an [`InstanceKind`].
+fn kind_label(k: InstanceKind) -> &'static str {
+    match k {
+        InstanceKind::Ingest => "ingest",
+        InstanceKind::Mcp => "mcp",
+    }
 }
 
 /// Slice the master config for the named instance, sanity-check the
@@ -87,10 +92,10 @@ pub fn config(
     let expected: InstanceKind = declared_kind.into();
     if actual_kind != expected {
         return Err(anyhow!(
-            "instance '{}' has kind {:?} in the config but --kind was {:?}",
+            "instance '{}' has kind '{}' in the config but --kind was '{}'",
             instance_name,
-            actual_kind,
-            declared_kind
+            kind_label(actual_kind),
+            kind_label(expected)
         ));
     }
     let yaml = serde_yaml::to_string(&slice)?;
@@ -126,12 +131,12 @@ mod tests {
         .expect_err("kind mismatch must error");
         let msg = err.to_string();
         assert!(
-            msg.contains("Ingest"),
-            "error should mention actual kind Ingest, got: {msg}"
+            msg.contains("'ingest'"),
+            "error should mention actual kind 'ingest' (lowercase), got: {msg}"
         );
         assert!(
-            msg.contains("Mcp"),
-            "error should mention requested kind Mcp, got: {msg}"
+            msg.contains("'mcp'"),
+            "error should mention requested kind 'mcp' (lowercase), got: {msg}"
         );
     }
 

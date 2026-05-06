@@ -1,5 +1,26 @@
+//! Per-instance slicing of the master [`Config`].
+//!
+//! The Quelch user model is "one master `quelch.yaml` checked into git".
+//! Each instance only needs the parts relevant to it (source credentials for
+//! ingest; AI Search endpoint for MCP). [`slice_for_instance`] takes a master
+//! config and emits a slimmed copy ready to ship to the host that runs the
+//! named instance.
+
 use crate::config::schema::{Config, InstanceKind, InstanceSpec};
 
+/// Slice the master `cfg` down to what `instance_name` needs to run.
+///
+/// - Strips Azure control-plane fields (`subscription_id`, `resource_group`,
+///   `account`) and the `ai` block — neither is needed at runtime.
+/// - For ingest instances: keeps only the `source_connections` referenced by
+///   the instance, and removes `search`.
+/// - For MCP instances: removes `source_connections` entirely and keeps
+///   `search`.
+/// - Replaces `instances[]` with a single-element list containing only the
+///   requested instance.
+///
+/// # Errors
+/// Returns an error if `instance_name` is not declared in `cfg`.
 pub fn slice_for_instance(cfg: &Config, instance_name: &str) -> anyhow::Result<Config> {
     let instance = cfg
         .instances
