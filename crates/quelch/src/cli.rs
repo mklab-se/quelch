@@ -213,8 +213,8 @@ pub enum Commands {
     Ingest {
         /// Instance name — which slice of the config this worker owns.
         ///
-        /// Optional: if the config declares exactly one ingest instance it
-        /// is auto-selected. With multiple ingest instances this flag is
+        /// Optional: if the config declares exactly one ingest instance,
+        /// this flag is omitted; with multiple ingest instances, it is
         /// required to disambiguate.
         #[arg(long)]
         instance: Option<String>,
@@ -249,9 +249,9 @@ pub enum Commands {
         /// Instance name. Tells the server which slice of the config it owns
         /// and which data sources it exposes.
         ///
-        /// Optional: if the config declares exactly one MCP instance it is
-        /// auto-selected. With multiple MCP instances this flag is required
-        /// to disambiguate.
+        /// Optional: if the config declares exactly one MCP instance, this
+        /// flag is omitted; with multiple MCP instances, it is required to
+        /// disambiguate.
         #[arg(long)]
         instance: Option<String>,
         /// Port to listen on.
@@ -305,7 +305,11 @@ pub enum AgentCommands {
         #[arg(long, default_value = "./agent-bundle")]
         output: PathBuf,
 
-        /// MCP instance name (defaults to the first MCP instance in config).
+        /// MCP instance name.
+        ///
+        /// Optional: if the config declares exactly one MCP instance, this
+        /// flag is omitted; with multiple MCP instances, it is required to
+        /// disambiguate.
         #[arg(long)]
         instance: Option<String>,
 

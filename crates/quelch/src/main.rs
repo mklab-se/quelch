@@ -403,15 +403,12 @@ fn cmd_agent_generate(
 ) -> Result<()> {
     let config = quelch::config::load_config(config_path)?;
 
-    let instance_name = instance
-        .or_else(|| {
-            config
-                .instances
-                .iter()
-                .find(|i| i.kind() == quelch::config::InstanceKind::Mcp)
-                .map(|i| i.name.clone())
-        })
-        .ok_or_else(|| anyhow::anyhow!("no MCP instance found in config; use --instance"))?;
+    let instance_name = quelch::cli_helpers::resolve_instance(
+        &config,
+        instance.as_deref(),
+        quelch::config::InstanceKind::Mcp,
+    )?
+    .to_string();
 
     // Build the bundle.
     let mut bundle = quelch::agent::bundle::build(&config, &instance_name)?;
