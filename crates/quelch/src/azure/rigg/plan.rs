@@ -1,37 +1,38 @@
-/// Compute a plan by diffing local rigg files against live Azure AI Search resources.
-///
-/// # Overview
-///
-/// `run` reads every YAML file under `rigg_dir/{subdir}/*.yaml`, fetches the
-/// equivalent resources from Azure via the [`RiggApiAdapter`] trait, and
-/// produces a [`PlanReport`] classifying each resource as **create**,
-/// **update**, **delete**, or **unchanged**.
-///
-/// # Field-level diff
-///
-/// For update entries, [`ResourceDiff`] contains [`FieldChange`] values with
-/// dotted JSON-pointer paths (e.g. `fields.0.searchable`) so callers can
-/// render a human-readable diff.
+//! Diff a [`RiggDesiredState`] against the live Azure AI Search service.
+//!
+//! Phase 4 of the no-deploy pivot: this module operates purely on in-memory
+//! state. There are no on-disk YAML files, no `rigg/` directory.
+//!
+//! [`plan`] takes the desired state plus a [`RiggApiAdapter`] (which fans
+//! out to the live service via `rigg-client`) and returns a [`RiggDiff`]
+//! classifying each resource as create / update / match. Render the diff
+//! with [`RiggDiff::render`] for human-readable output.
+//!
+//! Quelch never schedules deletes — by spec, Quelch only adds. Users who
+//! want a resource gone use the AI Search portal or the standalone `rigg`
+//! tool.
+
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 
 use serde_json::Value as JsonValue;
 
 use rigg_core::resources::ResourceKind;
 
+use super::RiggDesiredState;
+
 /// Errors that can occur during plan computation.
 #[derive(Debug, thiserror::Error)]
 pub enum PlanError {
-    #[error("io: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("rigg: {0}")]
-    Rigg(String),
-    #[error("yaml: {0}")]
-    Yaml(#[from] serde_yaml::Error),
+    /// The rigg API call to fetch live state failed.
+    #[error("rigg api: {0}")]
+    Api(String),
+    /// Failed to serialise a desired-state resource to JSON.
+    #[error("serialise: {0}")]
+    Serialise(#[from] serde_json::Error),
 }
 
 /// A reference to a single Azure AI Search resource.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResourceRef {
     /// The type of this resource.
     pub kind: ResourceKind,
@@ -39,58 +40,179 @@ pub struct ResourceRef {
     pub name: String,
 }
 
-/// A field-level change within a resource that differs between local and live.
-#[derive(Debug, Clone)]
+/// A field-level change within a resource that differs between desired and live.
+#[derive(Debug, Clone, PartialEq)]
 pub struct FieldChange {
     /// Dotted path to the changed field (e.g. `fields.0.searchable`).
     pub path: String,
     /// Value in the live (Azure) state.
-    pub from: serde_json::Value,
-    /// Value in the local (disk) state.
-    pub to: serde_json::Value,
+    pub from: JsonValue,
+    /// Value in the desired (config-derived) state.
+    pub to: JsonValue,
 }
 
-/// All field-level changes for a single resource that needs updating.
-#[derive(Debug)]
-pub struct ResourceDiff {
-    /// Individual field paths that changed, with before/after values.
-    pub field_changes: Vec<FieldChange>,
+/// A single resource-level change in the plan.
+#[derive(Debug, Clone)]
+pub enum ResourceChange {
+    /// Resource is in desired state but absent from the live service.
+    Create(ResourceRef),
+    /// Resource is in both, but their normalised JSON differs.
+    Update {
+        /// Which resource will be updated.
+        rref: ResourceRef,
+        /// Field-level differences for human-readable diffs.
+        changes: Vec<FieldChange>,
+    },
+    /// Resource is in both with identical content; no action needed.
+    Match(ResourceRef),
 }
 
-/// The output of a plan run: resources to create, update, delete, or leave alone.
+impl ResourceChange {
+    /// The resource this change refers to.
+    pub fn resource(&self) -> &ResourceRef {
+        match self {
+            ResourceChange::Create(r)
+            | ResourceChange::Update { rref: r, .. }
+            | ResourceChange::Match(r) => r,
+        }
+    }
+}
+
+/// The full plan: per-resource changes for every kind quelch manages.
 #[derive(Debug, Default)]
-pub struct PlanReport {
-    /// Resources present locally but not in Azure → will be created.
-    pub creates: Vec<ResourceRef>,
-    /// Resources present in both but with differing content → will be updated.
-    pub updates: Vec<(ResourceRef, ResourceDiff)>,
-    /// Resources present in Azure but not locally → will be deleted.
-    pub deletes: Vec<ResourceRef>,
-    /// Resources identical in both places → no action needed.
-    pub unchanged: Vec<ResourceRef>,
+pub struct RiggDiff {
+    /// All resource-level changes, in deterministic order (kind-major,
+    /// then alphabetical by name).
+    pub changes: Vec<ResourceChange>,
 }
+
+impl RiggDiff {
+    /// Iterate only the changes that would actually mutate the live service
+    /// (i.e. excludes [`ResourceChange::Match`]).
+    pub fn pending(&self) -> impl Iterator<Item = &ResourceChange> {
+        self.changes
+            .iter()
+            .filter(|c| !matches!(c, ResourceChange::Match(_)))
+    }
+
+    /// True if the live state already matches the desired state.
+    pub fn is_clean(&self) -> bool {
+        self.pending().next().is_none()
+    }
+
+    /// Render the diff as a human-readable multi-line string.
+    ///
+    /// Format:
+    /// ```text
+    ///   + indexes/jira-issues  (create)
+    ///   ~ indexers/jira-issues (update)
+    ///       fields.0.searchable: false → true
+    ///   = data_sources/jira-issues (no change)
+    /// ```
+    pub fn render(&self) -> String {
+        use std::fmt::Write;
+        let mut out = String::new();
+        if self.changes.is_empty() {
+            writeln!(&mut out, "  (no managed resources)").ok();
+            return out;
+        }
+        for change in &self.changes {
+            match change {
+                ResourceChange::Create(r) => {
+                    writeln!(&mut out, "  + {}/{}  (create)", kind_label(r.kind), r.name).ok();
+                }
+                ResourceChange::Update { rref, changes } => {
+                    writeln!(
+                        &mut out,
+                        "  ~ {}/{}  (update)",
+                        kind_label(rref.kind),
+                        rref.name
+                    )
+                    .ok();
+                    for fc in changes {
+                        writeln!(
+                            &mut out,
+                            "      {}: {} → {}",
+                            fc.path,
+                            short_value(&fc.from),
+                            short_value(&fc.to)
+                        )
+                        .ok();
+                    }
+                }
+                ResourceChange::Match(r) => {
+                    writeln!(
+                        &mut out,
+                        "  = {}/{}  (no change)",
+                        kind_label(r.kind),
+                        r.name
+                    )
+                    .ok();
+                }
+            }
+        }
+        out
+    }
+}
+
+fn kind_label(k: ResourceKind) -> &'static str {
+    match k {
+        ResourceKind::Index => "indexes",
+        ResourceKind::DataSource => "data_sources",
+        ResourceKind::Skillset => "skillsets",
+        ResourceKind::Indexer => "indexers",
+        ResourceKind::KnowledgeSource => "knowledge_sources",
+        ResourceKind::KnowledgeBase => "knowledge_bases",
+        ResourceKind::SynonymMap => "synonym_maps",
+        ResourceKind::Alias => "aliases",
+        ResourceKind::Agent => "agents",
+    }
+}
+
+fn short_value(v: &JsonValue) -> String {
+    match v {
+        JsonValue::Null => "null".to_string(),
+        JsonValue::Bool(b) => b.to_string(),
+        JsonValue::Number(n) => n.to_string(),
+        JsonValue::String(s) => format!("\"{s}\""),
+        JsonValue::Array(_) | JsonValue::Object(_) => {
+            let s = serde_json::to_string(v).unwrap_or_else(|_| "<?>".to_string());
+            if s.len() > 60 {
+                format!("{}...", &s[..57])
+            } else {
+                s
+            }
+        }
+    }
+}
+
+/// Resource kinds quelch manages, in dependency order (data sources first,
+/// knowledge bases last).
+pub const MANAGED_KINDS: &[ResourceKind] = &[
+    ResourceKind::DataSource,
+    ResourceKind::Skillset,
+    ResourceKind::Index,
+    ResourceKind::Indexer,
+    ResourceKind::KnowledgeSource,
+    ResourceKind::KnowledgeBase,
+];
 
 /// Adapter trait abstracting rigg-client operations for testability.
 ///
-/// Production code wires [`RiggClientAdapter`]; tests inject [`MockRiggApi`].
+/// Production code wires [`RiggClientAdapter`]; tests inject a mock.
 #[trait_variant::make(Send)]
 pub trait RiggApiAdapter: Sync {
     /// List all resources of the given kind, returning raw JSON objects.
-    async fn list_resources(
-        &self,
-        kind: ResourceKind,
-    ) -> Result<Vec<serde_json::Value>, anyhow::Error>;
+    async fn list_resources(&self, kind: ResourceKind) -> Result<Vec<JsonValue>, anyhow::Error>;
 
-    /// Create or replace a resource.
+    /// Create or replace a resource. The body is the rigg-core resource
+    /// serialised to JSON.
     async fn upsert_resource(
         &self,
         kind: ResourceKind,
         name: &str,
-        body: &serde_json::Value,
+        body: &JsonValue,
     ) -> Result<(), anyhow::Error>;
-
-    /// Delete a resource by name.
-    async fn delete_resource(&self, kind: ResourceKind, name: &str) -> Result<(), anyhow::Error>;
 }
 
 /// Production adapter that wraps `rigg_client::AzureSearchClient`.
@@ -111,10 +233,7 @@ impl RiggClientAdapter {
 }
 
 impl RiggApiAdapter for RiggClientAdapter {
-    async fn list_resources(
-        &self,
-        kind: ResourceKind,
-    ) -> Result<Vec<serde_json::Value>, anyhow::Error> {
+    async fn list_resources(&self, kind: ResourceKind) -> Result<Vec<JsonValue>, anyhow::Error> {
         self.client
             .list(kind)
             .await
@@ -125,7 +244,7 @@ impl RiggApiAdapter for RiggClientAdapter {
         &self,
         kind: ResourceKind,
         name: &str,
-        body: &serde_json::Value,
+        body: &JsonValue,
     ) -> Result<(), anyhow::Error> {
         self.client
             .create_or_update(kind, name, body)
@@ -133,120 +252,110 @@ impl RiggApiAdapter for RiggClientAdapter {
             .map(|_| ())
             .map_err(|e| anyhow::anyhow!("{e}"))
     }
-
-    async fn delete_resource(&self, kind: ResourceKind, name: &str) -> Result<(), anyhow::Error> {
-        self.client
-            .delete(kind, name)
-            .await
-            .map_err(|e| anyhow::anyhow!("{e}"))
-    }
 }
 
 // ---------------------------------------------------------------------------
-// Resource kind → local subdirectory mapping
+// plan entry point
 // ---------------------------------------------------------------------------
 
-/// Maps a [`ResourceKind`] to the flat subdirectory name quelch uses on disk.
-///
-/// This matches the layout that [`crate::azure::rigg::write`] writes to, which
-/// differs from rigg-core's categorised `directory_name()` structure.
-/// Exposed for use by the `push` and `pull` modules.
-pub fn subdir_for_kind(kind: ResourceKind) -> &'static str {
-    subdir_for(kind)
-}
-
-fn subdir_for(kind: ResourceKind) -> &'static str {
-    match kind {
-        ResourceKind::Index => "indexes",
-        ResourceKind::DataSource => "datasources",
-        ResourceKind::Skillset => "skillsets",
-        ResourceKind::Indexer => "indexers",
-        ResourceKind::KnowledgeSource => "knowledge_sources",
-        ResourceKind::KnowledgeBase => "knowledge_bases",
-        // Not generated by quelch, but handled gracefully.
-        ResourceKind::SynonymMap => "synonym_maps",
-        ResourceKind::Alias => "aliases",
-        ResourceKind::Agent => "agents",
-    }
-}
-
-/// The resource kinds quelch manages (matches `write.rs` groups).
-///
-/// Exposed so `push` and `pull` can iterate over the same set.
-pub const MANAGED_KINDS: &[ResourceKind] = &[
-    ResourceKind::DataSource,
-    ResourceKind::Skillset,
-    ResourceKind::Index,
-    ResourceKind::Indexer,
-    ResourceKind::KnowledgeSource,
-    ResourceKind::KnowledgeBase,
-];
-
-// ---------------------------------------------------------------------------
-// Plan entry point
-// ---------------------------------------------------------------------------
-
-/// Run a plan: diff local rigg files against live Azure resources.
-///
-/// `rigg_dir` must be the root of the quelch rigg output directory (the
-/// directory containing `indexes/`, `datasources/`, etc. subdirs).
-///
-/// `api` is the rigg adapter — use [`RiggClientAdapter`] in production or a
-/// mock in tests.
-pub async fn run<A: RiggApiAdapter>(rigg_dir: &Path, api: &A) -> Result<PlanReport, PlanError> {
-    let local = read_local(rigg_dir)?;
+/// Compute a [`RiggDiff`] by diffing `desired` against the live state of
+/// the AI Search service reachable through `api`.
+pub async fn plan<A: RiggApiAdapter>(
+    desired: &RiggDesiredState,
+    api: &A,
+) -> Result<RiggDiff, PlanError> {
     let live = fetch_live(api).await?;
-    Ok(compute_diff(local, live))
-}
+    let desired_map = serialise_desired(desired)?;
 
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
-type ResourceMap = HashMap<(ResourceKind, String), serde_json::Value>;
-
-/// Read all local YAML files under `rigg_dir` into a map keyed by (kind, name).
-fn read_local(rigg_dir: &Path) -> Result<ResourceMap, PlanError> {
-    let mut map = ResourceMap::new();
+    let mut diff = RiggDiff::default();
 
     for kind in MANAGED_KINDS {
-        let subdir = rigg_dir.join(subdir_for(*kind));
-        if !subdir.exists() {
-            continue;
-        }
+        // Sort by name for deterministic output.
+        let mut entries: Vec<(&String, &JsonValue)> = desired_map
+            .iter()
+            .filter(|((k, _), _)| k == kind)
+            .map(|((_, n), v)| (n, v))
+            .collect();
+        entries.sort_by(|a, b| a.0.cmp(b.0));
 
-        for entry in std::fs::read_dir(&subdir)? {
-            let entry = entry?;
-            let path: PathBuf = entry.path();
-
-            if path.extension().and_then(|e| e.to_str()) != Some("yaml") {
-                continue;
+        for (name, want) in entries {
+            let rref = ResourceRef {
+                kind: *kind,
+                name: name.clone(),
+            };
+            match live.get(&(*kind, name.clone())) {
+                None => diff.changes.push(ResourceChange::Create(rref)),
+                Some(have) => {
+                    let changes = diff_values(want, have, "");
+                    if changes.is_empty() {
+                        diff.changes.push(ResourceChange::Match(rref));
+                    } else {
+                        diff.changes.push(ResourceChange::Update { rref, changes });
+                    }
+                }
             }
-
-            let yaml_text = std::fs::read_to_string(&path)?;
-            // Parse YAML → JSON value so we can do uniform comparison.
-            let yaml_val: serde_yaml::Value = serde_yaml::from_str(&yaml_text)?;
-            let json_val = yaml_to_json(yaml_val);
-
-            // Extract the resource name.
-            let name = extract_name(&json_val, &path);
-            map.insert((*kind, name), json_val);
         }
     }
 
+    Ok(diff)
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+type ResourceMap = HashMap<(ResourceKind, String), JsonValue>;
+
+/// Serialise every resource in [`RiggDesiredState`] into the (kind, name) map.
+fn serialise_desired(state: &RiggDesiredState) -> Result<ResourceMap, PlanError> {
+    let mut map = ResourceMap::new();
+    for r in &state.data_sources {
+        map.insert(
+            (ResourceKind::DataSource, r.name.clone()),
+            serde_json::to_value(r)?,
+        );
+    }
+    for r in &state.skillsets {
+        map.insert(
+            (ResourceKind::Skillset, r.name.clone()),
+            serde_json::to_value(r)?,
+        );
+    }
+    for r in &state.indexes {
+        map.insert(
+            (ResourceKind::Index, r.name.clone()),
+            serde_json::to_value(r)?,
+        );
+    }
+    for r in &state.indexers {
+        map.insert(
+            (ResourceKind::Indexer, r.name.clone()),
+            serde_json::to_value(r)?,
+        );
+    }
+    for r in &state.knowledge_sources {
+        map.insert(
+            (ResourceKind::KnowledgeSource, r.name.clone()),
+            serde_json::to_value(r)?,
+        );
+    }
+    for r in &state.knowledge_bases {
+        map.insert(
+            (ResourceKind::KnowledgeBase, r.name.clone()),
+            serde_json::to_value(r)?,
+        );
+    }
     Ok(map)
 }
 
 /// Fetch all live resources from Azure into the same map shape.
 async fn fetch_live<A: RiggApiAdapter>(api: &A) -> Result<ResourceMap, PlanError> {
     let mut map = ResourceMap::new();
-
     for kind in MANAGED_KINDS {
         let items = api
             .list_resources(*kind)
             .await
-            .map_err(|e| PlanError::Rigg(e.to_string()))?;
-
+            .map_err(|e| PlanError::Api(e.to_string()))?;
         for item in items {
             let name = item
                 .get("name")
@@ -258,165 +367,89 @@ async fn fetch_live<A: RiggApiAdapter>(api: &A) -> Result<ResourceMap, PlanError
             }
         }
     }
-
     Ok(map)
-}
-
-/// Compute the plan diff between local and live states.
-fn compute_diff(local: ResourceMap, live: ResourceMap) -> PlanReport {
-    let mut report = PlanReport::default();
-
-    // Everything in local.
-    for ((kind, name), local_val) in &local {
-        let rref = ResourceRef {
-            kind: *kind,
-            name: name.clone(),
-        };
-
-        match live.get(&(*kind, name.clone())) {
-            None => {
-                // Local only → create.
-                report.creates.push(rref);
-            }
-            Some(live_val) => {
-                // Both → diff.
-                let changes = diff_values(local_val, live_val, "");
-                if changes.is_empty() {
-                    report.unchanged.push(rref);
-                } else {
-                    report.updates.push((
-                        rref,
-                        ResourceDiff {
-                            field_changes: changes,
-                        },
-                    ));
-                }
-            }
-        }
-    }
-
-    // Everything in live but not in local → delete.
-    for (kind, name) in live.keys() {
-        if !local.contains_key(&(*kind, name.clone())) {
-            report.deletes.push(ResourceRef {
-                kind: *kind,
-                name: name.clone(),
-            });
-        }
-    }
-
-    report
 }
 
 /// Recursively diff two JSON values, producing [`FieldChange`] entries for
 /// every leaf that differs.
-fn diff_values(local: &JsonValue, live: &JsonValue, path: &str) -> Vec<FieldChange> {
+fn diff_values(want: &JsonValue, have: &JsonValue, path: &str) -> Vec<FieldChange> {
     let mut changes = Vec::new();
-    diff_values_inner(local, live, path, &mut changes);
+    diff_values_inner(want, have, path, &mut changes);
     changes
 }
 
 fn diff_values_inner(
-    local: &JsonValue,
-    live: &JsonValue,
+    want: &JsonValue,
+    have: &JsonValue,
     path: &str,
     changes: &mut Vec<FieldChange>,
 ) {
-    match (local, live) {
-        (JsonValue::Object(loc_map), JsonValue::Object(live_map)) => {
-            // Keys in local.
-            for (k, loc_v) in loc_map {
-                let child_path = if path.is_empty() {
+    match (want, have) {
+        (JsonValue::Object(w_map), JsonValue::Object(h_map)) => {
+            for (k, w_v) in w_map {
+                let child = if path.is_empty() {
                     k.clone()
                 } else {
                     format!("{path}.{k}")
                 };
-                match live_map.get(k) {
-                    None => {
-                        // Field absent in live — treat as a change.
-                        changes.push(FieldChange {
-                            path: child_path,
-                            from: JsonValue::Null,
-                            to: loc_v.clone(),
-                        });
-                    }
-                    Some(live_v) => {
-                        diff_values_inner(loc_v, live_v, &child_path, changes);
-                    }
+                match h_map.get(k) {
+                    None => changes.push(FieldChange {
+                        path: child,
+                        from: JsonValue::Null,
+                        to: w_v.clone(),
+                    }),
+                    Some(h_v) => diff_values_inner(w_v, h_v, &child, changes),
                 }
             }
-            // Keys in live but not in local.
-            for (k, live_v) in live_map {
-                if !loc_map.contains_key(k) {
-                    let child_path = if path.is_empty() {
+            for (k, h_v) in h_map {
+                if !w_map.contains_key(k) {
+                    let child = if path.is_empty() {
                         k.clone()
                     } else {
                         format!("{path}.{k}")
                     };
                     changes.push(FieldChange {
-                        path: child_path,
-                        from: live_v.clone(),
+                        path: child,
+                        from: h_v.clone(),
                         to: JsonValue::Null,
                     });
                 }
             }
         }
-        (JsonValue::Array(loc_arr), JsonValue::Array(live_arr)) => {
-            let max_len = loc_arr.len().max(live_arr.len());
+        (JsonValue::Array(w_arr), JsonValue::Array(h_arr)) => {
+            let max_len = w_arr.len().max(h_arr.len());
             for i in 0..max_len {
-                let child_path = if path.is_empty() {
+                let child = if path.is_empty() {
                     i.to_string()
                 } else {
                     format!("{path}.{i}")
                 };
-                match (loc_arr.get(i), live_arr.get(i)) {
-                    (Some(l), Some(r)) => diff_values_inner(l, r, &child_path, changes),
-                    (Some(l), None) => changes.push(FieldChange {
-                        path: child_path,
+                match (w_arr.get(i), h_arr.get(i)) {
+                    (Some(w), Some(h)) => diff_values_inner(w, h, &child, changes),
+                    (Some(w), None) => changes.push(FieldChange {
+                        path: child,
                         from: JsonValue::Null,
-                        to: l.clone(),
+                        to: w.clone(),
                     }),
-                    (None, Some(r)) => changes.push(FieldChange {
-                        path: child_path,
-                        from: r.clone(),
+                    (None, Some(h)) => changes.push(FieldChange {
+                        path: child,
+                        from: h.clone(),
                         to: JsonValue::Null,
                     }),
                     (None, None) => {}
                 }
             }
         }
-        // Leaf comparison.
         _ => {
-            if local != live {
+            if want != have {
                 changes.push(FieldChange {
                     path: path.to_string(),
-                    from: live.clone(),
-                    to: local.clone(),
+                    from: have.clone(),
+                    to: want.clone(),
                 });
             }
         }
     }
-}
-
-/// Extract the resource `name` from a JSON object, falling back to the
-/// file stem if the `name` key is absent.
-fn extract_name(val: &JsonValue, path: &Path) -> String {
-    if let Some(s) = val.get("name").and_then(|v| v.as_str()) {
-        return s.to_string();
-    }
-    // Fall back to file stem.
-    path.file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("unknown")
-        .to_string()
-}
-
-/// Convert `serde_yaml::Value` to `serde_json::Value` for uniform comparison.
-fn yaml_to_json(v: serde_yaml::Value) -> serde_json::Value {
-    // Round-trip through JSON serialisation — straightforward and correct
-    // for the YAML subset that Azure resource files use.
-    let json_str = serde_json::to_string(&v).unwrap_or_default();
-    serde_json::from_str(&json_str).unwrap_or(serde_json::Value::Null)
 }
 
 // ---------------------------------------------------------------------------
@@ -426,26 +459,19 @@ fn yaml_to_json(v: serde_yaml::Value) -> serde_json::Value {
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
-    // -----------------------------------------------------------------------
-    // Mock adapter
-    // -----------------------------------------------------------------------
-
-    /// A simple mock rigg API for unit tests.
+    /// In-memory mock of [`RiggApiAdapter`] for unit tests.
     #[derive(Default)]
     pub struct MockRiggApi {
-        /// Pre-loaded live resources per kind.
-        live: HashMap<ResourceKind, Vec<serde_json::Value>>,
-        /// Recorded upsert calls: (kind, name).
-        pub upserted: Arc<Mutex<Vec<(ResourceKind, String)>>>,
-        /// Recorded delete calls: (kind, name).
-        pub deleted: Arc<Mutex<Vec<(ResourceKind, String)>>>,
+        live: HashMap<ResourceKind, Vec<JsonValue>>,
+        /// Recorded upsert calls: (kind, name, body).
+        pub upserted: Arc<Mutex<Vec<(ResourceKind, String, JsonValue)>>>,
     }
 
     impl MockRiggApi {
-        pub fn with_live(mut self, kind: ResourceKind, items: Vec<serde_json::Value>) -> Self {
+        /// Pre-load live resources of `kind` for the next `list_resources` call.
+        pub fn with_live(mut self, kind: ResourceKind, items: Vec<JsonValue>) -> Self {
             self.live.insert(kind, items);
             self
         }
@@ -455,7 +481,7 @@ pub mod tests {
         async fn list_resources(
             &self,
             kind: ResourceKind,
-        ) -> Result<Vec<serde_json::Value>, anyhow::Error> {
+        ) -> Result<Vec<JsonValue>, anyhow::Error> {
             Ok(self.live.get(&kind).cloned().unwrap_or_default())
         }
 
@@ -463,167 +489,146 @@ pub mod tests {
             &self,
             kind: ResourceKind,
             name: &str,
-            _body: &serde_json::Value,
+            body: &JsonValue,
         ) -> Result<(), anyhow::Error> {
-            self.upserted.lock().unwrap().push((kind, name.to_string()));
-            Ok(())
-        }
-
-        async fn delete_resource(
-            &self,
-            kind: ResourceKind,
-            name: &str,
-        ) -> Result<(), anyhow::Error> {
-            self.deleted.lock().unwrap().push((kind, name.to_string()));
+            self.upserted
+                .lock()
+                .unwrap()
+                .push((kind, name.to_string(), body.clone()));
             Ok(())
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Helpers
-    // -----------------------------------------------------------------------
-
-    fn write_index(dir: &Path, name: &str, content: &str) {
-        let sub = dir.join("indexes");
-        std::fs::create_dir_all(&sub).unwrap();
-        std::fs::write(sub.join(format!("{name}.yaml")), content).unwrap();
-    }
-
-    fn minimal_index_json(name: &str) -> serde_json::Value {
-        serde_json::json!({ "name": name, "fields": [] })
-    }
-
-    fn minimal_index_yaml(name: &str) -> String {
-        format!("name: {name}\nfields: []\n")
-    }
-
-    // -----------------------------------------------------------------------
-    // plan tests
-    // -----------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn plan_creates_when_local_only() {
-        let dir = tempfile::tempdir().unwrap();
-        write_index(
-            dir.path(),
-            "jira-issues",
-            &minimal_index_yaml("jira-issues"),
-        );
-
-        let api = MockRiggApi::default(); // live is empty
-        let report = run(dir.path(), &api).await.unwrap();
-
-        assert_eq!(report.creates.len(), 1, "expected one create");
-        assert_eq!(report.creates[0].name, "jira-issues");
-        assert!(matches!(report.creates[0].kind, ResourceKind::Index));
-        assert!(report.updates.is_empty());
-        assert!(report.deletes.is_empty());
-        assert!(report.unchanged.is_empty());
-    }
-
-    #[tokio::test]
-    async fn plan_deletes_when_live_only() {
-        let dir = tempfile::tempdir().unwrap();
-        // No local files.
-
-        let api = MockRiggApi::default()
-            .with_live(ResourceKind::Index, vec![minimal_index_json("jira-issues")]);
-        let report = run(dir.path(), &api).await.unwrap();
-
-        assert_eq!(report.deletes.len(), 1, "expected one delete");
-        assert_eq!(report.deletes[0].name, "jira-issues");
-        assert!(report.creates.is_empty());
-        assert!(report.updates.is_empty());
-        assert!(report.unchanged.is_empty());
-    }
-
-    #[tokio::test]
-    async fn plan_unchanged_when_identical() {
-        let dir = tempfile::tempdir().unwrap();
-        write_index(
-            dir.path(),
-            "jira-issues",
-            &minimal_index_yaml("jira-issues"),
-        );
-
-        let api = MockRiggApi::default()
-            .with_live(ResourceKind::Index, vec![minimal_index_json("jira-issues")]);
-        let report = run(dir.path(), &api).await.unwrap();
-
-        assert_eq!(report.unchanged.len(), 1, "expected one unchanged");
-        assert!(report.creates.is_empty());
-        assert!(report.updates.is_empty());
-        assert!(report.deletes.is_empty());
-    }
-
-    #[tokio::test]
-    async fn plan_updates_when_field_changes() {
-        let dir = tempfile::tempdir().unwrap();
-        // Local has searchable: true on a field; live has false.
-        let local_yaml = "name: jira-issues\nfields:\n  - name: title\n    searchable: true\n";
-        write_index(dir.path(), "jira-issues", local_yaml);
-
-        let live_json = serde_json::json!({
-            "name": "jira-issues",
-            "fields": [{ "name": "title", "searchable": false }]
+    fn desired_with_one_index(name: &str) -> RiggDesiredState {
+        let mut state = RiggDesiredState::default();
+        state.indexes.push(rigg_core::resources::Index {
+            name: name.to_string(),
+            fields: vec![],
+            scoring_profiles: None,
+            default_scoring_profile: None,
+            cors_options: None,
+            suggesters: None,
+            analyzers: None,
+            tokenizers: None,
+            token_filters: None,
+            char_filters: None,
+            similarity: None,
+            semantic: None,
+            vector_search: None,
+            extra: Default::default(),
         });
-        let api = MockRiggApi::default().with_live(ResourceKind::Index, vec![live_json]);
-        let report = run(dir.path(), &api).await.unwrap();
+        state
+    }
 
-        assert_eq!(report.updates.len(), 1, "expected one update");
-        let (rref, diff) = &report.updates[0];
-        assert_eq!(rref.name, "jira-issues");
-        // At least one field change mentioning "searchable".
-        let mentions_searchable = diff
-            .field_changes
-            .iter()
-            .any(|fc| fc.path.contains("searchable"));
-        assert!(
-            mentions_searchable,
-            "expected a FieldChange for 'searchable', got: {:?}",
-            diff.field_changes
-                .iter()
-                .map(|f| &f.path)
-                .collect::<Vec<_>>()
-        );
-        assert!(report.creates.is_empty());
-        assert!(report.deletes.is_empty());
-        assert!(report.unchanged.is_empty());
+    #[tokio::test]
+    async fn plan_creates_when_live_is_empty() {
+        let state = desired_with_one_index("jira-issues");
+        let api = MockRiggApi::default();
+        let diff = plan(&state, &api).await.unwrap();
+        assert_eq!(diff.changes.len(), 1);
+        assert!(matches!(diff.changes[0], ResourceChange::Create(_)));
+        assert!(!diff.is_clean());
+    }
+
+    #[tokio::test]
+    async fn plan_matches_when_live_has_identical_resource() {
+        let state = desired_with_one_index("jira-issues");
+        let live = serde_json::to_value(&state.indexes[0]).unwrap();
+        let api = MockRiggApi::default().with_live(ResourceKind::Index, vec![live]);
+        let diff = plan(&state, &api).await.unwrap();
+        assert_eq!(diff.changes.len(), 1);
+        assert!(matches!(diff.changes[0], ResourceChange::Match(_)));
+        assert!(diff.is_clean());
+    }
+
+    #[tokio::test]
+    async fn plan_updates_when_live_has_diverging_resource() {
+        let state = desired_with_one_index("jira-issues");
+        let live = serde_json::json!({
+            "name": "jira-issues",
+            "fields": [],
+            "extraServerField": "drift",
+        });
+        let api = MockRiggApi::default().with_live(ResourceKind::Index, vec![live]);
+        let diff = plan(&state, &api).await.unwrap();
+        assert_eq!(diff.changes.len(), 1);
+        match &diff.changes[0] {
+            ResourceChange::Update { changes, .. } => {
+                assert!(
+                    changes.iter().any(|c| c.path == "extraServerField"),
+                    "expected change on extraServerField, got: {changes:?}"
+                );
+            }
+            other => panic!("expected Update, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn plan_does_not_emit_deletes_for_extra_live_resources() {
+        // Quelch only adds; live extras are user-managed and ignored.
+        let state = RiggDesiredState::default();
+        let live = serde_json::json!({"name": "user-managed", "fields": []});
+        let api = MockRiggApi::default().with_live(ResourceKind::Index, vec![live]);
+        let diff = plan(&state, &api).await.unwrap();
+        assert!(diff.changes.is_empty());
+        assert!(diff.is_clean());
     }
 
     #[test]
-    fn diff_values_leaf_change() {
-        let a = serde_json::json!({"x": 1});
-        let b = serde_json::json!({"x": 2});
-        let changes = diff_values(&a, &b, "");
+    fn render_handles_create_update_match_and_empty() {
+        let mut diff = RiggDiff::default();
+        assert!(diff.render().contains("(no managed resources)"));
+
+        diff.changes.push(ResourceChange::Create(ResourceRef {
+            kind: ResourceKind::Index,
+            name: "a".into(),
+        }));
+        diff.changes.push(ResourceChange::Match(ResourceRef {
+            kind: ResourceKind::DataSource,
+            name: "b".into(),
+        }));
+        diff.changes.push(ResourceChange::Update {
+            rref: ResourceRef {
+                kind: ResourceKind::Skillset,
+                name: "c".into(),
+            },
+            changes: vec![FieldChange {
+                path: "fields.0.searchable".into(),
+                from: JsonValue::Bool(false),
+                to: JsonValue::Bool(true),
+            }],
+        });
+        let s = diff.render();
+        assert!(s.contains("+ indexes/a"), "{s}");
+        assert!(s.contains("= data_sources/b"), "{s}");
+        assert!(s.contains("~ skillsets/c"), "{s}");
+        assert!(s.contains("fields.0.searchable: false → true"), "{s}");
+    }
+
+    #[test]
+    fn pending_excludes_match_entries() {
+        let mut diff = RiggDiff::default();
+        diff.changes.push(ResourceChange::Match(ResourceRef {
+            kind: ResourceKind::Index,
+            name: "a".into(),
+        }));
+        diff.changes.push(ResourceChange::Create(ResourceRef {
+            kind: ResourceKind::Index,
+            name: "b".into(),
+        }));
+        let pending: Vec<_> = diff.pending().collect();
+        assert_eq!(pending.len(), 1);
+        assert!(matches!(pending[0], ResourceChange::Create(_)));
+    }
+
+    #[test]
+    fn diff_values_detects_leaf_changes() {
+        let want = serde_json::json!({"x": 1});
+        let have = serde_json::json!({"x": 2});
+        let changes = diff_values(&want, &have, "");
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].path, "x");
         assert_eq!(changes[0].from, serde_json::json!(2));
         assert_eq!(changes[0].to, serde_json::json!(1));
-    }
-
-    #[test]
-    fn diff_values_nested() {
-        let a = serde_json::json!({"a": {"b": true}});
-        let b = serde_json::json!({"a": {"b": false}});
-        let changes = diff_values(&a, &b, "");
-        assert_eq!(changes.len(), 1);
-        assert_eq!(changes[0].path, "a.b");
-    }
-
-    #[test]
-    fn diff_values_identical_empty() {
-        let a = serde_json::json!({"name": "x"});
-        let changes = diff_values(&a, &a, "");
-        assert!(changes.is_empty());
-    }
-
-    #[test]
-    fn subdir_for_round_trips_all_managed_kinds() {
-        for kind in MANAGED_KINDS {
-            // subdir_for should not panic for any managed kind.
-            let s = subdir_for(*kind);
-            assert!(!s.is_empty());
-        }
     }
 }

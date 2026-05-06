@@ -3,10 +3,10 @@
 //! Phase 4 of the no-deploy pivot: this module operates purely on in-memory
 //! state. There are no on-disk YAML files, no `rigg/` directory.
 //!
-//! Public surface (after Phase 4 lands fully):
+//! Public surface:
 //!   - [`generate`] — build the desired state from a [`crate::config::Config`].
-//!   - `plan` — diff the desired state against the live AI Search service.
-//!   - `apply` — make the live service match the desired state.
+//!   - [`plan`] — diff the desired state against the live AI Search service.
+//!   - [`apply`] — make the live service match the desired state.
 //!
 //! All three operate on the in-memory [`RiggDesiredState`] struct.
 
@@ -18,15 +18,16 @@ use rigg_core::resources::{DataSource, Index, Indexer, KnowledgeBase, KnowledgeS
 
 pub use generate::{GenerateError, generate};
 pub use plan::{
-    PlanError, PlanReport, ResourceDiff, ResourceRef, RiggApiAdapter, RiggClientAdapter,
+    FieldChange, PlanError, ResourceChange, ResourceRef, RiggApiAdapter, RiggClientAdapter,
+    RiggDiff, plan,
 };
-pub use push::{PushError, PushOutcome};
+pub use push::{ApplyError, apply};
 
 /// In-memory desired state for the Azure AI Search resources Quelch manages.
 ///
-/// Built by [`generate`] from a `quelch.yaml` config; will be consumed by
-/// the new `plan` (to compute the diff against the live service) and `apply`
-/// (to push the desired state) entry points after Task 4.3.
+/// Built by [`generate`] from a `quelch.yaml` config; consumed by [`plan`]
+/// (to compute the diff against the live service) and [`apply`] (to push
+/// the desired state).
 #[derive(Debug, Default)]
 pub struct RiggDesiredState {
     /// AI Search indexes — one per Cosmos container exposed by any MCP instance.
