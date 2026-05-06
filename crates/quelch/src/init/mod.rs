@@ -37,10 +37,12 @@ pub struct InitOptions {
 /// resulting [`Config`] is serialised to YAML, and a prerequisite check is
 /// printed.
 ///
+/// If the user cancels with Ctrl-C / Esc, the function prints a friendly
+/// "Wizard cancelled" line and returns `Ok(())` without writing anything.
+///
 /// # Errors
 /// - `output_path` already exists and `force` is not set.
 /// - The named template does not exist.
-/// - The user cancels a prompt with Ctrl-C / Esc.
 /// - I/O failures writing the YAML file.
 pub async fn run(output_path: &Path, options: InitOptions) -> anyhow::Result<()> {
     if output_path.exists() && !options.force {
@@ -58,7 +60,24 @@ pub async fn run(output_path: &Path, options: InitOptions) -> anyhow::Result<()>
         return Ok(());
     }
 
-    let config = run_interactive().await?;
+    let config = match run_interactive().await {
+        Ok(c) => c,
+        Err(e) => {
+            // Translate inquire's "Esc / Ctrl-C" errors into a friendlier
+            // exit. These are normal user actions, not failures.
+            if let Some(inq) = e.downcast_ref::<inquire::InquireError>()
+                && matches!(
+                    inq,
+                    inquire::InquireError::OperationCanceled
+                        | inquire::InquireError::OperationInterrupted
+                )
+            {
+                println!("\nWizard cancelled — no quelch.yaml was written.");
+                return Ok(());
+            }
+            return Err(e);
+        }
+    };
     write_yaml(&config, output_path)?;
     println!("\nWrote {}", output_path.display());
 

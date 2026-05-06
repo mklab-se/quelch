@@ -174,16 +174,16 @@ async fn check_cosmos(sub: &str, rg: &str, expected_name: Option<&str>) -> Check
 
 async fn check_search(sub: &str, rg: &str, endpoint: &str) -> Check {
     let label = format!("Azure AI Search service at {endpoint} (RG '{rg}')");
-    let remediation = Some(format!(
+    let create_hint = format!(
         "az search service create -n <name> -g {rg} --sku basic\n\
          (then enable the semantic ranker in the portal)"
-    ));
+    );
 
     let Ok(list) = discover::list_search_services(sub, rg).await else {
         return Check {
             label,
             status: Status::Unknown,
-            remediation,
+            remediation: Some(create_hint),
         };
     };
     // Endpoint shape: https://<name>.search.windows.net — match by name.
@@ -192,17 +192,32 @@ async fn check_search(sub: &str, rg: &str, endpoint: &str) -> Check {
         .and_then(|rest| rest.split('.').next())
         .unwrap_or("");
     let found = !expected_name.is_empty() && list.iter().any(|s| s.name == expected_name);
+    if found {
+        return Check {
+            label,
+            status: Status::Found,
+            remediation: None,
+        };
+    }
+    // Not found. Tailor the remediation to what the RG actually contains so
+    // the user can either pick an existing service or create a new one.
+    let remediation = if list.is_empty() {
+        Some(format!(
+            "No AI Search services found in resource group '{rg}'. Create one:\n{create_hint}"
+        ))
+    } else {
+        let names: Vec<&str> = list.iter().map(|s| s.name.as_str()).collect();
+        Some(format!(
+            "Resource group '{rg}' contains {} AI Search service(s): {}.\n\
+             Update `azure.search.endpoint` in quelch.yaml to one of those, or create a new one:\n{}",
+            names.len(),
+            names.join(", "),
+            create_hint
+        ))
+    };
     Check {
         label,
-        status: if found {
-            Status::Found
-        } else if list.is_empty() {
-            Status::Missing
-        } else {
-            // The named service isn't present, but the RG has search services
-            // — surface this as Missing with a clear hint.
-            Status::Missing
-        },
+        status: Status::Missing,
         remediation,
     }
 }
