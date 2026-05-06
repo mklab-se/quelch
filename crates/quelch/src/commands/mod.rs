@@ -4,6 +4,7 @@
 //! (e.g. `quelch status`, `quelch reset`, `quelch query`).
 
 pub mod get;
+pub mod instance;
 pub mod query;
 pub mod reset;
 pub mod search;

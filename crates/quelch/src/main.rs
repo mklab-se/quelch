@@ -6,7 +6,9 @@ use quelch::config;
 use std::path::Path;
 use tracing_subscriber::EnvFilter;
 
-use cli::{AgentCommands, AgentTarget, AzureCommands, Cli, Commands, IndexerCommands};
+use cli::{
+    AgentCommands, AgentTarget, AzureCommands, Cli, Commands, IndexerCommands, InstanceCommand,
+};
 
 // Suppress `set_var` deprecation on Rust 1.80+ (we only use it for env var
 // passthrough at process startup, never in multi-threaded context).
@@ -215,6 +217,23 @@ async fn main() -> Result<()> {
             AzureCommands::Apply { yes } => cmd_azure_apply(&cli.config, yes).await,
             AzureCommands::Indexer { command } => cmd_azure_indexer(&cli.config, command).await,
         },
+        Commands::Instance { command } => {
+            let cfg = quelch::config::load_config(&cli.config)?;
+            let stdout = std::io::stdout();
+            let mut out = stdout.lock();
+            match command {
+                InstanceCommand::List => quelch::commands::instance::list(&cfg, &mut out),
+                InstanceCommand::Config { name, kind, output } => {
+                    quelch::commands::instance::config(
+                        &cfg,
+                        &name,
+                        kind,
+                        output.as_deref(),
+                        &mut out,
+                    )
+                }
+            }
+        }
     }
 }
 

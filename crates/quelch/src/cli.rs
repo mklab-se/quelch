@@ -1,5 +1,6 @@
 use clap::Parser;
 use quelch::ai::AiCommands;
+use quelch::commands::instance::InstanceKindArg;
 use quelch::commands::search::IncludeContentArg;
 use std::path::PathBuf;
 
@@ -203,6 +204,15 @@ pub enum Commands {
         #[command(subcommand)]
         command: AzureCommands,
     },
+    /// Manage named instances declared in `quelch.yaml`.
+    ///
+    /// Use these subcommands to inspect the instances declared in the master
+    /// config and to emit per-instance config slices ready to copy onto the
+    /// host that runs Q-Ingest or Q-MCP.
+    Instance {
+        #[command(subcommand)]
+        command: InstanceCommand,
+    },
     /// Start the MCP HTTP server for an instance.
     ///
     /// Agents (GitHub Copilot, Claude, etc.) connect to this server to query
@@ -303,6 +313,36 @@ pub enum AgentFormat {
     Skill,
     /// Generate both agent and skill forms.
     Both,
+}
+
+/// `quelch instance` subcommands.
+#[derive(clap::Subcommand, Debug)]
+pub enum InstanceCommand {
+    /// List instances declared in the master config.
+    List,
+
+    /// Emit a per-instance config file (slimmed slice of the master).
+    ///
+    /// The emitted YAML contains only the configuration the named instance
+    /// needs at runtime: control-plane fields (`subscription_id`,
+    /// `resource_group`, `account`) and the `ai:` block are always stripped;
+    /// `search:` is stripped for ingest instances; `source_connections` are
+    /// stripped for MCP instances and limited to the referenced ones for
+    /// ingest instances.
+    Config {
+        /// Instance name from `quelch.yaml`.
+        name: String,
+        /// Sanity-check that the instance has the expected kind.
+        ///
+        /// Errors out if the instance's actual kind in the config does not
+        /// match this flag — guards against a typo in the instance name
+        /// dispatching the wrong slice to the wrong host.
+        #[arg(long, value_enum)]
+        kind: InstanceKindArg,
+        /// Write to this path instead of stdout.
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
 }
 
 /// `quelch azure indexer` subcommands.
