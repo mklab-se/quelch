@@ -6,6 +6,66 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-05-06
+
+### Changed (breaking)
+
+- **No-deploy pivot.** Quelch is now a configuration tool, not a
+  deployment tool. `quelch azure apply` configures Cosmos containers
+  (via direct ARM REST) and Azure AI Search (via the embedded `rigg`
+  library, in-memory only). The user hosts Q-Ingest and Q-MCP themselves
+  on whatever supervisor they prefer (Docker, systemd, k8s, Container
+  Apps, bare process). Quelch no longer deploys anything to Azure.
+
+- **YAML schema reshaped.** `deployments[]` replaced by `instances[]` +
+  `source_connections[]`. `azure:` block simplified — Container Apps env,
+  Application Insights, Key Vault, naming prefix, role-assignment toggle,
+  rigg ownership all gone. Single schema serves both as the master
+  config and as the on-host per-instance slice.
+
+- **CLI verbs removed:** `azure deploy`, `azure pull`, `azure logs`,
+  `azure destroy`, `effective-config`, `generate-deployment`,
+  `mcp-key set/rotate/show/generate`. Renamed: `azure deploy` → `azure
+  apply`.
+
+- **CLI verbs added:** `quelch instance list`, `quelch instance config
+  <name> --kind ingest|mcp`, `quelch reset --take-ownership`.
+
+### Added
+
+- **Conflict prevention.** Static — `quelch validate` rejects two ingest
+  instances claiming the same `(source_type, base_url, subsource)`
+  tuple. Dynamic — every cursor doc in `quelch-meta` carries an
+  `owner_instance` field; Q-Ingest refuses cursors owned by another
+  instance and exits hard. `quelch reset --take-ownership` rewrites the
+  owner field for legitimate transfers.
+
+- **`--instance` auto-detect.** `quelch ingest` / `mcp` / `query` /
+  `get` / `search` / `agent generate` pick the single matching-kind
+  instance automatically when the config declares only one; require
+  the flag when there are multiple.
+
+- **`docs/api-key.md`** — generating, storing, and rotating the Q-MCP
+  API key without `mcp-key` CLI plumbing.
+
+- **`docs/hosting.md`** (replaces the old `docs/deployment.md`) — copy-
+  paste recipes for Docker, systemd, Kubernetes, and Azure Container
+  Apps. Quelch generates none of these; they are illustrative.
+
+### Removed
+
+- `azure/deploy/` (Bicep generator, what-if differ, deployment applier),
+  `azure/rigg/{write,pull,ownership}.rs` (on-disk rigg directory and
+  hand-takeover), `onprem/` (per-target deployment artefact emitter),
+  `commands/mcp_key.rs`. Quelch no longer manages Q-MCP API keys via
+  Azure Key Vault.
+
+### Migration
+
+There is no migration path. v0.12.0 is the first release of the new
+model; v0.11.x repositories should be reinitialised with `quelch init`
+and any per-instance configs regenerated with `quelch instance config`.
+
 ## [0.11.5] - 2026-05-05
 
 ### Added
