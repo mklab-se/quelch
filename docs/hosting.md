@@ -10,17 +10,38 @@ This document is a recipe book for running **Quelch Ingest** (Q-Ingest) and **Qu
 quelch instance config <name> --kind ingest|mcp --output <path>
 ```
 
-Quelch does **not** generate Docker images, `docker-compose.yaml` files, systemd units, Kubernetes manifests, Container Apps templates, Bicep, Terraform, or anything else. The snippets below are **examples** — copy them, adapt them, or use whatever shape your environment already standardises on.
+Quelch does **not** publish a container image, generate `docker-compose.yaml` files, write systemd units, emit Kubernetes manifests, scaffold Container Apps, produce Bicep, or anything else. The snippets below are **examples** — copy them, adapt them, or use whatever shape your environment already standardises on.
 
-The container image you'll run is published by the Quelch release pipeline:
-
-```
-ghcr.io/mklab-se/quelch:<version>
-```
-
-The version is the same as your installed CLI (`quelch --version`). The same image runs both Q-Ingest (`quelch ingest --config ...`) and Q-MCP (`quelch mcp --config ...`) — the command is what selects the role.
+The same `quelch` binary runs both Q-Ingest (`quelch ingest --config ...`) and Q-MCP (`quelch mcp --config ...`); the command is what selects the role.
 
 The per-instance config references credentials via env-var placeholders (`${QUELCH_MCP_API_KEY}`, `${JIRA_PAT_X}`, etc.). You wire those env vars into the host's secret store; Quelch never touches secret material on your behalf.
+
+---
+
+## Where the binary comes from
+
+Three install paths, depending on host:
+
+- **Released binary** (recommended for systemd / VMs) — download the matching tarball from [GitHub Releases](https://github.com/mklab-se/quelch/releases), drop the `quelch` binary into `/usr/local/bin`.
+- **`cargo install quelch`** — works anywhere with a Rust toolchain. Slow on first build, fine for CI / dev / one-off VMs.
+- **Container image you build yourself** — for Docker / Kubernetes / Container Apps. The repo ships a `Dockerfile` you build and push to your own registry (see below).
+
+### Building a container image
+
+If you're hosting Q-Ingest or Q-MCP in a container runtime, you build the image yourself. The repo's `Dockerfile` is a multi-stage build (Rust builder → distroless runtime) that produces a small static-ish image. Build and push:
+
+```bash
+git clone https://github.com/mklab-se/quelch.git
+cd quelch
+git checkout v<version>          # match your CLI version
+
+docker build -t <your-registry>/quelch:<version> .
+docker push    <your-registry>/quelch:<version>
+```
+
+`<your-registry>` is whatever you control: `myorg.azurecr.io`, `ghcr.io/myorg`, `docker.io/myorg`, a private registry behind a corporate proxy, etc. Pin the tag to the CLI version you're running on the operator side so the running binary and the image stay in lockstep.
+
+The shipped `Dockerfile` is a starting point — adapt it (different base image, your org's TLS roots, your build cache strategy, multi-arch). All the snippets below assume `<your-registry>/quelch:<version>` is reachable from your host.
 
 ---
 
@@ -47,7 +68,7 @@ The Cosmos data plane needs the `Cosmos DB Built-in Data Contributor` role on th
 
 ## Running under Docker
 
-Single-host Q-Ingest with `docker run`:
+Single-host Q-Ingest with `docker run` (assumes you've already built and pushed `<your-registry>/quelch:<version>` per "Building a container image" above):
 
 ```bash
 docker run -d --name q-ingest-jira \
@@ -57,7 +78,7 @@ docker run -d --name q-ingest-jira \
   -e AZURE_TENANT_ID="..." \
   -e AZURE_CLIENT_SECRET="..." \
   -v "$PWD/q-ingest-jira.yaml:/etc/quelch/config.yaml:ro" \
-  ghcr.io/mklab-se/quelch:<version> \
+  <your-registry>/quelch:<version> \
   ingest --config /etc/quelch/config.yaml
 ```
 
@@ -67,7 +88,7 @@ Or with `docker-compose.yaml`:
 version: "3.8"
 services:
   q-ingest-jira:
-    image: ghcr.io/mklab-se/quelch:<version>
+    image: <your-registry>/quelch:<version>
     command: ingest --config /etc/quelch/config.yaml
     restart: unless-stopped
     environment:
@@ -79,7 +100,7 @@ services:
       - ./q-ingest-jira.yaml:/etc/quelch/config.yaml:ro
 
   q-mcp:
-    image: ghcr.io/mklab-se/quelch:<version>
+    image: <your-registry>/quelch:<version>
     command: mcp --config /etc/quelch/config.yaml
     restart: unless-stopped
     ports:
@@ -98,6 +119,8 @@ services:
 ---
 
 ## Running under systemd
+
+No image needed — install the released `quelch` binary directly. Either download the platform tarball from [GitHub Releases](https://github.com/mklab-se/quelch/releases) and drop the binary into `/usr/local/bin/quelch`, or `cargo install quelch` on the host.
 
 Unit file (`/etc/systemd/system/q-ingest-jira.service`):
 
@@ -146,7 +169,7 @@ Logs: `journalctl -u q-ingest-jira -f`. The same shape works for Q-MCP — chang
 
 ## Running under Kubernetes
 
-`Deployment` + `ConfigMap` + `Secret` is the canonical layout. Per-instance config goes in a ConfigMap; credentials go in a Secret.
+`Deployment` + `ConfigMap` + `Secret` is the canonical layout. Per-instance config goes in a ConfigMap; credentials go in a Secret. Image is whatever you built and pushed in "Building a container image".
 
 ```yaml
 # Per-instance config — emitted by `quelch instance config ...`.
@@ -205,7 +228,7 @@ spec:
     spec:
       containers:
         - name: quelch
-          image: ghcr.io/mklab-se/quelch:<version>
+          image: <your-registry>/quelch:<version>
           args: ["ingest", "--config", "/etc/quelch/config.yaml"]
           envFrom:
             - secretRef: { name: q-ingest-jira-secrets }
@@ -227,13 +250,13 @@ Replicas should be `1` for ingest instances — Q-Ingest's cursor-ownership chec
 
 ## Running as an Azure Container App
 
-Q-MCP is a natural fit for Container Apps — long-running HTTP server, scale-to-zero, public ingress. Q-Ingest works equally well there for Atlassian Cloud sources reachable from Azure.
+Q-MCP is a natural fit for Container Apps — long-running HTTP server, scale-to-zero, public ingress. Q-Ingest works equally well there for Atlassian Cloud sources reachable from Azure. Image is whatever you built and pushed in "Building a container image" (typically pushed to an Azure Container Registry in the same subscription).
 
 ```bash
 RG=rg-quelch-prod
 ACAE=quelch-cae
 APP=q-mcp-prod
-IMAGE=ghcr.io/mklab-se/quelch:<version>
+IMAGE=<your-registry>/quelch:<version>
 
 # Create the Container Apps environment first if you don't already have one:
 # az containerapp env create -n "$ACAE" -g "$RG" -l swedencentral
@@ -254,6 +277,8 @@ az containerapp create \
       QUELCH_CONFIG=secretref:config-yaml \
   --system-assigned                               # managed identity for Cosmos / Search RBAC
 ```
+
+If your image lives in a private Azure Container Registry, also pass `--registry-server <acr>.azurecr.io --registry-identity system` (or `--registry-username/--registry-password` for non-managed-identity flows).
 
 The `QUELCH_CONFIG` pattern (config in an env var rather than a file) is one option — Container Apps secrets max out at 64 KiB which is fine for a per-instance file. Alternatively mount it via a volume:
 

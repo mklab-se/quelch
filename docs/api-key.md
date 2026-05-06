@@ -42,11 +42,13 @@ Quelch never writes the literal value to disk. The runtime resolves `${QUELCH_MC
 
 ### Docker / docker-compose
 
+> The image referenced below is one you build and push yourself from the repo's `Dockerfile`. See [hosting.md "Building a container image"](hosting.md#building-a-container-image).
+
 ```yaml
 # docker-compose.yaml
 services:
   q-mcp:
-    image: ghcr.io/mklab-se/quelch:<version>
+    image: <your-registry>/quelch:<version>
     command: mcp --config /etc/quelch/config.yaml
     environment:
       QUELCH_MCP_API_KEY: ${QUELCH_MCP_API_KEY}    # from your shell or .env
@@ -57,7 +59,7 @@ Or with `docker run`:
 
 ```bash
 docker run -d -e QUELCH_MCP_API_KEY="$(openssl rand -base64 32)" \
-  ghcr.io/mklab-se/quelch:<version> \
+  <your-registry>/quelch:<version> \
   mcp --config /etc/quelch/config.yaml
 ```
 
@@ -96,7 +98,7 @@ spec:
     spec:
       containers:
         - name: quelch
-          image: ghcr.io/mklab-se/quelch:<version>
+          image: <your-registry>/quelch:<version>
           args: ["mcp", "--config", "/etc/quelch/config.yaml"]
           envFrom:
             - secretRef: { name: q-mcp-secrets }
