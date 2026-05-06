@@ -25,7 +25,7 @@ We sync in **closed minute-resolution intervals** with a **safety lag** behind r
 
 ### Variables
 
-Per `(deployment, source, subsource)` triple, stored in the `quelch-meta` Cosmos container:
+Per `(owner_instance, source, subsource)` triple, stored in the `quelch-meta` Cosmos container:
 
 | Field | Meaning |
 |---|---|
@@ -176,9 +176,9 @@ The full schema of a `quelch-meta` document for a sync cursor:
 
 ```json
 {
-  "id": "ingest-onprem-jira-ak::jira-internal::DO",
-  "deployment_name": "ingest-onprem-jira-ak",
-  "source_name": "jira-internal",
+  "id": "ingest-jira-internal::jira-internal-pat-x::DO",
+  "owner_instance": "ingest-jira-internal",
+  "source_name": "jira-internal-pat-x",
   "subsource": "DO",
 
   "last_complete_minute": "2026-04-30T14:23:00Z",
@@ -193,9 +193,11 @@ The full schema of a `quelch-meta` document for a sync cursor:
   "last_reconciliation_at": "2026-04-30T03:00:00Z",
   "last_reconciliation_deleted": 0,
 
-  "_partition_key": "ingest-onprem-jira-ak"
+  "_partition_key": "ingest-jira-internal"
 }
 ```
+
+The `owner_instance` field is what enforces dynamic ownership: any cursor write by a different instance is refused with a hard error and the worker exits. Use `quelch reset --instance NEW --take-ownership ...` for deliberate transfer.
 
 That's enough to recover from any crash, audit any sync, and resume any backfill.
 
@@ -236,21 +238,21 @@ Atlassian rate-limits source APIs aggressively. Jira Cloud especially is unforgi
 - **Cycle is paused, not abandoned, on 429 storms.** A worker that hits a sustained 429 condition logs at `warn` and waits — it does *not* advance the cursor mid-storm and does *not* burn the rest of `poll_interval` retrying. The next cycle starts fresh.
 - **Backfill respects rate limits the same way.** A backfill of a 50K-issue project might genuinely take hours under 429 pressure; `backfill_in_progress` stays true the whole time and the worker survives crashes via `backfill_last_seen`.
 
-If you see your worker stuck in 429 storms, check `quelch azure logs` — every retry is logged at `debug` and every backoff at `info`. Long-term remedies: increase `poll_interval`, narrow `projects:` per worker, or contact Atlassian support to raise quota.
+If you see your worker stuck in 429 storms, check the host's own log stream (Container Apps log streaming, `journalctl`, `kubectl logs`, `docker logs` — Quelch isn't running the workload, so it doesn't tail your logs). Every retry is logged at `debug` and every backoff at `info`. Long-term remedies: increase `cycle_interval`, narrow `projects:` per worker, or contact Atlassian support to raise quota.
 
 ## Configuration knobs
 
-All defaults live under the global `ingest:` section of `quelch.yaml`; overridable per source if needed. See [configuration.md](configuration.md#ingest):
+The cycle cadence is set per ingest instance via `instances[].cycle_interval` in `quelch.yaml`; other knobs are global ingest defaults. See [configuration.md](configuration.md):
 
 | Knob | Default | What it controls |
 |---|---|---|
-| `ingest.poll_interval` | `300s` | Cycle cadence — how often a worker tries to advance its window. |
-| `ingest.safety_lag_minutes` | `2` | How far behind real time the per-cycle window's upper bound stays. |
-| `ingest.batch_size` | `100` | Page size for source API calls. |
-| `ingest.reconcile_every` | `12` | Reconciliation runs every Nth cycle. With default `poll_interval`, that's ~60 minutes. |
-| `ingest.max_cycle_duration` | `30m` | If a cycle takes longer than this, log a warning. (Won't abort — long cycles are valid for big windows.) |
-| `ingest.max_concurrent_per_source` | `1` | In-flight source-API requests per source instance. Atlassian rate-limits per account, so concurrency rarely helps. |
-| `ingest.max_retries` | `5` | Per-request retry cap for transient 5xx without `Retry-After`. |
+| `instances[].cycle_interval` | `5m` | Cycle cadence — how often a worker tries to advance its window. |
+| `safety_lag_minutes` | `2` | How far behind real time the per-cycle window's upper bound stays. |
+| `batch_size` | `100` | Page size for source API calls. |
+| `reconcile_every` | `12` | Reconciliation runs every Nth cycle. |
+| `max_cycle_duration` | `30m` | If a cycle takes longer than this, log a warning. (Won't abort — long cycles are valid for big windows.) |
+| `max_concurrent_per_source` | `1` | In-flight source-API requests per source instance. Atlassian rate-limits per account, so concurrency rarely helps. |
+| `max_retries` | `5` | Per-request retry cap for transient 5xx without `Retry-After`. |
 
 ## Operator FAQ
 
@@ -264,13 +266,13 @@ A: No. `window_end` was fixed at cycle start. Anything that landed in the source
 A: Yes briefly, then no. The first cycle picks up the create (it has `updated` in our window). The next reconciliation finds the id in Cosmos but not in the source, sets `_deleted=true`. The AI Search Indexer removes it from the search index. The Cosmos doc lingers as a soft-deleted record until compaction.
 
 **Q: Can two workers safely cover the same subsource?**
-A: No, by design. Each `(source, subsource)` is owned by exactly one ingest deployment, validated by `quelch validate`. Two workers writing to the same Cosmos container is fine (upserts handle it) but they'd both incur Atlassian rate-limit pressure for the same data — wasteful, not unsafe.
+A: No, by design — and the system enforces it twice. Statically: `quelch validate` fails if any `(source_type, base_url, subsource)` tuple is claimed by ≥2 ingest instances. Dynamically: every cursor doc has an `owner_instance`, and a write attempt by a different instance fails the worker hard. To deliberately transfer a cursor between instances, use `quelch reset --instance NEW --source ... --subsource ... --take-ownership`.
 
 **Q: I changed `safety_lag_minutes` from 2 to 5. What happens?**
 A: The next cycle's `T_target` is computed with the new value. If `last_complete_minute > T_target` (because the cursor was ahead under the old shorter lag), the cycle is a no-op — the cursor doesn't move backward. If `last_complete_minute < T_target` it advances normally with the new lag. Safe to change live.
 
 **Q: I want to force a full re-sync of one subsource.**
-A: `quelch reset --source jira-internal --subsource DO`. This clears `last_complete_minute` and the `backfill_*` fields for that one tuple. The next cycle starts with a fresh backfill against the current `T_target`.
+A: `quelch reset --instance ingest-jira-internal --source jira-internal-pat-x --subsource DO`. This clears `last_complete_minute` and the `backfill_*` fields for that one tuple. The next cycle starts with a fresh backfill against the current `T_target`.
 
 **Q: How do I tell what's actually been synced?**
-A: `quelch status --deployment <name>` reads `quelch-meta` and shows `last_complete_minute`, `documents_synced_total`, and `last_reconciliation_at` for every (source, subsource) the deployment owns. `--tui` makes it live-updating.
+A: `quelch status --instance <name>` reads `quelch-meta` and shows `last_complete_minute`, `documents_synced_total`, and `last_reconciliation_at` for every (source, subsource) the instance owns. `--tui` makes it live-updating.

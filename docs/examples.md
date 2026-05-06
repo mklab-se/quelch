@@ -9,7 +9,7 @@ This document walks through real questions a user would ask an agent, and shows 
 
 These examples drove the design of the MCP tool set; if the new architecture can't answer them well, something's wrong.
 
-The examples assume a Quelch deployment that exposes the data sources `jira_issues`, `jira_sprints`, `jira_fix_versions`, `jira_projects`, `confluence_pages`, and `confluence_spaces`.
+The examples assume a Q-MCP instance that exposes the data sources `jira_issues`, `jira_sprints`, `jira_fix_versions`, `jira_projects`, `confluence_pages`, and `confluence_spaces`.
 
 ---
 

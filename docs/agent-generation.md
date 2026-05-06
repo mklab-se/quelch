@@ -1,6 +1,6 @@
 # Agent and skill generation
 
-`quelch agent generate` produces a copy-pasteable bundle of agent-side material — system prompts, tool descriptions, connection details, schema cheatsheets — tailored to your actual deployment, ready to point at the **Quelch MCP** (Q-MCP) endpoint.
+`quelch agent generate` produces a copy-pasteable bundle of agent-side material — system prompts, tool descriptions, connection details, schema cheatsheets — tailored to your active MCP instance, ready to point at the **Quelch MCP** (Q-MCP) endpoint.
 
 Different agent platforms model "the AI assistant's instructions" differently:
 
@@ -9,7 +9,7 @@ Different agent platforms model "the AI assistant's instructions" differently:
 
 The same generator produces either form. The right form depends on the target.
 
-The point: agents (and skills) work much better when their instructions are grounded in the *real* data sources and the *real* MCP URL of the *real* deployment, not generic boilerplate. Quelch already knows all of that, so it generates it.
+The point: agents (and skills) work much better when their instructions are grounded in the *real* data sources and the *real* MCP URL of the *real* running Q-MCP, not generic boilerplate. Quelch already knows all of that, so it generates it.
 
 ## Why this matters
 
@@ -87,15 +87,15 @@ For `vscode-copilot` / `claude-code` / `copilot-cli`, this is a `.mcp.json` snip
 }
 ```
 
-The actual API key value is **not** written to the bundle; the bundle's README explains how to fetch it from Key Vault and set the env var.
+The actual API key value is **not** written to the bundle; the bundle's README explains how to fetch it from your secret store (the same one your Q-MCP host uses — see [api-key.md](api-key.md)) and set the env var on the agent host.
 
 ### 2. Tool reference
 
-A markdown file describing each tool — `search`, `query`, `get`, `list_sources`, `aggregate` — with a short "when to use" guide. Trimmed to what's relevant to *this* deployment (e.g. only the data sources actually exposed).
+A markdown file describing each tool — `search`, `query`, `get`, `list_sources`, `aggregate` — with a short "when to use" guide. Trimmed to what's relevant to *this* MCP instance (e.g. only the data sources actually exposed).
 
 ### 3. Schema cheatsheet
 
-A compact reference of every data source exposed by the deployment, with field names, types, common enum values, and example calls. Quelch generates this from the live `list_sources` output of the deployed MCP, so it reflects reality, not a static guess.
+A compact reference of every data source exposed by the MCP instance, with field names, types, common enum values, and example calls. Quelch generates this from the live `list_sources` output of the running Q-MCP, so it reflects reality, not a static guess.
 
 Example excerpt:
 
@@ -255,7 +255,7 @@ The generated material describes the system at the **MCP layer only**. It does n
 
 - Cosmos DB or any container names.
 - Azure AI Search or any index names.
-- Bicep, resource group names, subscription ids, or any other Azure resource detail.
+- Resource group names, subscription ids, or any other Azure resource detail.
 
 If your agent's instructions ever reference any of those, that's a sign the abstraction has leaked and the bundle should be regenerated from a corrected Quelch.
 
@@ -267,7 +267,7 @@ The cheatsheet primes the LLM; `list_sources` keeps it honest.
 
 ## Refreshing a bundle
 
-The bundle is generated, not authored. After significant config or deployment changes — new sources, new exposed data sources, sprint name shape changes — regenerate:
+The bundle is generated, not authored. After significant config changes — new sources, new exposed data sources, sprint name shape changes — regenerate:
 
 ```bash
 quelch agent generate --target claude-code --output ./agent-bundle

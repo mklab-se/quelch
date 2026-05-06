@@ -14,7 +14,7 @@ The agent sees:
 - A field schema per data source.
 - Five tools.
 
-That's it. If today's deployment splits Jira issues across two physical containers (e.g. internal vs cloud), the MCP server fans out and merges; the agent still calls `query(data_source: "jira_issues", ...)` and gets unified results.
+That's it. If your setup splits Jira issues across two physical containers (e.g. internal vs cloud), the MCP server fans out and merges; the agent still calls `query(data_source: "jira_issues", ...)` and gets unified results.
 
 > The two-layer naming model — physical storage vs logical data sources — is documented in [architecture.md](architecture.md#two-layers-of-names). It's load-bearing.
 
@@ -24,11 +24,15 @@ Quelch's MCP server speaks the **MCP Streamable HTTP** transport. This is the ne
 
 > The exact transport spec is checked against the latest MCP specification at implementation time; this document describes intent, not protocol bits.
 
-The server URL is the public ingress of the Container App, e.g.
+The server URL is whichever address you bind Q-MCP to on your host. Typical examples:
 
 ```
-https://quelch-prod-mcp.<region>.azurecontainerapps.io
+https://q-mcp.example.com                                        # custom domain via your own ingress
+https://q-mcp.<aca-env>.<region>.azurecontainerapps.io           # Azure Container Apps default
+http://q-mcp.internal:8080                                       # k8s ClusterIP / private network
 ```
+
+See [hosting.md](hosting.md) for the hosting recipes.
 
 ## Authentication
 
@@ -42,80 +46,13 @@ Authorization: Bearer <api-key>
 
 If `QUELCH_MCP_API_KEY` is **not** set, Q-MCP runs in **dev mode** and accepts every request unauthenticated — useful for `quelch dev`, but never what you want in production. Always set the env var when running Q-MCP for real.
 
-Quelch does not generate the API key for you (yet). You set it once at deploy time and rotate it the same way.
+Quelch does not generate or store the API key for you. You generate one (`openssl rand -base64 32`), put it in your host's secret store, and reference it from the per-instance Q-MCP config as `api_key: ${QUELCH_MCP_API_KEY}` (the env-var name is up to you).
 
-#### Generating a key
-
-```bash
-NEW_KEY=$(openssl rand -base64 32)
-```
-
-Use whatever your org standardises on — 32 random base64 bytes is plenty.
-
-#### Setting the key — Azure-hosted Q-MCP
-
-The generated Bicep wires `QUELCH_MCP_API_KEY` to a Container App secret reference (`mcp-api-key`) that points at a Key Vault secret named **`quelch-mcp-api-key`**. You populate that secret directly in Key Vault — Quelch references whatever value is there at deploy / restart time.
-
-```bash
-# First time:
-NEW_KEY=$(openssl rand -base64 32)
-az keyvault secret set \
-  --vault-name <your-kv> \
-  --name quelch-mcp-api-key \
-  --value "$NEW_KEY"
-
-quelch azure deploy        # Container App picks up the secret on revision creation
-```
-
-Make sure your operator identity has the **Key Vault Secrets Officer** role on the vault, or the `secret set` call will be rejected.
-
-#### Setting the key — on-prem Q-MCP
-
-The on-prem deployment artefacts (`quelch generate-deployment --target docker | systemd | k8s`) emit a placeholder for `QUELCH_MCP_API_KEY` you fill in by hand:
-
-```bash
-# docker compose:
-echo "QUELCH_MCP_API_KEY=$(openssl rand -base64 32)" >> .env
-docker compose up -d
-
-# systemd:
-sudo sed -i "s|QUELCH_MCP_API_KEY=.*|QUELCH_MCP_API_KEY=$(openssl rand -base64 32)|" \
-  /etc/quelch/quelch-mcp-onprem.env
-sudo systemctl restart quelch-mcp-onprem
-
-# kubernetes (assuming the generated Secret named quelch-mcp-secrets):
-kubectl create secret generic quelch-mcp-secrets \
-  --from-literal=QUELCH_MCP_API_KEY="$(openssl rand -base64 32)" \
-  --dry-run=client -o yaml | kubectl apply -f -
-kubectl rollout restart deploy/quelch-mcp
-```
-
-#### Reading the key back (e.g. to configure an agent)
-
-```bash
-# Azure:
-az keyvault secret show \
-  --vault-name <your-kv> \
-  --name quelch-mcp-api-key \
-  --query value -o tsv
-
-# On-prem:
-grep QUELCH_MCP_API_KEY /etc/quelch/quelch-mcp-onprem.env  # or wherever you stored it
-```
-
-Or generate an [agent bundle](agent-generation.md) — `quelch agent generate` includes the key in the bundle when running interactively against a deployed instance.
-
-#### Rotating the key
-
-Same as setting, then trigger a restart. On Container Apps the revision auto-rolls when secret values referenced by `keyVaultUrl` change, but it can take a minute; force it with `az containerapp revision restart` if needed. On-prem: restart whichever supervisor (docker / systemd / k8s) owns the process.
-
-A rolling rotation (where the old key still works for a grace period) is on the roadmap but not implemented today — a rotation is an immediate cutover.
+The full procedure — generation, storage in Docker / systemd / k8s / Container Apps, rotation, agent-side configuration — is in [api-key.md](api-key.md).
 
 ### Future — Microsoft Entra ID
 
-When `mcp.auth.mode: "entra"` is set, the Container App uses Container Apps' built-in Easy Auth integration. Agent platforms (Copilot Studio, VS Code MCP) acquire a token for the Quelch app registration and present it as a bearer token. This eliminates the manual key handling above.
-
-Until you have an Entra app registration to use, stay on `api_key`.
+A future release will add `auth.mode: entra` so Q-MCP can validate Entra ID bearer tokens directly. Agent platforms (Copilot Studio, VS Code MCP) acquire a token for the Quelch app registration and present it instead of the manual API key. Until that ships, stay on the API-key flow.
 
 ## The five tools
 
@@ -133,7 +70,7 @@ Each tool has a single, clearly described purpose. Agents pick the right one bas
 
 `search` is the smart-semantic tool. It routes through an Azure AI Search **Knowledge Base** (the Agentic Retrieval feature) which decomposes the question into sub-queries, runs them in parallel, reranks across results, and returns an agent-friendly merged answer. This is invisible to the agent — same MCP tool, same arguments, same result shape — but produces materially better answers for fuzzy questions than a raw index query.
 
-For cost-sensitive deployments, an operator can set `mcp.search.disable_agentic: true` to fall back to direct hybrid search against the underlying index. Result quality drops; the API surface is unchanged.
+For cost-sensitive setups, an operator can set `disable_agentic: true` on the MCP instance to fall back to direct hybrid search against the underlying index. Result quality drops; the API surface is unchanged.
 
 ```yaml
 name: search
@@ -296,7 +233,7 @@ returns:
 ```yaml
 name: list_sources
 description: |
-  Enumerate the data sources exposed by this Quelch deployment, with
+  Enumerate the data sources exposed by this Q-MCP instance, with
   schema hints, common enum values, and example calls. Call this BEFORE
   constructing query/search filters if you don't already know the shape
   of the data.
@@ -509,7 +446,7 @@ For exact totals, agents should call `aggregate` or set `count_only: true` on `q
 
 ## Exposure and visibility
 
-A deployed MCP server only sees the **data sources** its config exposes. Calls referencing anything else return `forbidden`. This is enforced server-side and is independent of agent identity.
+A running Q-MCP only sees the **data sources** its instance config exposes. Calls referencing anything else return `forbidden`. This is enforced server-side and is independent of agent identity.
 
 `list_sources` reflects only exposed data sources, so the agent never even learns about hidden ones. There is no API surface that exposes physical storage names — even an attacker with a valid API key cannot enumerate Cosmos containers or AI Search indexes through MCP.
 
@@ -520,11 +457,11 @@ All tools return errors as MCP errors with structured payloads:
 | Code | Meaning |
 |---|---|
 | `not_found` | The requested document or data source doesn't exist. |
-| `forbidden` | The data source is not exposed by this deployment. |
+| `forbidden` | The data source is not exposed by this MCP instance. |
 | `invalid_argument` | Bad filter, unknown field, malformed cursor. |
 | `unauthenticated` | Missing or invalid auth header. |
 | `unavailable` | Backend returned a retryable error after retries. |
-| `internal` | Unexpected server-side error; check `quelch azure logs`. |
+| `internal` | Unexpected server-side error; check the Q-MCP host's own log stream. |
 
 ## Result shape — the `source_link` contract
 
