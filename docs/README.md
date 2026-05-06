@@ -4,9 +4,9 @@ Quelch is a single Rust binary that turns your enterprise knowledge sources (Jir
 
 It does this by being three things at once:
 
-1. **Quelch Ingest** (Q-Ingest) — pulls data from sources and writes it to **Cosmos DB**. Typically runs close to its data source — that often means **on-prem** when Confluence / Jira Data Center isn't reachable from Azure.
-2. **Quelch MCP** (Q-MCP) — a Streamable-HTTP MCP server that lets agents query the Cosmos data over a small, well-defined tool set, blending classical filtering (Cosmos DB) with semantic search (Azure AI Search). Typically runs in **Azure** (Container Apps).
-3. **The operator CLI** (`quelch ...`) — references existing Azure resources from your config, deploys the Q-MCP and Q-Ingest workers that target Azure, manages the AI Search side via the embedded [rigg](https://github.com/mklab-se/rigg) library, runs the indexers, and generates the agent-side instructions you paste into Copilot Studio / VS Code / GitHub Copilot CLI.
+1. **Quelch Ingest** (Q-Ingest) — pulls data from sources and writes it to **Cosmos DB**. The user hosts it wherever they like; typically close to its data source, which often means on-prem when Confluence / Jira Data Center isn't reachable from Azure.
+2. **Quelch MCP** (Q-MCP) — a Streamable-HTTP MCP server that lets agents query the Cosmos data over a small, well-defined tool set, blending classical filtering (Cosmos DB) with semantic search (Azure AI Search). Same hosting story as Q-Ingest.
+3. **The operator CLI** (`quelch ...`) — configures the user's pre-provisioned Azure resources (Cosmos containers via ARM REST, AI Search indexes / indexers / knowledge bases via the embedded [rigg](https://github.com/mklab-se/rigg) library), emits per-instance configs you ship to your hosts, runs the indexers, and generates the agent-side instructions you paste into Copilot Studio / VS Code / GitHub Copilot CLI.
 
 One binary, one config file, three modes: `quelch ingest`, `quelch mcp`, and the bare `quelch ...` CLI.
 
@@ -39,19 +39,24 @@ Result: agents can answer both "find issues that talk about camera connection pr
 ## Five-minute overview
 
 ```bash
-# 1. Scaffold a config (interactive — uses `az` to discover what you already have)
+# 1. Scaffold a config (interactive — asks for the Azure resources you've already created)
 quelch init
 
-# 2. Plan the Azure changes the config implies
+# 2. Show the diff Quelch would apply to Cosmos + AI Search
 quelch azure plan
 
-# 3. Apply them
-quelch azure deploy
+# 3. Apply it
+quelch azure apply
 
-# 4. Generate agent instructions for your platform of choice
+# 4. Emit a per-instance config and host Q-Ingest / Q-MCP yourself
+quelch instance config ingest-jira --kind ingest --output q-ingest-jira.yaml
+quelch instance config mcp-prod    --kind mcp    --output q-mcp.yaml
+# (See docs/hosting.md for Docker / systemd / k8s / Container Apps recipes.)
+
+# 5. Generate agent instructions for your platform of choice
 quelch agent generate --target copilot-studio --output ./agent-bundle
 
-# 5. Watch live state of every deployed worker
+# 6. Watch live state of every running worker, regardless of where it's hosted
 quelch status --tui
 ```
 
@@ -66,9 +71,9 @@ That spins up the simulator, an in-memory mock for Cosmos and AI Search, and the
 ## Core principles
 
 - **One binary, one config.** `quelch` is the only thing you install. `quelch.yaml` is the only thing you version-control.
-- **Config is the source of truth.** Quelch reconciles Azure to the config; never the other way around.
-- **Bicep and rigg files are generated output.** Quelch synthesises Bicep (Azure resource shells) and rigg files (AI Search / Foundry configuration) from the config on every plan/deploy. You read the diff and approve. Hand-takeover is supported per file via a marker — see [architecture.md](architecture.md#provisioning-split-bicep-vs-rigg).
-- **Workers are stateless.** All cursors live in the shared `quelch-meta` Cosmos container, not on local disk. Redeploys never lose state.
+- **Config is the source of truth.** `quelch azure apply` reconciles Cosmos + AI Search to the config; never the other way around.
+- **Configure, don't deploy.** Quelch only configures Cosmos containers and AI Search internals. The user hosts Q-Ingest and Q-MCP wherever they like; Quelch emits the per-instance YAML and stops there.
+- **Workers are stateless.** All cursors live in the shared `quelch-meta` Cosmos container, not on local disk. Restarts never lose state. Cursors carry an `owner_instance` field so two workers can't accidentally clobber each other.
 - **Agents see one API.** The MCP layer hides the Cosmos/AI-Search split. Agents reason about tools, not databases.
 
 ## Status

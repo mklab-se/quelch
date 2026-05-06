@@ -2,10 +2,12 @@
 
 Quelch ingests data from external sources (Jira, Confluence) into **Cosmos DB** as the system of record, lets **Azure AI Search** index it (via the embedded [rigg](https://github.com/mklab-se/rigg) library — indexes, skillsets, indexers, knowledge sources, knowledge bases), and exposes a **five-tool MCP server** (Streamable HTTP) that agents call directly.
 
+Quelch is a **configuration tool, not a deployment tool**: `quelch azure apply` configures Cosmos containers (via ARM REST) and Azure AI Search (via rigg-as-library, in-memory only — no on-disk `rigg/` directory, no Bicep). The user hosts Q-Ingest and Q-MCP themselves; Quelch emits a per-instance YAML slice (`quelch instance config`) and stops there.
+
 **Two service components, canonical names**:
 
-- **Quelch MCP** (Q-MCP) — the MCP server. Typically runs in Azure (Container Apps), but doesn't have to. Fans out per tool: `search` → AI Search **Knowledge Base** (Agentic Retrieval); `query` / `get` / `aggregate` → Cosmos DB direct; `list_sources` → cached schema catalog.
-- **Quelch Ingest** (Q-Ingest) — the worker. Typically runs **close to each data source** — Atlassian Cloud sources can run alongside Q-MCP in Azure, but Jira / Confluence Data Center usually means an on-prem Q-Ingest pointed at the same Cosmos account.
+- **Quelch MCP** (Q-MCP) — the MCP server. The user runs it wherever they like (Docker, systemd, k8s, Container Apps, bare VM). Fans out per tool: `search` → AI Search **Knowledge Base** (Agentic Retrieval); `query` / `get` / `aggregate` → Cosmos DB direct; `list_sources` → cached schema catalog.
+- **Quelch Ingest** (Q-Ingest) — the worker. Same hosting story as Q-MCP. Typically runs **close to each data source** — Atlassian Cloud sources can run alongside Q-MCP in the cloud, but Jira / Confluence Data Center usually means an on-prem Q-Ingest pointed at the same Cosmos account.
 
 Use these names consistently in code, comments, log messages, and prose. Spell out the full form on first mention in each doc / file, then the short form is fine.
 
@@ -36,20 +38,22 @@ Single-crate workspace: `crates/quelch/`.
 
 ```
 crates/quelch/src/
-├── main.rs            # CLI entry point, clap setup
-├── cli.rs             # CLI arg definitions
-├── config/            # YAML config loading, validation, slicing, data-source resolution
+├── main.rs            # CLI entry point
+├── cli.rs             # clap definitions for the pruned verb set
+├── config/            # YAML loader (instances[], source_connections[]); slicing; static conflict validation
 ├── sources/           # SourceConnector trait + Jira/Confluence connectors
-├── ingest/            # Per-cycle algorithm, backfill resume, deletion reconciliation, worker
-├── cosmos/            # Cosmos DB client (real + in-memory test backend), cursor state
+├── ingest/            # Per-cycle algorithm, backfill resume, deletion reconciliation, owner_instance writes
+├── cosmos/            # Cosmos DB data-plane client (real + in-memory backend), cursor state
 ├── mcp/               # Streamable HTTP server, 5 tools, where-grammar parser, expose filter
 ├── azure/
-│   ├── deploy/        # Bicep generator, az shell-outs (plan/deploy/indexer/logs/destroy)
-│   └── rigg/          # Generates rigg files from quelch.yaml; wraps rigg-core/rigg-client
+│   ├── cosmos_config/ # Control-plane container CRUD via ARM REST (used by `azure apply`)
+│   ├── apply.rs       # Orchestrator for `azure apply` (cosmos_config + rigg-as-library)
+│   ├── plan.rs        # Orchestrator for `azure plan` (same diff logic, no apply)
+│   ├── indexer.rs     # AI Search indexer ops (run / reset / status)
+│   └── rigg/          # In-memory desired-state + diff + push (no on-disk rigg/ directory)
 ├── agent/             # Agent + skill bundle generator (6 targets)
-├── commands/          # Operator CLI handlers (status, query, search, get, reset, etc.)
-├── onprem/            # Generate docker / systemd / k8s artefacts
-├── init/              # Interactive `quelch init` wizard
+├── commands/          # Operator CLI handlers (status, query, search, get, reset, instance, etc.)
+├── init/              # Interactive `quelch init` wizard for the new schema
 ├── dev/               # `quelch dev` (sim + in-memory backends + ingest + MCP, all in one process)
 ├── tui/               # Fleet dashboard polling quelch-meta
 ├── sim/, mock/        # Activity simulator + local Jira/Confluence mock servers (powers dev mode + tests)

@@ -31,12 +31,12 @@ Quelch is a knowledge-platform operator tool for teams using Jira and Confluence
 
 One Rust binary, two service components, one declarative YAML:
 
-- **Quelch MCP** (Q-MCP) — the MCP server agents talk to. Typically runs in Azure (Container Apps), but doesn't have to.
-- **Quelch Ingest** (Q-Ingest) — the worker that pulls from each data source into Cosmos DB. Typically runs **close to the data source** — that's often on-prem when Confluence / Jira Data Center isn't reachable from Azure.
+- **Quelch MCP** (Q-MCP) — the MCP server agents talk to. The user hosts it wherever they like (Docker, systemd, k8s, Container Apps, bare VM); Quelch generates the per-instance config and stops there.
+- **Quelch Ingest** (Q-Ingest) — the worker that pulls from each data source into Cosmos DB. Same hosting story; typically runs **close to the data source** — that's often on-prem when Confluence / Jira Data Center isn't reachable from Azure.
 
-You usually run one Q-MCP and one or more Q-Ingest workers. Plus the `quelch` operator CLI for planning and deploying.
+You usually run one Q-MCP and one or more Q-Ingest workers. Plus the `quelch` operator CLI for configuring Cosmos + AI Search and emitting per-instance configs.
 
-> **New here?** Start with **[docs/getting-started.md](docs/getting-started.md)** — a step-by-step happy-path walkthrough from `brew install` to a deployed MCP server an agent can talk to.
+> **New here?** Start with **[docs/getting-started.md](docs/getting-started.md)** — a step-by-step happy-path walkthrough from `brew install` to a working agent query.
 
 ## Architecture overview
 
@@ -54,7 +54,7 @@ Sources ─── Q-Ingest ────►  │  Cosmos DB  │◄──┤   �
                                    ▼                        ▼
                                  ┌────────────────────────────┐
                                  │           Q-MCP            │
-                                 │ (per-tool routing; 5 tools)│
+                                 │  (you host it anywhere)    │
                                  └─────────────┬──────────────┘
                                                │  MCP Streamable HTTP
                                                ▼
@@ -68,12 +68,12 @@ Q-MCP fans out **per tool**: `query`/`get`/`aggregate` hit Cosmos DB directly (e
 ## Features
 
 - **Cosmos DB as system of record** — exact queries, counts, exhaustive listings, and cursor-based pagination without hitting search
-- **Azure AI Search via rigg** — indexes, skillsets, indexers, knowledge sources, and knowledge bases all managed from `quelch.yaml`
+- **Azure AI Search via rigg-as-library** — indexes, skillsets, indexers, knowledge sources, and knowledge bases all configured from `quelch.yaml`, in-memory only (no on-disk rigg artefacts)
 - **Five-tool MCP API** — `search` (Knowledge Base agentic retrieval), `query` (Cosmos SQL), `get` (point-read), `list_sources`, `aggregate`
-- **Incremental sync** — minute-resolution windows with safety lag, backfill resume, soft-delete reconciliation
+- **Incremental sync** — minute-resolution windows with safety lag, backfill resume, soft-delete reconciliation, dynamic cursor ownership
 - **Agent bundle generator** — `quelch agent generate` produces grounded bundles for Copilot Studio, Claude Code, VS Code Copilot, Copilot CLI, Codex, and Markdown
-- **On-prem-friendly Q-Ingest** — `quelch generate-deployment` writes docker-compose, systemd, or Kubernetes manifests so Q-Ingest can run next to your data sources; Quelch never SSHes anywhere
-- **Operator CLI** — `azure plan`, `azure deploy`, `azure indexer`, `azure logs` with Bicep + `az` shell-outs
+- **Per-instance config emission** — `quelch instance config NAME --kind ingest|mcp` emits a slimmed YAML slice ready to copy onto the host that runs Q-Ingest or Q-MCP
+- **Operator CLI** — `azure plan`, `azure apply`, `azure indexer`; static + dynamic conflict prevention via `validate` and `owner_instance` cursor claims
 - **Rich TUI** — fleet dashboard showing live state per Q-Ingest worker, polling `quelch-meta`
 
 ## Installation
@@ -107,7 +107,7 @@ The TUI fleet dashboard appears; press `q` to exit. No Azure account or source c
 
 ## Getting started
 
-When you're ready to run Quelch against real Jira / Confluence and deploy to Azure, follow [docs/getting-started.md](docs/getting-started.md) — a step-by-step happy-path walkthrough covering prerequisites, `quelch init`, planning, deploying, and connecting an agent.
+When you're ready to run Quelch against real Jira / Confluence with Cosmos and AI Search, follow [docs/getting-started.md](docs/getting-started.md) — an 11-step walkthrough covering prerequisites, `quelch init`, configuring Azure, hosting Q-Ingest / Q-MCP, and connecting an agent.
 
 ## CLI surface
 
