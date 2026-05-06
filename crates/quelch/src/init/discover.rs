@@ -1,10 +1,9 @@
 /// Azure CLI discovery helpers for `quelch init` and `quelch validate`.
 ///
 /// Wraps `az` shell-outs to list Azure resources Quelch references but does
-/// not provision (Cosmos DB, AI Search, Foundry / Azure OpenAI, Container Apps
-/// environment, Application Insights, Key Vault).  All functions list **all**
-/// resources of a kind in the resource group rather than just the first match,
-/// so the wizard can present a Select to the user.
+/// not provision (Cosmos DB, AI Search, Foundry / Azure OpenAI). All functions
+/// list **all** resources of a kind in the resource group rather than just the
+/// first match, so the wizard can present a Select to the user.
 ///
 /// On any `az` failure (not on PATH, not signed in, transient error) callers
 /// receive an empty `Vec` and fall back to manual input. The empty-list signal
@@ -71,26 +70,6 @@ pub struct ModelDeployment {
     pub name: String,
     pub model_name: String,
     pub kind: String,
-}
-
-/// A discovered Container Apps environment.
-#[derive(Debug, Clone)]
-pub struct ContainerAppsEnvironment {
-    pub name: String,
-}
-
-/// A discovered Application Insights component.
-#[derive(Debug, Clone)]
-pub struct AppInsights {
-    pub name: String,
-    pub connection_string: String,
-}
-
-/// A discovered Key Vault.
-#[derive(Debug, Clone)]
-pub struct KeyVault {
-    pub name: String,
-    pub vault_uri: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -378,124 +357,6 @@ pub async fn list_model_deployments(
                 model_name,
                 kind,
             }
-        })
-        .collect())
-}
-
-// ---------------------------------------------------------------------------
-// Container Apps environment
-// ---------------------------------------------------------------------------
-
-/// List all Container Apps environments in a resource group.
-pub async fn list_container_apps_environments(
-    subscription_id: &str,
-    resource_group: &str,
-) -> anyhow::Result<Vec<ContainerAppsEnvironment>> {
-    #[derive(Deserialize)]
-    struct RawEnv {
-        name: String,
-    }
-
-    let list: Vec<RawEnv> = run_az_json(&[
-        "containerapp",
-        "env",
-        "list",
-        "--subscription",
-        subscription_id,
-        "--resource-group",
-        resource_group,
-        "--output",
-        "json",
-    ])
-    .unwrap_or_default();
-
-    Ok(list
-        .into_iter()
-        .map(|e| ContainerAppsEnvironment { name: e.name })
-        .collect())
-}
-
-// ---------------------------------------------------------------------------
-// Application Insights
-// ---------------------------------------------------------------------------
-
-/// List all Application Insights components in a resource group.
-pub async fn list_application_insights(
-    subscription_id: &str,
-    resource_group: &str,
-) -> anyhow::Result<Vec<AppInsights>> {
-    #[derive(Deserialize)]
-    struct RawAi {
-        name: String,
-        #[serde(rename = "connectionString", default)]
-        connection_string: Option<String>,
-    }
-
-    let list: Vec<RawAi> = run_az_json(&[
-        "monitor",
-        "app-insights",
-        "component",
-        "show",
-        "--subscription",
-        subscription_id,
-        "--resource-group",
-        resource_group,
-        "--output",
-        "json",
-    ])
-    .unwrap_or_default();
-
-    // `component show` may return either a single object or an array
-    // depending on whether `--app` was passed. We handle the array case here.
-    Ok(list
-        .into_iter()
-        .map(|a| AppInsights {
-            connection_string: a.connection_string.unwrap_or_default(),
-            name: a.name,
-        })
-        .collect())
-}
-
-// ---------------------------------------------------------------------------
-// Key Vault
-// ---------------------------------------------------------------------------
-
-/// List all Key Vaults in a resource group.
-pub async fn list_key_vaults(
-    subscription_id: &str,
-    resource_group: &str,
-) -> anyhow::Result<Vec<KeyVault>> {
-    #[derive(Deserialize)]
-    struct RawKv {
-        name: String,
-        properties: Option<KvProperties>,
-    }
-    #[derive(Deserialize)]
-    struct KvProperties {
-        #[serde(rename = "vaultUri", default)]
-        vault_uri: Option<String>,
-    }
-
-    let list: Vec<RawKv> = run_az_json(&[
-        "keyvault",
-        "list",
-        "--subscription",
-        subscription_id,
-        "--resource-group",
-        resource_group,
-        "--output",
-        "json",
-    ])
-    .unwrap_or_default();
-
-    Ok(list
-        .into_iter()
-        .map(|k| KeyVault {
-            vault_uri: k
-                .properties
-                .and_then(|p| p.vault_uri)
-                .unwrap_or_else(|| format!("https://{}.vault.azure.net/", k.name)),
-            name: k.name,
         })
         .collect())
 }

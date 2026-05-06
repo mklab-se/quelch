@@ -260,7 +260,7 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    fn key(_deployment: &str, source: &str, subsource: &str) -> CursorKey {
+    fn key(source: &str, subsource: &str) -> CursorKey {
         CursorKey {
             source_name: source.to_string(),
             subsource: subsource.to_string(),
@@ -313,7 +313,7 @@ mod tests {
     #[test]
     fn renders_column_headings() {
         let mut app = App::new();
-        app.handle_poll_result(Ok(vec![(key("prod", "jira", "DO"), Cursor::default())]));
+        app.handle_poll_result(Ok(vec![(key("jira", "DO"), Cursor::default())]));
         let text = rendered_text(&app, 120, 10);
         assert!(text.contains("Owner"), "missing Owner: {text}");
         assert!(text.contains("Source"), "missing Source: {text}");
@@ -327,14 +327,8 @@ mod tests {
     fn renders_two_rows() {
         let mut app = App::new();
         app.handle_poll_result(Ok(vec![
-            (
-                key("ingest-prod", "jira-cloud", "DO"),
-                cursor_with_owner("ingest-prod"),
-            ),
-            (
-                key("ingest-prod", "jira-cloud", "INT"),
-                cursor_with_owner("ingest-prod"),
-            ),
+            (key("jira-cloud", "DO"), cursor_with_owner("ingest-prod")),
+            (key("jira-cloud", "INT"), cursor_with_owner("ingest-prod")),
         ]));
         let text = rendered_text(&app, 120, 12);
         assert!(text.contains("ingest-prod"), "missing owner: {text}");
@@ -349,7 +343,7 @@ mod tests {
             backfill_in_progress: true,
             ..Default::default()
         };
-        app.handle_poll_result(Ok(vec![(key("prod", "jira", "DO"), c)]));
+        app.handle_poll_result(Ok(vec![(key("jira", "DO"), c)]));
         let text = rendered_text(&app, 120, 10);
         assert!(
             text.contains("backfill"),
@@ -364,7 +358,7 @@ mod tests {
             last_error: Some("429 rate limit".into()),
             ..Default::default()
         };
-        app.handle_poll_result(Ok(vec![(key("prod", "jira", "DO"), c)]));
+        app.handle_poll_result(Ok(vec![(key("jira", "DO"), c)]));
         let text = rendered_text(&app, 120, 10);
         assert!(text.contains("error"), "error not shown distinctly: {text}");
     }
@@ -373,8 +367,8 @@ mod tests {
     fn selected_row_has_selection_indicator() {
         let mut app = App::new();
         app.handle_poll_result(Ok(vec![
-            (key("prod", "jira", "DO"), Cursor::default()),
-            (key("prod", "jira", "INT"), Cursor::default()),
+            (key("jira", "DO"), Cursor::default()),
+            (key("jira", "INT"), Cursor::default()),
         ]));
         app.selected_index = 1;
         let text = rendered_text(&app, 120, 12);
@@ -398,7 +392,7 @@ mod tests {
             owner_instance: Some("ingest-prod".into()),
             ..Default::default()
         };
-        app.handle_poll_result(Ok(vec![(key("prod", "my-jira", "DO"), c)]));
+        app.handle_poll_result(Ok(vec![(key("my-jira", "DO"), c)]));
         let text = detail_text(&app, 120, 8);
         assert!(text.contains("ingest-prod"), "owner missing: {text}");
         assert!(text.contains("my-jira"), "source missing: {text}");
@@ -412,7 +406,7 @@ mod tests {
             last_error: Some("rate limited".into()),
             ..Default::default()
         };
-        app.handle_poll_result(Ok(vec![(key("prod", "jira", "DO"), c)]));
+        app.handle_poll_result(Ok(vec![(key("jira", "DO"), c)]));
         let text = detail_text(&app, 120, 8);
         assert!(
             text.contains("rate limited"),
