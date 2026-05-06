@@ -200,8 +200,12 @@ pub enum Commands {
     /// Run the continuous ingest worker for an instance
     Ingest {
         /// Instance name — which slice of the config this worker owns.
+        ///
+        /// Optional: if the config declares exactly one ingest instance it
+        /// is auto-selected. With multiple ingest instances this flag is
+        /// required to disambiguate.
         #[arg(long)]
-        instance: String,
+        instance: Option<String>,
         /// Run one cycle then exit (useful for debugging and CI).
         #[arg(long)]
         once: bool,
@@ -230,10 +234,14 @@ pub enum Commands {
     ///
     /// Example: quelch mcp --instance mcp --port 8080
     Mcp {
-        /// Instance name (required). Tells the server which slice of the
-        /// config it owns and which data sources it exposes.
+        /// Instance name. Tells the server which slice of the config it owns
+        /// and which data sources it exposes.
+        ///
+        /// Optional: if the config declares exactly one MCP instance it is
+        /// auto-selected. With multiple MCP instances this flag is required
+        /// to disambiguate.
         #[arg(long)]
-        instance: String,
+        instance: Option<String>,
         /// Port to listen on.
         #[arg(short, long, default_value = "8080")]
         port: u16,

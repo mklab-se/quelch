@@ -178,9 +178,15 @@ async fn main() -> Result<()> {
             max_docs,
         } => {
             let config = quelch::config::load_config(&cli.config)?;
+            let name = quelch::cli_helpers::resolve_instance(
+                &config,
+                instance.as_deref(),
+                quelch::config::InstanceKind::Ingest,
+            )?
+            .to_string();
             quelch::ingest::worker::run(
                 &config,
-                &instance,
+                &name,
                 quelch::ingest::worker::WorkerOptions { once, max_docs },
             )
             .await
@@ -214,7 +220,13 @@ async fn main() -> Result<()> {
                 // SAFETY: called once at process start before spawning async tasks.
                 unsafe { std::env::set_var("QUELCH_MCP_API_KEY", key) };
             }
-            quelch::mcp::run_server(&config, &instance, &format!("{bind}:{port}")).await
+            let name = quelch::cli_helpers::resolve_instance(
+                &config,
+                instance.as_deref(),
+                quelch::config::InstanceKind::Mcp,
+            )?
+            .to_string();
+            quelch::mcp::run_server(&config, &name, &format!("{bind}:{port}")).await
         }
         Commands::Azure { command } => match command {
             AzureCommands::Plan => cmd_azure_plan(&cli.config).await,

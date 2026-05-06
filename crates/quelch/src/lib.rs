@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod ai;
 pub mod azure;
+pub mod cli_helpers;
 pub mod commands;
 pub mod config;
 pub mod cosmos;
