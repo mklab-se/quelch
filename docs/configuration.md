@@ -1,534 +1,427 @@
 # Configuration reference
 
-Quelch is configured by a single `quelch.yaml` file that you version-control alongside your project. This file is the **source of truth**: Quelch reconciles Azure to it. You edit YAML, you run `quelch azure plan`, you review the diff, you run `quelch azure deploy`.
+Quelch is configured by a single `quelch.yaml` file you check into your repo. It is the **source of truth**: `quelch azure apply` reconciles Cosmos DB and Azure AI Search to it; `quelch instance config` slices it into per-instance configs you ship to your hosts.
 
-This document describes every section of the file. The two service components it configures are **Quelch MCP** (Q-MCP) and **Quelch Ingest** (Q-Ingest); see [architecture.md](architecture.md) for the role split.
+This document describes every section of the file, how the per-instance slimming works, and the rules `quelch validate` enforces.
 
 ## Top-level shape
 
 ```yaml
-azure:        { ... }   # subscription, resource group, region, naming, references to existing resources
-cosmos:       { ... }   # Cosmos account name + database + default container names (account is pre-existing)
-search:       { ... }   # Azure AI Search service name (pre-existing) + indexer cadence
-ai:           { ... }   # AI provider (Foundry or Azure OpenAI) + embedding + chat deployments
-sources:      [ ... ]   # named source instances (Jira, Confluence)
-ingest:       { ... }   # global ingest worker behaviour (poll cadence, safety lag, reconcile)
-deployments:  [ ... ]   # named workers — each is a slice of `sources` with a target host
-mcp:          { ... }   # MCP service config (exposed data sources, auth, search backend)
-rigg:         { ... }   # where Quelch writes generated rigg files
-state:        { ... }   # where ingest cursors live
+azure:               { ... }   # Azure resources Quelch will configure
+source_connections:  [ ... ]   # named source connections (one per (base_url × credential) tuple)
+instances:           [ ... ]   # named runtime instances (Q-Ingest workers + Q-MCP servers)
 ```
 
-A complete minimal example (one cloud Jira + MCP in Azure) lives at the end of this document.
+That's it. There's no `deployments[]`, no `cosmos:` or `search:` at the top level, no `naming:` block, no `rigg.ownership`, no `state:` block.
+
+A complete worked example lives at the end of this document.
+
+---
 
 ## `azure`
 
-```yaml
-azure:
-  subscription_id: "${AZURE_SUBSCRIPTION_ID}"
-  resource_group: "rg-quelch-prod"
-  region: "swedencentral"
-  naming:
-    prefix: "quelch"
-    environment: "prod"
-  resources:
-    container_apps_env:    "quelch-prod-cae"     # name of the existing ACA environment
-    application_insights:  "quelch-prod-appi"    # name of the existing App Insights component
-    key_vault:             "quelch-prod-kv"      # name of the existing Key Vault
-  # skip_role_assignments: true                  # set if you don't have Owner / UAA on the resources
-```
-
-`subscription_id` and `resource_group` identify the scope. `region` is used for the Container App and managed identity Quelch creates.
-
-`naming.prefix` and `naming.environment` are how Quelch derives default names (`quelch-prod-cosmos`, `quelch-prod-search`, `quelch-prod-cae`, `quelch-prod-appi`, `quelch-prod-kv`) when the explicit `resources.*` / `cosmos.account` / `search.service` fields are absent. The Container App + managed identity it creates always follow `{prefix}-{env}-{deployment_name}{-id}`.
-
-`resources.*` lets you point at resources that don't follow the naming convention. **All three plus `cosmos.account` and `search.service` must point at resources that already exist** — Quelch references them via Bicep `existing` and does not provision them.
-
-### Cross-resource-group references
-
-Each external resource Quelch references has an optional `_resource_group` sibling that overrides `azure.resource_group` for **just that resource**. Useful when a shared resource — most commonly the AI provider — lives in a different resource group than the workload's primary RG.
+Three sub-blocks describe pre-existing Azure resources Quelch configures (it does not provision them at the account level).
 
 ```yaml
 azure:
-  resource_group: "rg-quelch-prod"        # default RG; everything below uses this unless overridden
-  resources:
-    container_apps_env: "quelch-prod-cae"
-    # container_apps_env_resource_group: "rg-shared-platform"
-    application_insights: "quelch-prod-appi"
-    # application_insights_resource_group: "rg-shared-platform"
-    key_vault: "quelch-prod-kv"
-    # key_vault_resource_group: "rg-shared-secrets"
+  cosmos:
+    # Control-plane fields — used by `quelch azure apply` to PUT containers.
+    # Stripped from per-instance Q-Ingest / Q-MCP configs.
+    subscription_id: ${AZURE_SUBSCRIPTION_ID}
+    resource_group:  rg-quelch-prod
+    account:         my-cosmos
+    # Data-plane fields — used by every role.
+    endpoint:        https://my-cosmos.documents.azure.com
+    database:        quelch
+    # Container layout — overridable per source-connection.
+    containers:
+      jira_issues:        jira-issues
+      jira_sprints:       jira-sprints
+      jira_fix_versions:  jira-fix-versions
+      jira_projects:      jira-projects
+      confluence_pages:   confluence-pages
+      confluence_spaces:  confluence-spaces
+    meta_container:       quelch-meta
 
-cosmos:
-  account: "quelch-prod-cosmos"
-  # account_resource_group: "rg-data"
-
-search:
-  service: "quelch-prod-search"
-  # service_resource_group: "rg-platform-search"
-
-ai:
-  provider: foundry
-  endpoint: "https://shared-foundry.cognitiveservices.azure.com"
-  resource_group: "rg-shared-ai"          # the typical case — Foundry shared across teams
-```
-
-The override is honoured by:
-
-- **`quelch init` discovery** — `az` queries scope to the override RG when picking from existing resources.
-- **`quelch validate` prerequisite check** — looks for the resource in the override RG.
-- **Bicep generator** — emits `scope: resourceGroup('rg-other')` on the `existing` block so role assignments target the right resource. The `quelch azure deploy` operator must have appropriate role assignment permissions in each override RG (or use `skip_role_assignments: true` and have someone else apply them manually).
-
-Cross-subscription references (resources in a different subscription, not just a different RG) are not yet supported — request it if you need it.
-
-`skip_role_assignments: true` suppresses the `Microsoft.Authorization/roleAssignments` blocks in the generated Bicep. Use this when you don't have Owner / User Access Administrator on the target resources; ask someone who does to grant `Cosmos DB Built-in Data Contributor`, `Search Index Data Contributor`, `Key Vault Secrets User`, and `Cognitive Services User` to the deployment's managed identity manually.
-
-## `cosmos`
-
-```yaml
-cosmos:
-  account: "quelch-prod-cosmos"     # Cosmos DB account name (auto-generated if absent)
-  database: "quelch"
-  containers:
-    jira_issues:        "jira-issues"          # default — overridable per source
-    confluence_pages:   "confluence-pages"
-    jira_sprints:       "jira-sprints"
-    jira_fix_versions:  "jira-fix-versions"
-    jira_projects:      "jira-projects"
-    confluence_spaces:  "confluence-spaces"
-  meta_container:       "quelch-meta"          # cursors and worker state
-  throughput:
-    mode: "serverless"               # or "provisioned"
-    # ru_per_second: 1000            # only when mode=provisioned
-```
-
-Defaults under `containers:` apply to any source that doesn't override its target container. Sources can opt out by setting `container:` on the source itself (see `sources` below).
-
-`meta_container` is the shared `quelch-meta` container that holds cursors and per-worker state. See [architecture.md](architecture.md#state-model).
-
-## `search`
-
-```yaml
-search:
-  service: "quelch-prod-search"
-  sku: "basic"                        # standard / standard2 / standard3 also OK
-  indexer:
-    schedule:
-      interval: "PT15M"               # ISO 8601 duration; Indexer runs at this cadence
-    high_water_mark_field: "updated"  # Cosmos field used by the indexer for incremental sync
-```
-
-`search` only configures the **AI Search service shell** that Bicep provisions — its name and SKU, plus the high-water-mark field convention used by the indexers. Everything *inside* the AI Search service (index schemas, skillsets, the indexer specs themselves, knowledge sources, knowledge bases) is managed by [rigg](https://github.com/mklab-se/rigg) — see the `rigg:` section below and [architecture.md](architecture.md#provisioning-split-bicep-vs-rigg).
-
-`search.indexer.schedule.interval` is the cadence Quelch writes into the *generated* rigg indexer files. You can override per-indexer by hand-editing the rigg file once it's generated.
-
-## `ai`
-
-```yaml
-ai:
-  provider: foundry                                          # foundry | azure_openai
-  endpoint: "https://${FOUNDRY_PROJECT}.cognitiveservices.azure.com"
-  embedding:
-    deployment: "text-embedding-3-large"
-    dimensions: 3072
-  chat:
-    deployment: "gpt-5-mini"
-    model_name: "gpt-5-mini"
-    retrieval_reasoning_effort: low                          # minimal | low (default) | medium
-    output_mode: answerSynthesis                             # answerSynthesis (default) | extractedData
-```
-
-The `ai:` block points Quelch at an **existing** AI model provider — either a Microsoft Foundry project or an Azure OpenAI account — that holds two deployments:
-
-- **`embedding`** — used by the AI Search vectorizer / skillset to compute vectors during indexing. `text-embedding-3-large` (3072 dims) is recommended.
-- **`chat`** — bound to the AI Search Knowledge Base's `models[]` array. AI Search uses it for query planning during agentic retrieval and (when `output_mode: answerSynthesis`) for answer formulation. Supported: `gpt-4o`, `gpt-4o-mini`, `gpt-4.1`, `gpt-4.1-nano`, `gpt-4.1-mini`, `gpt-5`, `gpt-5-nano`, `gpt-5-mini`. **`gpt-5-mini` is recommended** (newer, in Microsoft's portal-validated subset, similar cost/latency to `gpt-4.1-mini`).
-
-The `provider` field controls only what `quelch init` and `quelch validate` query when discovering existing accounts (`az cognitiveservices account list --kind OpenAI` vs `--kind AIServices`). The Bicep and rigg output is the same for both — only the `endpoint` URL differs. Authentication is via the Container App's managed identity + `Cognitive Services User` role on the AI provider; no API keys end up in the generated rigg files.
-
-`retrieval_reasoning_effort` matches the Knowledge Base preview API: `minimal` skips the LLM (vector + keyword + semantic only), `low` is the portal default, `medium` enables follow-up subqueries.
-
-`output_mode` controls whether the Knowledge Base returns an LLM-formulated answer with citations (`answerSynthesis`) or raw ranked results (`extractedData`).
-
-## `rigg`
-
-```yaml
-rigg:
-  dir: "./rigg"                       # default; where Quelch writes generated rigg files
-  ownership: "generated"              # "generated" (default) | "managed-by-user"
-```
-
-Quelch embeds the `rigg-core` and `rigg-client` crates directly — there's no separate `rigg` CLI to install. From `quelch.yaml`, Quelch generates a `rigg/` directory with files for every AI Search index, indexer, skillset, knowledge source, and knowledge base implied by the config. `quelch azure plan` and `quelch azure deploy` then plan and push them via the rigg library.
-
-`ownership: "generated"` means Quelch overwrites the directory on each plan. `ownership: "managed-by-user"` means Quelch will only *generate* missing files; existing files are left alone for hand-tuning. You can also mix: a per-file marker comment (`# rigg:managed-by-user`) on a single file pins just that one to user ownership while the rest stay generated.
-
-## `sources`
-
-A list of source instances. Each one has a unique `name` that is used in deployments and as a prefix on document ids.
-
-### Jira example (Cloud, with overrides)
-
-```yaml
-sources:
-  - type: jira
-    name: jira-cloud
-    url: "https://example.atlassian.net"
-    auth:
-      email: "${JIRA_CLOUD_EMAIL}"
-      api_token: "${JIRA_CLOUD_TOKEN}"
-    projects: ["DO", "PROD", "INT"]
-    container: "jira-issues-cloud"          # override: don't share the default container
-    companion_containers:
-      sprints:       "jira-sprints-cloud"
-      fix_versions:  "jira-fix-versions-cloud"
-      projects:      "jira-projects-cloud"
-    fields:                                 # opt-in custom fields to ingest
-      story_points: "customfield_10016"
-      epic_link:    "customfield_10014"
-```
-
-### Jira example (Data Center, defaults)
-
-```yaml
-  - type: jira
-    name: jira-internal
-    url: "https://jira.internal.example"
-    auth:
-      pat: "${JIRA_INTERNAL_PAT}"
-    projects: ["DO"]
-    # container omitted → goes to default `jira-issues`
-```
-
-### Confluence example
-
-```yaml
-  - type: confluence
-    name: confluence-internal
-    url: "https://confluence.internal.example"
-    auth:
-      pat: "${CONFLUENCE_INTERNAL_PAT}"
-    spaces: ["ENG", "OPS"]
-    container: "confluence-pages-internal"
-    companion_containers:
-      spaces: "confluence-spaces-internal"
-```
-
-### Common source fields
-
-| Field | Meaning |
-|---|---|
-| `type` | `jira` or `confluence`. |
-| `name` | Unique identifier within the config. Used as document id prefix and in `quelch-meta`. |
-| `url` | Base URL of the source instance. |
-| `auth` | Either `{email, api_token}` (Cloud) or `{pat}` (Data Center). |
-| `projects` / `spaces` | Subsource keys to ingest. Each becomes its own cursor. |
-| `container` | Override default Cosmos container for primary entities (issues / pages). |
-| `companion_containers` | Per-companion overrides. Defaults from `cosmos.containers`. |
-| `fields` | Source-specific extras (e.g. Jira custom fields). |
-
-## `ingest`
-
-Global defaults for ingest worker behaviour. These knobs directly affect the [sync correctness algorithm](sync.md) — read that document before changing them.
-
-```yaml
-ingest:
-  poll_interval: "300s"           # how often a worker tries to advance its window
-  safety_lag_minutes: 2           # window upper bound = (now floored to minute) - this many minutes
-  batch_size: 100                 # page size for source API calls
-  reconcile_every: 12             # full deletion-reconciliation runs every Nth cycle
-  max_cycle_duration: "30m"       # warn if a cycle takes longer than this; doesn't abort
-  max_concurrent_per_source: 1    # in-flight source-API requests per source instance
-  max_retries: 5                  # per-request retry cap on transient 5xx without Retry-After
-```
-
-| Knob | Default | What it controls |
-|---|---|---|
-| `poll_interval` | `300s` | Cycle cadence — how often a worker tries to advance its window. Shorter = fresher data, more API quota used. |
-| `safety_lag_minutes` | `2` | How far behind real time the per-cycle window's upper bound stays. Absorbs Atlassian indexing lag. Increase if you see edge-of-minute drops; decrease for fresher data. Safe to change live. |
-| `batch_size` | `100` | Page size for source API calls (`maxResults` for Jira, `limit` for Confluence). |
-| `reconcile_every` | `12` | Full reconciliation pass every Nth cycle. With default `poll_interval` of 300s, that's ~60 minutes. Increase for large projects with low delete rates. |
-| `max_cycle_duration` | `30m` | Logged warning threshold — long cycles are valid for big windows, this just flags them. |
-| `max_concurrent_per_source` | `1` | Maximum concurrent in-flight requests to a single source instance. Atlassian rate-limits per account; concurrency rarely helps. |
-| `max_retries` | `5` | Retry cap for transient 5xx responses without `Retry-After`. 429s (and 5xx with `Retry-After`) honour the server's value. |
-
-These are global defaults. Future versions may allow per-source overrides; for now Quelch keeps it global to make the system easier to reason about.
-
-## `deployments`
-
-This is what makes the multi-instance story explicit. Each entry is a named worker with a role and a target.
-
-```yaml
-deployments:
-  # On-prem ingest: Jira projects A through K
-  - name: ingest-onprem-jira-ak
-    role: ingest
-    target: onprem
-    sources:
-      - source: jira-internal
-        projects: ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K"]
-
-  # On-prem ingest: Jira projects L through Z (and all Confluence spaces)
-  - name: ingest-onprem-jira-lz
-    role: ingest
-    target: onprem
-    sources:
-      - source: jira-internal
-        projects: ["L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"]
-      - source: confluence-internal
-
-  # Cloud ingest: cloud Jira + cloud Confluence
-  - name: ingest-azure-cloud
-    role: ingest
-    target: azure
-    azure:
-      container_app:
-        cpu: 0.5
-        memory: "1.0Gi"
-        min_replicas: 1
-        max_replicas: 1
-    sources:
-      - source: jira-cloud
-      - source: confluence-cloud
-
-  # MCP service in Azure
-  - name: mcp-azure
-    role: mcp
-    target: azure
-    azure:
-      container_app:
-        cpu: 1.0
-        memory: "2.0Gi"
-        min_replicas: 0      # scale-to-zero when idle
-        max_replicas: 5
-    expose:                  # logical data-source names — what agents see
-      - jira_issues
-      - jira_sprints
-      - jira_fix_versions
-      - jira_projects
-      - confluence_pages
-      - confluence_spaces
-    auth:
-      mode: "api_key"        # "api_key" (current) or "entra" (planned)
-```
-
-### Common deployment fields
-
-| Field | Meaning |
-|---|---|
-| `name` | Unique identifier. Used by `quelch azure deploy <name>` and as the Container App name in Azure. |
-| `role` | `ingest` or `mcp`. |
-| `target` | `azure` (Quelch can deploy this) or `onprem` (Quelch generates artefacts for you to deploy). |
-| `sources` | (ingest only) Which sources, optionally restricted to subsets of subsources. |
-| `expose` | (mcp only) Which **logical data sources** (not physical containers) are visible to MCP clients. Anything not listed is invisible — defence in depth. The names must appear in `mcp.data_sources` (see below). |
-| `azure.container_app` | (target=azure only) Container App sizing and scaling. |
-| `auth` | (mcp only) Authentication mode. |
-
-### Validation rules
-
-Quelch validates that:
-
-- Every `(source, subsource)` pair appears in **at most one** ingest deployment.
-- Every name in any `expose:` list is defined in `mcp.data_sources` (or auto-derivable from the defaults).
-- Every source referenced in a deployment exists in `sources`.
-
-`quelch validate` runs all of these and prints diagnostics.
-
-## `mcp`
-
-The MCP section has two purposes: define the **logical data sources** the API exposes (mapped onto the physical Cosmos containers), and set global MCP defaults.
-
-This is the layer that hides storage from agents. The `data_sources:` map is what makes "agents call `query(data_source: "jira_issues", ...)`" work even when there are multiple physical Jira containers underneath. See [architecture.md](architecture.md#two-layers-of-names).
-
-```yaml
-mcp:
-  # Logical data sources. Map an API-layer name to one or more physical containers.
-  # When omitted, Quelch derives sensible defaults from `sources` (see below).
-  data_sources:
-    jira_issues:
-      kind: jira_issue
-      backed_by:
-        - container: jira-issues-internal
-        - container: jira-issues-cloud
-    jira_sprints:
-      kind: jira_sprint
-      backed_by:
-        - container: jira-sprints-internal
-        - container: jira-sprints-cloud
-    jira_fix_versions:
-      kind: jira_fix_version
-      backed_by:
-        - container: jira-fix-versions-internal
-        - container: jira-fix-versions-cloud
-    jira_projects:
-      kind: jira_project
-      backed_by:
-        - container: jira-projects-internal
-        - container: jira-projects-cloud
-    confluence_pages:
-      kind: confluence_page
-      backed_by:
-        - container: confluence-pages-internal
-        - container: confluence-pages-cloud
-    confluence_spaces:
-      kind: confluence_space
-      backed_by:
-        - container: confluence-spaces-internal
-        - container: confluence-spaces-cloud
-
-  # The `search` MCP tool routes through an Azure AI Search Knowledge Base
-  # (Agentic Retrieval) by default — better semantic results, built-in
-  # query decomposition and reranking. Opt out per deployment for cost.
   search:
-    disable_agentic: false        # default; set true to use direct hybrid search instead
-    knowledge_base: "quelch-prod-kb"   # default name; rigg generates this
+    # Endpoint only — rigg-as-library uses the AI Search admin REST API
+    # via DefaultAzureCredential. No ARM-level fields.
+    endpoint: https://my-search.search.windows.net
 
-  # Global server defaults — overridden per deployment when relevant.
-  default_top: 25
-  max_top: 100
-  query_timeout: "30s"
-  search_timeout: "20s"
+  ai:
+    # Wired into the AI Search Knowledge Base at apply-time
+    # (vectoriser config + KB chat model). Q-MCP does not call AI directly.
+    provider: foundry                      # foundry | azure_openai
+    endpoint: https://my-foundry.cognitiveservices.azure.com
+    embedding:
+      deployment: text-embedding-3-large
+      dimensions: 3072
+    chat:
+      deployment: gpt-5-mini
+      model_name: gpt-5-mini
 ```
 
-### Per-tool backend choice (not configurable)
+### `azure.cosmos`
 
-The mapping between MCP tools and backends is fixed by the tool's *semantics*, not by config:
+| Field | Meaning |
+|---|---|
+| `subscription_id` | Azure subscription containing the Cosmos account. Used by `azure apply` to construct the ARM REST URL. Typically `${AZURE_SUBSCRIPTION_ID}`. |
+| `resource_group` | Resource group containing the Cosmos account. |
+| `account` | Cosmos DB account name (the user-supplied name; not the FQDN). |
+| `endpoint` | The Cosmos DB account's documents endpoint (`https://<account>.documents.azure.com`). Used by Q-Ingest and Q-MCP at the data plane. |
+| `database` | Database name inside the account. Quelch will PUT the database during `azure apply` if missing. |
+| `containers` | Map of canonical container kinds (`jira_issues`, `jira_sprints`, ...) to physical container names. The names you put here are what Quelch creates and what AI Search indexes. |
+| `meta_container` | Name of the container that holds cursor state (`quelch-meta`). Always required. |
 
-| Tool | Backend | Why |
-|---|---|---|
-| `search` | Azure AI Search **Knowledge Base** (Agentic Retrieval) | Tool exists for fuzzy semantic questions; decomposition + reranking are exactly what helps. |
-| `query`, `get`, `aggregate` | Cosmos DB direct | Exact, exhaustive, structured — agentic retrieval would just add cost. |
-| `list_sources` | Cached metadata | Static. |
+The first three fields are **control-plane only** — `azure apply` uses them to call ARM REST. They're stripped from per-instance configs because Q-Ingest and Q-MCP don't need to PUT containers.
 
-The only knob is `mcp.search.disable_agentic` for cost-sensitive deployments — when set, `search` queries the underlying index directly instead of going through the knowledge base. The agent's view doesn't change; result quality drops.
+### `azure.search`
 
-### Auto-derived `data_sources`
+| Field | Meaning |
+|---|---|
+| `endpoint` | The AI Search service's admin endpoint (`https://<service>.search.windows.net`). Used by `azure apply` (via the embedded rigg library) to manage indexes / indexers / KBs, and by Q-MCP at runtime to issue `search` calls. |
 
-If you omit `mcp.data_sources` entirely, Quelch derives one entry per `kind` from your `sources` and their `cosmos` defaults — i.e. the simple-installation case "just works":
+No `subscription_id`, `resource_group`, `service`, or `sku` — rigg-as-library only needs the endpoint URL, and Quelch never creates the service shell.
 
-| Default data source | Default kind | Default `backed_by` |
-|---|---|---|
-| `jira_issues` | `jira_issue` | every Jira source's primary container |
-| `jira_sprints` | `jira_sprint` | every Jira source's `companion_containers.sprints` (or default) |
-| `jira_fix_versions` | `jira_fix_version` | every Jira source's `companion_containers.fix_versions` |
-| `jira_projects` | `jira_project` | every Jira source's `companion_containers.projects` |
-| `confluence_pages` | `confluence_page` | every Confluence source's primary container |
-| `confluence_spaces` | `confluence_space` | every Confluence source's `companion_containers.spaces` |
+### `azure.ai`
 
-You only need to write `mcp.data_sources` explicitly when you want a non-default mapping — for example, exposing internal-only data on one MCP deployment and cloud-only on another.
+| Field | Meaning |
+|---|---|
+| `provider` | `foundry` (recommended, newer surface) or `azure_openai`. Affects no apply-time behaviour beyond the endpoint shape Quelch expects. |
+| `endpoint` | The AI provider's REST endpoint. Foundry: `https://<project>.cognitiveservices.azure.com`. Azure OpenAI: `https://<account>.openai.azure.com` (the `endpoint` shape from `az cognitiveservices account show`). |
+| `embedding.deployment` | Name of the deployed embedding model. Used by the AI Search vectoriser. **Recommended:** `text-embedding-3-large`. |
+| `embedding.dimensions` | Embedding output dimensions. Must match the deployment. `3072` for `text-embedding-3-large`. |
+| `chat.deployment` | Name of the deployed chat model. Used by the AI Search Knowledge Base for query planning + answer synthesis. |
+| `chat.model_name` | The underlying model name (e.g. `gpt-5-mini`). Sometimes the same as `deployment`, sometimes not. |
 
-## `state`
+Supported chat models for the Knowledge Base (per AI Search 2025-11-01-preview): `gpt-4o`, `gpt-4o-mini`, `gpt-4.1`, `gpt-4.1-nano`, `gpt-4.1-mini`, `gpt-5`, `gpt-5-nano`, `gpt-5-mini`. **Recommended: `gpt-5-mini`.**
+
+The `azure.ai` block is **stripped from per-instance configs** for both Q-Ingest and Q-MCP — neither role calls the AI provider at runtime; the AI is wired into the AI Search KB at apply-time and stays there.
+
+---
+
+## `source_connections`
+
+A list of named source connections. Each entry is one `(base_url × credential)` tuple. Multiple ingest instances can share a connection; multiple connections can share a base_url with different credentials.
+
+### Jira (PAT — Data Center / Server)
 
 ```yaml
-state:
-  backend: "cosmos"           # "cosmos" (default) or "local-file" (dev only)
-  # local_path: ".quelch-state.json"  # only when backend=local-file
+source_connections:
+  - name: jira-internal-pat-x
+    type: jira
+    base_url: https://jira.internal/
+    auth: { kind: pat, token: ${JIRA_PAT_X} }
+    projects: [DO, ANNA, SARA]
 ```
 
-In production this is always `cosmos`. `quelch dev` automatically uses `local-file` regardless of what's written here.
+### Jira (basic — Atlassian Cloud)
 
-## Environment variable substitution
+```yaml
+  - name: jira-cloud
+    type: jira
+    base_url: https://example.atlassian.net/
+    auth:
+      kind: basic
+      email: ${JIRA_EMAIL}
+      api_token: ${JIRA_API_TOKEN}
+    projects: [PUBLIC, INT]
+```
 
-Any string of the form `${VAR}` is substituted from the process environment at config-load time. Use it for anything secret:
+### Confluence (PAT — Data Center / Server)
+
+```yaml
+  - name: confluence-internal
+    type: confluence
+    base_url: https://confluence.internal/
+    auth: { kind: pat, token: ${CONFLUENCE_PAT} }
+    spaces: [ENG, DOCS]
+```
+
+### Common fields
+
+| Field | Meaning |
+|---|---|
+| `name` | Unique connection name. Referenced from `instances[].connections`. |
+| `type` | `jira` or `confluence`. |
+| `base_url` | Source-system base URL (with trailing slash). |
+| `auth.kind` | `pat` (Personal Access Token; Data Center) or `basic` (Cloud — email + API token). |
+| `auth.token` | PAT value, env-var reference. (`pat` kind only.) |
+| `auth.email`, `auth.api_token` | Cloud credentials, env-var references. (`basic` kind only.) |
+| `projects` | (Jira) List of project keys to ingest. Each becomes a `(source, subsource)` cursor. |
+| `spaces` | (Confluence) List of space keys to ingest. Each becomes a `(source, subsource)` cursor. |
+| `container` | Optional override of the default Cosmos container for this connection's primary entities. Defaults from `azure.cosmos.containers`. |
+| `companion_containers` | Optional per-companion overrides (e.g. `sprints: jira-sprints-cloud`). Defaults from `azure.cosmos.containers`. |
+| `fields` | Optional Jira custom-field map (`story_points: customfield_10016`, etc.). |
+
+`source_connections` is **stripped from Q-MCP per-instance configs** — Q-MCP doesn't pull from sources.
+
+---
+
+## `instances`
+
+A list of named runtime instances. Each entry corresponds to one process the user will run somewhere.
+
+```yaml
+instances:
+  - name: ingest-jira-internal
+    kind: ingest
+    connections: [jira-internal-pat-x]
+    cycle_interval: 5m
+
+  - name: ingest-confluence-internal
+    kind: ingest
+    connections: [confluence-internal]
+    cycle_interval: 10m
+
+  - name: mcp-prod
+    kind: mcp
+    expose: [jira_issues, jira_sprints, confluence_pages]
+    api_key: ${QUELCH_MCP_API_KEY}
+    knowledge_base: quelch-prod-kb
+    listen: 0.0.0.0:8080
+```
+
+### Common fields
+
+| Field | Meaning |
+|---|---|
+| `name` | Unique instance name. Used as `owner_instance` on cursors and as the argument to `quelch instance config NAME`. |
+| `kind` | `ingest` or `mcp`. Determines which fields below apply. |
+
+### Ingest-only fields
+
+| Field | Meaning |
+|---|---|
+| `connections` | List of `source_connections[].name` this instance will pull from. |
+| `cycle_interval` | How often the worker tries to advance its window. Duration string (`5m`, `30s`). Default: `5m`. |
+
+### MCP-only fields
+
+| Field | Meaning |
+|---|---|
+| `expose` | List of canonical data-source names (`jira_issues`, `confluence_pages`, ...) the agent can see. Anything not listed is invisible — defence in depth. |
+| `api_key` | Bearer token Q-MCP will accept. **Always an env-var reference**, never a literal value. Typically `${QUELCH_MCP_API_KEY}`. See [api-key.md](api-key.md). |
+| `knowledge_base` | Name of the AI Search Knowledge Base this MCP queries via the `search` tool. Created by `azure apply`. |
+| `listen` | Address Q-MCP binds to. Default: `0.0.0.0:8080`. |
+
+---
+
+## Per-instance config schema
+
+`quelch instance config <name> --kind ingest|mcp [--output PATH]` emits a per-instance config — same parser, narrower content.
+
+### Q-Ingest per-instance config
+
+Contains:
+
+- `azure.cosmos` minus the control-plane fields (`subscription_id`, `resource_group`, `account`).
+- `azure.cosmos.containers` reduced to only those this instance writes to.
+- `source_connections` reduced to only those this instance uses.
+- The single `instances[]` entry for this instance.
+
+Does NOT contain:
+
+- `azure.search` (Q-Ingest never reads Search).
+- `azure.ai` (AI is wired into the KB at apply time, not used by Q-Ingest).
+- Other instances or other connections.
 
 ```yaml
 azure:
-  subscription_id: "${AZURE_SUBSCRIPTION_ID}"
+  cosmos:
+    endpoint: https://my-cosmos.documents.azure.com
+    database: quelch
+    containers:
+      jira_issues: jira-issues
+      jira_sprints: jira-sprints
+      jira_fix_versions: jira-fix-versions
+      jira_projects: jira-projects
+    meta_container: quelch-meta
 
-sources:
-  - type: jira
-    auth:
-      pat: "${JIRA_INTERNAL_PAT}"
+source_connections:
+  - name: jira-internal-pat-x
+    type: jira
+    base_url: https://jira.internal/
+    auth: { kind: pat, token: ${JIRA_PAT_X} }
+    projects: [DO, ANNA, SARA]
+
+instances:
+  - name: ingest-jira-internal
+    kind: ingest
+    connections: [jira-internal-pat-x]
+    cycle_interval: 5m
 ```
 
-If a referenced env var is unset, `quelch validate` (and every other command that loads the config) fails fast with a clear error.
+### Q-MCP per-instance config
 
-## Slicing per deployment
+Contains:
 
-When you run `quelch azure deploy mcp-azure`, Quelch loads the full config, then synthesises the **effective config** for that one deployment. The effective config is what gets baked into the Container App as a secret/env var. It contains only:
+- `azure.cosmos` minus the control-plane fields.
+- `azure.cosmos.containers` reduced to only those this instance exposes.
+- `azure.search`.
+- The single `instances[]` entry.
 
-- The Azure connection it needs (Cosmos endpoint, AI Search endpoint, OpenAI endpoint).
-- The sources / containers it actually touches.
-- Its own deployment block.
-- Auth settings.
+Does NOT contain:
 
-It does **not** contain other deployments, other sources' credentials, or the operator-level subscription id.
+- Source connections (Q-MCP doesn't pull from sources).
+- `azure.cosmos.{subscription_id, resource_group, account}`.
+- `azure.ai`.
 
-This means: if your MCP container is compromised, the attacker reads a config that exposes only the indexes the MCP was allowed to read in the first place. Ingest worker credentials, other sources, and the deploy-time subscription id are not in that container's environment.
+```yaml
+azure:
+  cosmos:
+    endpoint: https://my-cosmos.documents.azure.com
+    database: quelch
+    containers:
+      jira_issues: jira-issues
+      jira_sprints: jira-sprints
+      confluence_pages: confluence-pages
+    meta_container: quelch-meta
+  search:
+    endpoint: https://my-search.search.windows.net
 
-You can preview the effective config:
+instances:
+  - name: mcp-prod
+    kind: mcp
+    expose: [jira_issues, jira_sprints, confluence_pages]
+    api_key: ${QUELCH_MCP_API_KEY}
+    knowledge_base: quelch-prod-kb
+    listen: 0.0.0.0:8080
+```
+
+### Slimming rules summary
+
+| Field | Master | Q-Ingest config | Q-MCP config |
+|---|---|---|---|
+| `azure.cosmos.{subscription_id, resource_group, account}` | yes | no | no |
+| `azure.cosmos.{endpoint, database, meta_container}` | yes | yes | yes |
+| `azure.cosmos.containers` (full map) | yes | only used by this instance | only exposed by this instance |
+| `azure.search` | yes | no | yes |
+| `azure.ai` | yes | no | no |
+| `source_connections` | yes | only those this instance uses | no |
+| `instances` | yes (all) | one (this instance only) | one (this instance only) |
+
+---
+
+## Auto-detect rule for `--instance`
+
+`quelch ingest --config FILE` and `quelch mcp --config FILE` accept an optional `--instance NAME`. When omitted:
+
+- If the file declares exactly one instance whose `kind` matches the binary, use it.
+- Otherwise fail with a clear message listing the candidate instance names.
+
+This means a per-instance file produced by `quelch instance config` runs with no flag (it contains exactly one instance). The master file works flag-less too, if it happens to declare only one instance of the matching kind.
+
+---
+
+## Auth model
+
+Credentials are referenced as env-var placeholders only (`${VAR}`). The runtime resolves them at config-load time. Missing env vars produce a precise error from `quelch validate --config <file>`.
+
+The user wires their host's secret store however they want:
+
+- Docker `.env` / `--env-file`.
+- Kubernetes `Secret` + `envFrom`.
+- systemd `EnvironmentFile=`.
+- Azure Container Apps secrets.
+- Azure Key Vault references via the host's native AKV integration (not Quelch's).
+
+For Azure-side authentication (Cosmos data plane, AI Search), every Quelch role uses `DefaultAzureCredential` — the operator's `az login` chain in the CLI; managed identity / workload identity / `AZURE_CLIENT_*` env vars / `AZURE_COSMOS_KEY` in Q-Ingest and Q-MCP. Quelch does not manage Azure-side identities.
+
+For Q-MCP API-key auth (agent ↔ Q-MCP), see [api-key.md](api-key.md).
+
+---
+
+## Validation rules
+
+`quelch validate` runs:
+
+- **Env-var resolution.** Every `${VAR}` reference must resolve at validate time.
+- **Reference integrity.** Every `instances[].connections[]` entry references a `source_connections[].name`. Every `instances[].expose[]` entry is a canonical data-source name backed by a Cosmos container in `azure.cosmos.containers`.
+- **Static conflict prevention.** For ingest instances, build a claim set of `(source_type, base_url, subsource)` tuples per instance. Any tuple claimed by ≥2 instances fails validation with a clear error naming both instances and the conflicting tuples.
+
+`validate` also runs as the first step of `azure plan` and `azure apply`. Exit code is non-zero on any failure; safe for CI.
+
+---
+
+## Cursor ownership
+
+Static conflict prevention catches the obvious case at YAML edit time. Runtime ownership catches the rest:
+
+Every cursor doc in `quelch-meta` carries an `owner_instance` field. Q-Ingest writes its own instance name on first claim. On every subsequent cursor write, if the doc's owner ≠ this instance's name, Q-Ingest refuses with a hard error and exits.
+
+To deliberately transfer a cursor between instances:
 
 ```bash
-quelch effective-config mcp-azure
+quelch reset --instance NEW_OWNER --source NAME --subsource KEY --take-ownership
 ```
 
-## Worked example: small-scale single-host setup
+Without `--take-ownership`, `reset` operates only on cursors already owned by the named instance.
+
+---
+
+## Worked example: minimal master config
 
 ```yaml
 azure:
-  subscription_id: "${AZURE_SUBSCRIPTION_ID}"
-  resource_group: "rg-quelch-dev"
-  region: "swedencentral"
-  naming:
-    prefix: "quelch"
-    environment: "dev"
+  cosmos:
+    subscription_id: ${AZURE_SUBSCRIPTION_ID}
+    resource_group: rg-quelch-prod
+    account: quelch-prod-cosmos
+    endpoint: https://quelch-prod-cosmos.documents.azure.com
+    database: quelch
+    containers:
+      jira_issues:        jira-issues
+      jira_sprints:       jira-sprints
+      jira_fix_versions:  jira-fix-versions
+      jira_projects:      jira-projects
+      confluence_pages:   confluence-pages
+      confluence_spaces:  confluence-spaces
+    meta_container:       quelch-meta
+  search:
+    endpoint: https://quelch-prod-search.search.windows.net
+  ai:
+    provider: foundry
+    endpoint: https://quelch-prod-foundry.cognitiveservices.azure.com
+    embedding:
+      deployment: text-embedding-3-large
+      dimensions: 3072
+    chat:
+      deployment: gpt-5-mini
+      model_name: gpt-5-mini
 
-cosmos:
-  database: "quelch"
-  throughput:
-    mode: "serverless"
-
-search:
-  sku: "basic"
-  indexer:
-    schedule:
-      interval: "PT15M"
-
-ai:
-  provider: foundry
-  endpoint: "https://${FOUNDRY_PROJECT}.cognitiveservices.azure.com"
-  embedding:
-    deployment: "text-embedding-3-large"
-    dimensions: 3072
-  chat:
-    deployment: "gpt-5-mini"
-    model_name: "gpt-5-mini"
-
-sources:
-  - type: jira
-    name: jira-cloud
-    url: "https://example.atlassian.net"
+source_connections:
+  - name: jira-cloud
+    type: jira
+    base_url: https://example.atlassian.net/
     auth:
-      email: "${JIRA_EMAIL}"
-      api_token: "${JIRA_TOKEN}"
-    projects: ["DO"]
-  - type: confluence
-    name: confluence-cloud
-    url: "https://example.atlassian.net/wiki"
-    auth:
-      email: "${JIRA_EMAIL}"
-      api_token: "${JIRA_TOKEN}"
-    spaces: ["ENG"]
+      kind: basic
+      email: ${JIRA_EMAIL}
+      api_token: ${JIRA_API_TOKEN}
+    projects: [DO, INT]
 
-deployments:
-  - name: ingest
-    role: ingest
-    target: azure
-    azure:
-      container_app: { cpu: 0.5, memory: "1.0Gi" }
-    sources:
-      - source: jira-cloud
-      - source: confluence-cloud
-  - name: mcp
-    role: mcp
-    target: azure
-    azure:
-      container_app: { cpu: 1.0, memory: "2.0Gi", min_replicas: 0 }
-    expose:
-      - jira_issues
-      - confluence_pages
-      - jira_sprints
-      - jira_fix_versions
+  - name: confluence-cloud
+    type: confluence
+    base_url: https://example.atlassian.net/wiki/
     auth:
-      mode: "api_key"
+      kind: basic
+      email: ${JIRA_EMAIL}
+      api_token: ${JIRA_API_TOKEN}
+    spaces: [ENG, DOCS]
+
+instances:
+  - name: ingest-cloud
+    kind: ingest
+    connections: [jira-cloud, confluence-cloud]
+    cycle_interval: 5m
+
+  - name: mcp-prod
+    kind: mcp
+    expose: [jira_issues, jira_sprints, jira_fix_versions, jira_projects,
+             confluence_pages, confluence_spaces]
+    api_key: ${QUELCH_MCP_API_KEY}
+    knowledge_base: quelch-prod-kb
+    listen: 0.0.0.0:8080
 ```
 
-That config provisions a Cosmos DB, an AI Search service with one index per exposed data source (four in this example: `jira_issues`, `jira_sprints`, `jira_fix_versions`, `confluence_pages`), an Azure OpenAI account (assumed pre-existing), and two Container Apps — and it's enough to get `quelch agent generate` to produce working agent instructions.
+That config runs Cosmos + AI Search configuration via `quelch azure apply`, then emits two per-instance configs — `q-ingest-cloud.yaml` and `q-mcp-prod.yaml` — that the user copies to their hosts and runs with `quelch ingest --config q-ingest-cloud.yaml` and `quelch mcp --config q-mcp-prod.yaml`.
