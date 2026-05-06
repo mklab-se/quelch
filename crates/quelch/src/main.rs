@@ -211,14 +211,47 @@ async fn main() -> Result<()> {
             quelch::mcp::run_server(&config, &instance, &format!("{bind}:{port}")).await
         }
         Commands::Azure { command } => match command {
-            AzureCommands::Plan { .. } => {
-                anyhow::bail!(
-                    "`quelch azure plan` is being rewritten in the no-deploy pivot — see docs/superpowers/plans/2026-05-06-quelch-no-deploy-pivot.md"
-                )
-            }
+            AzureCommands::Plan => cmd_azure_plan(&cli.config).await,
+            AzureCommands::Apply { yes } => cmd_azure_apply(&cli.config, yes).await,
             AzureCommands::Indexer { command } => cmd_azure_indexer(&cli.config, command).await,
         },
     }
+}
+
+// ---------------------------------------------------------------------------
+// quelch azure plan / apply
+// ---------------------------------------------------------------------------
+
+async fn cmd_azure_plan(config_path: &Path) -> Result<()> {
+    let cfg = quelch::config::load_config(config_path)?;
+    let cosmos_client = quelch::azure::build_cosmos_client(&cfg)?;
+    let rigg_client = quelch::azure::build_rigg_client(&cfg)?;
+    let plan = quelch::azure::plan::compute(&cfg, &cosmos_client, &rigg_client).await?;
+    print!("{}", quelch::azure::plan::render(&plan));
+    Ok(())
+}
+
+async fn cmd_azure_apply(config_path: &Path, yes: bool) -> Result<()> {
+    let cfg = quelch::config::load_config(config_path)?;
+    let cosmos_client = quelch::azure::build_cosmos_client(&cfg)?;
+    let rigg_client = quelch::azure::build_rigg_client(&cfg)?;
+
+    let plan = quelch::azure::plan::compute(&cfg, &cosmos_client, &rigg_client).await?;
+    print!("{}", quelch::azure::plan::render(&plan));
+
+    if !yes {
+        let confirmed = inquire::Confirm::new("Apply these changes?")
+            .with_default(false)
+            .prompt()?;
+        if !confirmed {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
+
+    quelch::azure::apply::apply(&cfg, &cosmos_client, &rigg_client).await?;
+    println!("done.");
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -389,14 +422,33 @@ mod decide_mode_tests {
 
     #[test]
     fn cli_parses_azure_plan() {
-        let cli = Cli::parse_from(["quelch", "azure", "plan", "ingest", "--no-what-if"]);
+        let cli = Cli::parse_from(["quelch", "azure", "plan"]);
         assert!(matches!(
             cli.command,
             Commands::Azure {
-                command: AzureCommands::Plan {
-                    no_what_if: true,
-                    ..
-                }
+                command: AzureCommands::Plan
+            }
+        ));
+    }
+
+    #[test]
+    fn cli_parses_azure_apply() {
+        let cli = Cli::parse_from(["quelch", "azure", "apply"]);
+        assert!(matches!(
+            cli.command,
+            Commands::Azure {
+                command: AzureCommands::Apply { yes: false }
+            }
+        ));
+    }
+
+    #[test]
+    fn cli_parses_azure_apply_yes() {
+        let cli = Cli::parse_from(["quelch", "azure", "apply", "--yes"]);
+        assert!(matches!(
+            cli.command,
+            Commands::Azure {
+                command: AzureCommands::Apply { yes: true }
             }
         ));
     }

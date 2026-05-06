@@ -230,16 +230,16 @@ pub enum Commands {
 /// Top-level `quelch azure` subcommands.
 #[derive(clap::Subcommand)]
 pub enum AzureCommands {
-    /// Plan Azure resource changes (rewritten in the no-deploy pivot).
-    Plan {
-        /// Instance name (omit to plan all).
-        instance: Option<String>,
-        /// Write Bicep to a custom location (placeholder; pivot replaces this).
+    /// Compute the Cosmos + AI Search diff against the configured Azure
+    /// account and print it to stdout. Read-only; never mutates Azure.
+    Plan,
+    /// Compute the diff, prompt for confirmation, then push the desired
+    /// Cosmos containers and AI Search resources to Azure.
+    Apply {
+        /// Skip the interactive `[y/N]` confirmation prompt — useful in
+        /// CI / non-TTY environments.
         #[arg(long)]
-        out: Option<PathBuf>,
-        /// Synthesise only; skip the `az deployment group what-if` call.
-        #[arg(long)]
-        no_what_if: bool,
+        yes: bool,
     },
     /// Operate Azure AI Search Indexers.
     Indexer {

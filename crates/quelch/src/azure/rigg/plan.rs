@@ -349,6 +349,12 @@ fn serialise_desired(state: &RiggDesiredState) -> Result<ResourceMap, PlanError>
 }
 
 /// Fetch all live resources from Azure into the same map shape.
+///
+/// TODO(phase-11): filter server-managed fields from the rigg diff. Live AI
+/// Search responses include `@odata.context`, `@odata.etag`, and other
+/// server-managed metadata that are not in [`RiggDesiredState`]. They surface
+/// as spurious `Update` entries on every `azure plan` run. Phase 11 is the
+/// polish pass that strips these before diffing.
 async fn fetch_live<A: RiggApiAdapter>(api: &A) -> Result<ResourceMap, PlanError> {
     let mut map = ResourceMap::new();
     for kind in MANAGED_KINDS {
