@@ -95,9 +95,8 @@ mod tests {
     use super::*;
     use crate::cosmos::meta::CursorKey;
 
-    fn key(deployment: &str, source: &str, subsource: &str) -> CursorKey {
+    fn key(_deployment: &str, source: &str, subsource: &str) -> CursorKey {
         CursorKey {
-            deployment_name: deployment.to_string(),
             source_name: source.to_string(),
             subsource: subsource.to_string(),
         }

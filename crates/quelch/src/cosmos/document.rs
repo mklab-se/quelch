@@ -6,7 +6,8 @@ use crate::cosmos::CosmosError;
 ///
 /// All documents stored via `CosmosBackend` must carry:
 /// - `id`            — unique within the container+partition
-/// - `_partition_key` — logical partition; always equal to `deployment_name`
+/// - `_partition_key` — logical partition (e.g. `source_name` for cursors,
+///   the project / space key for indexed payloads).
 ///
 /// This module provides utility functions for extracting those fields from a
 /// `serde_json::Value` without fully deserialising the document.

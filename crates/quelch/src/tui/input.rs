@@ -65,7 +65,6 @@ mod tests {
         app.handle_poll_result(Ok(vec![
             (
                 CursorKey {
-                    deployment_name: "p".into(),
                     source_name: "j".into(),
                     subsource: "DO".into(),
                 },
@@ -73,7 +72,6 @@ mod tests {
             ),
             (
                 CursorKey {
-                    deployment_name: "p".into(),
                     source_name: "j".into(),
                     subsource: "INT".into(),
                 },

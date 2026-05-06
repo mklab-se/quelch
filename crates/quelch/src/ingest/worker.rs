@@ -66,7 +66,6 @@ mod tests {
 
     fn test_key(subsource: &str) -> CursorKey {
         CursorKey {
-            deployment_name: "test".into(),
             source_name: "test-source".into(),
             subsource: subsource.into(),
         }

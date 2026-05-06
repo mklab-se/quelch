@@ -246,7 +246,6 @@ mod tests {
 
     fn make_key() -> CursorKey {
         CursorKey {
-            deployment_name: "test".into(),
             source_name: "mock".into(),
             subsource: "DO".into(),
         }

@@ -40,8 +40,8 @@ pub async fn run(config: &Config, options: StatusOptions) -> anyhow::Result<()> 
 
     let filtered: Vec<_> = cursors
         .into_iter()
-        .filter(|(key, _)| match &options.instance {
-            Some(d) => &key.deployment_name == d,
+        .filter(|(_key, cursor)| match &options.instance {
+            Some(name) => cursor.owner_instance.as_deref() == Some(name.as_str()),
             None => true,
         })
         .collect();
@@ -51,7 +51,7 @@ pub async fn run(config: &Config, options: StatusOptions) -> anyhow::Result<()> 
             .iter()
             .map(|(k, c)| {
                 serde_json::json!({
-                    "deployment": k.deployment_name,
+                    "owner_instance": c.owner_instance,
                     "source": k.source_name,
                     "subsource": k.subsource,
                     "last_complete_minute": c.last_complete_minute,
@@ -82,7 +82,7 @@ fn print_status_table(rows: &[(CursorKey, Cursor)]) {
     println!("{sep}");
     println!(
         "{:<22} {:<18} {:<12} {:<12} {:<8} State",
-        "Deployment", "Source", "Subsource", "Last sync", "Docs"
+        "Owner", "Source", "Subsource", "Last sync", "Docs"
     );
     println!("{sep}");
 
@@ -97,10 +97,11 @@ fn print_status_table(rows: &[(CursorKey, Cursor)]) {
                 cursor.documents_synced_total.to_string()
             };
             let state = fmt_state(cursor);
+            let owner = cursor.owner_instance.as_deref().unwrap_or("—");
 
             println!(
                 "{:<22} {:<18} {:<12} {:<12} {:<8} {}",
-                key.deployment_name, key.source_name, key.subsource, last_sync, docs, state
+                owner, key.source_name, key.subsource, last_sync, docs, state
             );
         }
     }
@@ -156,37 +157,39 @@ mod tests {
 
     const META: &str = "quelch-meta";
 
-    fn key(deployment: &str, source: &str, subsource: &str) -> CursorKey {
+    fn key(source: &str, subsource: &str) -> CursorKey {
         CursorKey {
-            deployment_name: deployment.to_string(),
             source_name: source.to_string(),
             subsource: subsource.to_string(),
         }
     }
 
-    /// Populate an `InMemoryCosmos` with cursors from two deployments and
+    /// Populate an `InMemoryCosmos` with cursors owned by two instances and
     /// return the raw list, so tests can call the filter logic.
-    async fn populate_two_deployments() -> Vec<(CursorKey, Cursor)> {
+    async fn populate_two_instances() -> Vec<(CursorKey, Cursor)> {
         let cosmos = InMemoryCosmos::new();
 
-        let k1 = key("prod", "jira-cloud", "DO");
+        let k1 = key("jira-cloud", "DO");
         let c1 = Cursor {
+            owner_instance: Some("ingest-prod".into()),
             documents_synced_total: 1842,
             last_sync_at: Some(Utc::now()),
             ..Default::default()
         };
         save(&cosmos, META, &k1, &c1).await.unwrap();
 
-        let k2 = key("prod", "jira-cloud", "INT");
+        let k2 = key("jira-cloud", "INT");
         let c2 = Cursor {
+            owner_instance: Some("ingest-prod".into()),
             documents_synced_total: 312,
             last_sync_at: Some(Utc::now()),
             ..Default::default()
         };
         save(&cosmos, META, &k2, &c2).await.unwrap();
 
-        let k3 = key("staging", "confluence", "WIKI");
+        let k3 = key("confluence", "WIKI");
         let c3 = Cursor {
+            owner_instance: Some("ingest-staging".into()),
             documents_synced_total: 99,
             last_error: Some("429 too many requests".to_string()),
             ..Default::default()
@@ -197,24 +200,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn status_filter_by_deployment_returns_only_matching() {
-        let all = populate_two_deployments().await;
+    async fn status_filter_by_instance_returns_only_matching() {
+        let all = populate_two_instances().await;
 
         // Simulate the filter logic from `run`.
         let filtered: Vec<_> = all
             .iter()
-            .filter(|(k, _)| k.deployment_name == "prod")
+            .filter(|(_, c)| c.owner_instance.as_deref() == Some("ingest-prod"))
             .collect();
 
-        assert_eq!(filtered.len(), 2, "should see exactly 2 prod cursors");
-        for (key, _) in &filtered {
-            assert_eq!(key.deployment_name, "prod");
+        assert_eq!(
+            filtered.len(),
+            2,
+            "should see exactly 2 ingest-prod cursors"
+        );
+        for (_, cursor) in &filtered {
+            assert_eq!(cursor.owner_instance.as_deref(), Some("ingest-prod"));
         }
     }
 
     #[tokio::test]
     async fn status_filter_none_returns_all() {
-        let all = populate_two_deployments().await;
+        let all = populate_two_instances().await;
 
         // No filter
         assert_eq!(all.len(), 3);
@@ -223,8 +230,9 @@ mod tests {
     #[tokio::test]
     async fn status_json_output_is_valid() {
         let cosmos = InMemoryCosmos::new();
-        let k = key("prod", "jira-cloud", "DO");
+        let k = key("jira-cloud", "DO");
         let c = Cursor {
+            owner_instance: Some("ingest-prod".into()),
             documents_synced_total: 42,
             last_sync_at: Some(Utc::now()),
             ..Default::default()
@@ -238,7 +246,7 @@ mod tests {
             .iter()
             .map(|(k, c)| {
                 serde_json::json!({
-                    "deployment": k.deployment_name,
+                    "owner_instance": c.owner_instance,
                     "source": k.source_name,
                     "subsource": k.subsource,
                     "last_complete_minute": c.last_complete_minute,
@@ -257,7 +265,7 @@ mod tests {
         let parsed: Value = serde_json::from_str(&json_str).unwrap();
         let arr = parsed.as_array().unwrap();
         assert_eq!(arr.len(), 1);
-        assert_eq!(arr[0]["deployment"], "prod");
+        assert_eq!(arr[0]["owner_instance"], "ingest-prod");
         assert_eq!(arr[0]["documents_synced_total"], 42);
     }
 

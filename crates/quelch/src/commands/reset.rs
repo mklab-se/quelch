@@ -46,10 +46,7 @@ pub async fn run(config: &Config, options: ResetOptions) -> anyhow::Result<()> {
 
     println!("Will reset cursors for:");
     for (key, _) in &to_reset {
-        println!(
-            "  • {} :: {} :: {}",
-            key.deployment_name, key.source_name, key.subsource
-        );
+        println!("  • {} :: {}", key.source_name, key.subsource);
     }
 
     if !options.yes {
@@ -90,9 +87,8 @@ mod tests {
 
     const META: &str = "quelch-meta";
 
-    fn key(deployment: &str, source: &str, subsource: &str) -> CursorKey {
+    fn key(_deployment: &str, source: &str, subsource: &str) -> CursorKey {
         CursorKey {
-            deployment_name: deployment.to_string(),
             source_name: source.to_string(),
             subsource: subsource.to_string(),
         }

@@ -1,6 +1,6 @@
 //! Fleet table widget: renders one row per `(CursorKey, Cursor)`.
 //!
-//! Columns: Deployment · Source · Subsource · Last sync · Docs · State
+//! Columns: Owner · Source · Subsource · Last sync · Docs · State
 
 use chrono::Utc;
 use ratatui::{
@@ -47,7 +47,7 @@ impl Widget for FleetTable<'_> {
         }
 
         let widths = [
-            Constraint::Length(22), // deployment
+            Constraint::Length(22), // owner
             Constraint::Length(20), // source
             Constraint::Length(12), // subsource
             Constraint::Length(14), // last sync
@@ -63,7 +63,7 @@ impl Widget for FleetTable<'_> {
 
 fn header_row() -> Row<'static> {
     Row::new(vec![
-        Cell::from("Deployment"),
+        Cell::from("Owner"),
         Cell::from("Source"),
         Cell::from("Subsource"),
         Cell::from("Last sync"),
@@ -93,12 +93,15 @@ fn data_row(key: &CursorKey, cursor: &Cursor, selected: bool) -> Row<'static> {
         cursor.documents_synced_total.to_string()
     };
     let selector = if selected { "▶" } else { " " };
-    let deployment = format!("{selector} {}", key.deployment_name);
+    let owner = format!(
+        "{selector} {}",
+        cursor.owner_instance.as_deref().unwrap_or("—")
+    );
 
     let state_cell = state_text(cursor);
 
     let row = Row::new(vec![
-        Cell::from(deployment),
+        Cell::from(owner),
         Cell::from(key.source_name.clone()),
         Cell::from(key.subsource.clone()),
         Cell::from(last_sync),
@@ -190,8 +193,9 @@ fn fmt_opt_dt(dt: &Option<chrono::DateTime<Utc>>) -> String {
 }
 
 fn detail_left(key: &CursorKey, cursor: &Cursor) -> Vec<Line<'static>> {
+    let owner = cursor.owner_instance.as_deref().unwrap_or("—").to_string();
     vec![
-        kv("Deployment", &key.deployment_name),
+        kv("Owner", &owner),
         kv("Source", &key.source_name),
         kv("Subsource", &key.subsource),
     ]
@@ -256,11 +260,17 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    fn key(deployment: &str, source: &str, subsource: &str) -> CursorKey {
+    fn key(_deployment: &str, source: &str, subsource: &str) -> CursorKey {
         CursorKey {
-            deployment_name: deployment.to_string(),
             source_name: source.to_string(),
             subsource: subsource.to_string(),
+        }
+    }
+
+    fn cursor_with_owner(owner: &str) -> Cursor {
+        Cursor {
+            owner_instance: Some(owner.to_string()),
+            ..Default::default()
         }
     }
 
@@ -305,7 +315,7 @@ mod tests {
         let mut app = App::new();
         app.handle_poll_result(Ok(vec![(key("prod", "jira", "DO"), Cursor::default())]));
         let text = rendered_text(&app, 120, 10);
-        assert!(text.contains("Deployment"), "missing Deployment: {text}");
+        assert!(text.contains("Owner"), "missing Owner: {text}");
         assert!(text.contains("Source"), "missing Source: {text}");
         assert!(text.contains("Subsource"), "missing Subsource: {text}");
         assert!(text.contains("Last sync"), "missing Last sync: {text}");
@@ -317,11 +327,17 @@ mod tests {
     fn renders_two_rows() {
         let mut app = App::new();
         app.handle_poll_result(Ok(vec![
-            (key("ingest-prod", "jira-cloud", "DO"), Cursor::default()),
-            (key("ingest-prod", "jira-cloud", "INT"), Cursor::default()),
+            (
+                key("ingest-prod", "jira-cloud", "DO"),
+                cursor_with_owner("ingest-prod"),
+            ),
+            (
+                key("ingest-prod", "jira-cloud", "INT"),
+                cursor_with_owner("ingest-prod"),
+            ),
         ]));
         let text = rendered_text(&app, 120, 12);
-        assert!(text.contains("ingest-prod"), "missing deployment: {text}");
+        assert!(text.contains("ingest-prod"), "missing owner: {text}");
         assert!(text.contains("DO"), "missing DO: {text}");
         assert!(text.contains("INT"), "missing INT: {text}");
     }
@@ -379,11 +395,12 @@ mod tests {
         let c = Cursor {
             documents_synced_total: 9999,
             last_sync_at: Some(Utc::now()),
+            owner_instance: Some("ingest-prod".into()),
             ..Default::default()
         };
         app.handle_poll_result(Ok(vec![(key("prod", "my-jira", "DO"), c)]));
         let text = detail_text(&app, 120, 8);
-        assert!(text.contains("prod"), "deployment missing: {text}");
+        assert!(text.contains("ingest-prod"), "owner missing: {text}");
         assert!(text.contains("my-jira"), "source missing: {text}");
         assert!(text.contains("9999"), "doc count missing: {text}");
     }

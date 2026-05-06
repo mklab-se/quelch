@@ -118,7 +118,6 @@ mod tests {
         app.handle_poll_result(Ok(vec![
             (
                 CursorKey {
-                    deployment_name: "prod".into(),
                     source_name: "jira-cloud".into(),
                     subsource: "DO".into(),
                 },
@@ -129,7 +128,6 @@ mod tests {
             ),
             (
                 CursorKey {
-                    deployment_name: "prod".into(),
                     source_name: "jira-cloud".into(),
                     subsource: "INT".into(),
                 },

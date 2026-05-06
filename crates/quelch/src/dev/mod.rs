@@ -245,7 +245,6 @@ fn build_dev_connectors(
 
     let sliced = crate::config::slice::slice_for_instance(config, "dev-ingest")?;
     let http = build_rate_limited_client(reqwest::Client::new(), 5);
-    let dep = sliced.instances.first().expect("slice guarantees one inst");
     let mut out: Vec<(CursorKey, AnyConnector)> = Vec::new();
 
     for conn in &sliced.source_connections {
@@ -256,7 +255,6 @@ fn build_dev_connectors(
                 for project in &conn.projects {
                     out.push((
                         CursorKey {
-                            deployment_name: dep.name.clone(),
                             source_name: conn.name.clone(),
                             subsource: project.clone(),
                         },
@@ -273,7 +271,6 @@ fn build_dev_connectors(
                 for space in &conn.spaces {
                     out.push((
                         CursorKey {
-                            deployment_name: dep.name.clone(),
                             source_name: conn.name.clone(),
                             subsource: space.clone(),
                         },

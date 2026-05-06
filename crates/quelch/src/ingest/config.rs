@@ -3,7 +3,11 @@ use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub struct CycleConfig {
-    pub deployment_name: String,
+    /// Name of the Q-Ingest instance that owns this run.
+    ///
+    /// Used to claim cursors and tag the `owner_instance` field on cursor
+    /// rows so that two ingest instances can't write the same cursor.
+    pub instance_name: String,
     pub meta_container: String,
     pub safety_lag_minutes: u32,
     pub batch_size: usize,
@@ -55,7 +59,7 @@ impl CycleConfig {
             .unwrap_or_else(|| Duration::from_secs(300));
 
         Self {
-            deployment_name: instance_name,
+            instance_name,
             meta_container: config.azure.cosmos.meta_container.clone(),
             safety_lag_minutes: 2,
             batch_size: 100,
@@ -76,7 +80,7 @@ impl Default for CycleConfig {
         companion_containers.insert("spaces".into(), "confluence-spaces".into());
 
         Self {
-            deployment_name: "test".into(),
+            instance_name: "test".into(),
             meta_container: "quelch-meta".into(),
             safety_lag_minutes: 2,
             batch_size: 100,
@@ -124,7 +128,7 @@ instances:
 "#;
         let config: crate::config::Config = serde_yaml::from_str(yaml).unwrap();
         let cfg = CycleConfig::from_config(&config, "prod");
-        assert_eq!(cfg.deployment_name, "prod");
+        assert_eq!(cfg.instance_name, "prod");
         assert_eq!(cfg.poll_interval, Duration::from_secs(120));
     }
 }
