@@ -350,11 +350,11 @@ fn serialise_desired(state: &RiggDesiredState) -> Result<ResourceMap, PlanError>
 
 /// Fetch all live resources from Azure into the same map shape.
 ///
-/// TODO(phase-11): filter server-managed fields from the rigg diff. Live AI
-/// Search responses include `@odata.context`, `@odata.etag`, and other
-/// server-managed metadata that are not in [`RiggDesiredState`]. They surface
-/// as spurious `Update` entries on every `azure plan` run. Phase 11 is the
-/// polish pass that strips these before diffing.
+/// Live AI Search responses include `@odata.context`, `@odata.etag`, and
+/// other server-managed metadata that are absent from [`RiggDesiredState`].
+/// We strip those before diffing — without this pass, every `quelch azure
+/// plan` against a real service shows false-positive `Update` entries on
+/// otherwise-quiescent resources.
 async fn fetch_live<A: RiggApiAdapter>(api: &A) -> Result<ResourceMap, PlanError> {
     let mut map = ResourceMap::new();
     for kind in MANAGED_KINDS {
@@ -362,18 +362,56 @@ async fn fetch_live<A: RiggApiAdapter>(api: &A) -> Result<ResourceMap, PlanError
             .list_resources(*kind)
             .await
             .map_err(|e| PlanError::Api(e.to_string()))?;
-        for item in items {
+        for mut item in items {
             let name = item
                 .get("name")
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string();
             if !name.is_empty() {
+                strip_server_managed_fields(&mut item);
                 map.insert((*kind, name), item);
             }
         }
     }
     Ok(map)
+}
+
+/// Recursively remove server-managed fields from a JSON value before diffing.
+///
+/// AI Search responses include several keys that the desired state never
+/// produces — they exist purely as response metadata. Comparing them
+/// produces noise, never signal.
+///
+/// Stripped:
+/// - any key starting with `@odata.` (e.g. `@odata.context`, `@odata.etag`,
+///   `@odata.type`)
+/// - any key starting with `@search.` (e.g. `@search.action`,
+///   `@search.score`)
+/// - common timestamp / etag fields the service stamps onto reads:
+///   `etag`, `lastModified`, `createdAt`, `modifiedAt`.
+fn strip_server_managed_fields(v: &mut JsonValue) {
+    match v {
+        JsonValue::Object(map) => {
+            map.retain(|k, _| !is_server_managed_key(k));
+            for child in map.values_mut() {
+                strip_server_managed_fields(child);
+            }
+        }
+        JsonValue::Array(arr) => {
+            for child in arr {
+                strip_server_managed_fields(child);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn is_server_managed_key(k: &str) -> bool {
+    if k.starts_with("@odata.") || k.starts_with("@search.") {
+        return true;
+    }
+    matches!(k, "etag" | "lastModified" | "createdAt" | "modifiedAt")
 }
 
 /// Recursively diff two JSON values, producing [`FieldChange`] entries for
@@ -636,5 +674,56 @@ pub mod tests {
         assert_eq!(changes[0].path, "x");
         assert_eq!(changes[0].from, serde_json::json!(2));
         assert_eq!(changes[0].to, serde_json::json!(1));
+    }
+
+    #[tokio::test]
+    async fn plan_ignores_server_managed_fields_in_live_state() {
+        // The desired state has only a name + fields. The live state mirrors
+        // it but adds the noisy server-managed metadata that AI Search returns
+        // on every read (@odata.context, @odata.etag, etag). With the filter
+        // in place, this must be a Match, not an Update.
+        let state = desired_with_one_index("jira-issues");
+        let live = serde_json::json!({
+            "@odata.context": "https://srv.search.windows.net/$metadata#indexes/$entity",
+            "@odata.etag": "\"abc123\"",
+            "etag": "abc123",
+            "name": "jira-issues",
+            "fields": [],
+        });
+        let api = MockRiggApi::default().with_live(ResourceKind::Index, vec![live]);
+        let diff = plan(&state, &api).await.unwrap();
+        assert_eq!(diff.changes.len(), 1);
+        assert!(
+            matches!(diff.changes[0], ResourceChange::Match(_)),
+            "expected Match after stripping server-managed fields, got: {:?}",
+            diff.changes[0]
+        );
+        assert!(diff.is_clean());
+    }
+
+    #[test]
+    fn strip_server_managed_fields_removes_odata_and_etag() {
+        let mut v = serde_json::json!({
+            "@odata.context": "ctx",
+            "@odata.etag": "et",
+            "@search.action": "merge",
+            "etag": "abc",
+            "name": "x",
+            "fields": [
+                {"name": "a", "@odata.type": "#Edm.String", "type": "Edm.String"},
+            ],
+        });
+        strip_server_managed_fields(&mut v);
+        let obj = v.as_object().unwrap();
+        assert!(!obj.contains_key("@odata.context"));
+        assert!(!obj.contains_key("@odata.etag"));
+        assert!(!obj.contains_key("@search.action"));
+        assert!(!obj.contains_key("etag"));
+        assert_eq!(obj.get("name").unwrap(), "x");
+        // Nested objects also get scrubbed.
+        let inner = &v["fields"][0];
+        let inner_obj = inner.as_object().unwrap();
+        assert!(!inner_obj.contains_key("@odata.type"));
+        assert_eq!(inner_obj.get("name").unwrap(), "a");
     }
 }
