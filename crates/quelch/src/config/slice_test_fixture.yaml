@@ -1,0 +1,51 @@
+azure:
+  cosmos:
+    subscription_id: "00000000-0000-0000-0000-000000000000"
+    resource_group: rg-quelch
+    account: acct
+    endpoint: https://acct.documents.azure.com
+    database: quelch
+    containers:
+      jira_issues: jira-issues
+      jira_sprints: jira-sprints
+      jira_fix_versions: jira-fix-versions
+      jira_projects: jira-projects
+      confluence_pages: confluence-pages
+      confluence_spaces: confluence-spaces
+    meta_container: quelch-meta
+  search:
+    endpoint: https://srv.search.windows.net
+  ai:
+    provider: foundry
+    endpoint: https://ai.example
+    embedding: { deployment: text-embedding-3-large, dimensions: 3072 }
+    chat: { deployment: gpt-5-mini, model_name: gpt-5-mini }
+
+source_connections:
+  - name: jira-x
+    type: jira
+    base_url: https://jira.internal/
+    auth: { kind: pat, token: "T1" }
+    projects: [DO]
+  - name: jira-y
+    type: jira
+    base_url: https://jira.internal/
+    auth: { kind: pat, token: "T2" }
+    projects: [EMMA]
+  - name: confluence-internal
+    type: confluence
+    base_url: https://confluence.internal/
+    auth: { kind: pat, token: "T3" }
+    spaces: [ENG]
+
+instances:
+  - name: ingest-internal
+    kind: ingest
+    connections: [jira-x, jira-y]
+    cycle_interval: 5m
+  - name: mcp-prod
+    kind: mcp
+    expose: [jira_issues]
+    api_key: "K"
+    knowledge_base: kb
+    listen: 0.0.0.0:8080
