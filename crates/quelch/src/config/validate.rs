@@ -92,3 +92,60 @@ fn validate_no_overlapping_claims(cfg: &Config) -> Result<(), ValidationError> {
         Err(ValidationError::Conflicts(conflicts))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+
+    #[test]
+    fn rejects_overlapping_subsource_claims_across_ingest_instances() {
+        let yaml = r#"
+azure:
+  cosmos:
+    endpoint: https://x
+    database: quelch
+source_connections:
+  - { name: jira-a, type: jira, base_url: https://jira.example/,
+      auth: { kind: pat, token: T },
+      projects: [DO, ANNA] }
+  - { name: jira-b, type: jira, base_url: https://jira.example/,
+      auth: { kind: pat, token: T2 },
+      projects: [ANNA, SARA] }
+instances:
+  - { name: ingest-1, kind: ingest, connections: [jira-a], cycle_interval: 5m }
+  - { name: ingest-2, kind: ingest, connections: [jira-b], cycle_interval: 5m }
+"#;
+        let cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        let errs = validate(&cfg).unwrap_err();
+        let msg = errs.to_string();
+        assert!(msg.contains("ingest-1"), "names ingest-1: {}", msg);
+        assert!(msg.contains("ingest-2"), "names ingest-2: {}", msg);
+        assert!(
+            msg.contains("ANNA"),
+            "names the conflicting subsource ANNA: {}",
+            msg
+        );
+        assert!(msg.contains("https://jira.example/"));
+    }
+
+    #[test]
+    fn accepts_disjoint_ingest_instances() {
+        let yaml = r#"
+azure:
+  cosmos:
+    endpoint: https://x
+    database: quelch
+source_connections:
+  - { name: jira-a, type: jira, base_url: https://jira.example/,
+      auth: { kind: pat, token: T }, projects: [DO] }
+  - { name: jira-b, type: jira, base_url: https://jira.example/,
+      auth: { kind: pat, token: T2 }, projects: [SARA] }
+instances:
+  - { name: a, kind: ingest, connections: [jira-a], cycle_interval: 5m }
+  - { name: b, kind: ingest, connections: [jira-b], cycle_interval: 5m }
+"#;
+        let cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        validate(&cfg).expect("disjoint claims must validate");
+    }
+}
