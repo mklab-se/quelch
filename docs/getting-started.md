@@ -1,91 +1,99 @@
 # Getting started
 
-This walkthrough sets up a working Quelch deployment end-to-end: a Cosmos-DB-backed knowledge platform fed from your Jira and Confluence, with **Quelch MCP** (Q-MCP) exposing the data so an agent (Copilot Studio, Claude Code, VS Code Copilot, GitHub Copilot CLI, OpenAI Codex) can talk to it.
+This walkthrough takes you from `brew install` to a working agent query against your own Jira and Confluence, in eleven concrete steps.
 
-Two service components, one config file:
+The new mental model: **Quelch configures, you host.** Quelch reaches into your Azure subscription to create Cosmos DB containers and configure Azure AI Search (indexes, skillsets, indexers, knowledge sources, knowledge base). It does **not** deploy Q-Ingest or Q-MCP processes — those run wherever you choose to host them (Docker, systemd, Kubernetes, Azure Container Apps, a bare VM). Quelch generates a small per-instance config file for each one; you take it from there.
 
-- **Quelch MCP** (Q-MCP) — the MCP server agents call. Most often runs in **Azure** (Container Apps), since it's a long-running HTTP service and benefits from Azure's identity / networking story. It doesn't have to.
-- **Quelch Ingest** (Q-Ingest) — the worker that pulls from each data source. Most often runs **close to the source** — for Atlassian Cloud that can be Azure too, but for Jira / Confluence Data Center it's typically on-prem next to those servers. Q-Ingest writes into the same Cosmos DB account that Q-MCP reads from.
+Two service components, named throughout:
 
-This walkthrough covers the **happy path**: Q-MCP in Azure + Q-Ingest in Azure with Atlassian Cloud sources. For mixed topologies (Q-MCP in Azure + Q-Ingest on-prem), see [deployment.md "Hybrid topology"](deployment.md#hybrid-topology).
+- **Quelch Ingest** (Q-Ingest) — pulls data from Jira / Confluence into Cosmos DB. One process per ingest *instance* (an instance owns a disjoint slice of the source data).
+- **Quelch MCP** (Q-MCP) — the Streamable-HTTP MCP server agents talk to. Reads Cosmos DB and Azure AI Search; never writes.
 
-If you just want to **evaluate Quelch locally** without touching Azure or your real source systems, skip ahead to [Try it offline first with `quelch dev`](#try-it-offline-first-with-quelch-dev).
+If you only want to **evaluate Quelch locally** without Azure, jump straight to [Try it offline first with `quelch dev`](#try-it-offline-first-with-quelch-dev) at the bottom.
 
 ---
 
-## 0. Prerequisites
-
-Quelch deliberately does **not** provision the Azure infrastructure it depends on — it only configures internals (Cosmos containers, AI Search indexes / skillsets / knowledge sources / knowledge bases) and deploys the Container App that runs the MCP server. The rest you create up front in Azure. That's a deliberate split: it keeps the Quelch-managed surface small, makes role assignments transparent, and avoids fighting the quota and capacity issues that come with provisioning Cognitive Services accounts.
-
-### Tooling
-
-- **Quelch installed**:
-  ```bash
-  brew install mklab-se/tap/quelch     # macOS / Linux
-  # or
-  cargo install quelch
-  ```
-- **Azure CLI installed and logged in**:
-  ```bash
-  az login
-  az account show       # confirm the right subscription is active
-  ```
-  Quelch uses your `az` credentials directly — there is no separate Quelch identity.
-- **At least Contributor on the resource group** you'll work in. **Owner** (or User Access Administrator) is needed if you want Quelch to grant the Container App's managed identity RBAC on Cosmos / AI Search / Key Vault / the AI provider — set `azure.skip_role_assignments: true` and apply the role assignments manually if you don't have that.
-- **A Git repository** to commit `quelch.yaml`, the generated `.quelch/` and `rigg/` directories. Treat the config as code.
-
-### Azure resources you must create before running `quelch init`
-
-What you actually need depends on **where Q-MCP and Q-Ingest will run**. Pick a topology, create the resources for it.
-
-All-in-Azure setups (the happy path this doc walks through): everything in the **same resource group** keeps the wizard simple. (Cross-RG references are supported for shared resources like a Foundry project owned by another team — that's covered in [deployment.md "Hybrid topology"](deployment.md#hybrid-topology).)
-
-#### Always required (regardless of where Q-MCP / Q-Ingest run)
-
-| Resource | Why Quelch needs it | Create with |
-|---|---|---|
-| **Resource group** | Container for the resources below | `az group create -n <rg> -l <region>` |
-| **Cosmos DB account** (NoSQL API) | System of record. Quelch creates the database and containers inside. Both Q-MCP and Q-Ingest read/write it. | `az cosmosdb create -n <name> -g <rg> --kind GlobalDocumentDB --capabilities EnableServerless` |
-| **Azure AI Search service** (Basic+, semantic ranker enabled) | Hosts the indexes and the agentic Knowledge Base that Q-MCP queries via the `search` tool. | `az search service create -n <name> -g <rg> --sku basic` then [enable semantic ranker](https://learn.microsoft.com/azure/search/semantic-how-to-enable-disable). |
-| **AI model provider** — pick one: |||
-| &nbsp;&nbsp;**Microsoft Foundry project** *(recommended)* | Holds the embedding deployment (used by the AI Search vectorizer) and the chat deployment (used by the Knowledge Base for query planning + answer synthesis). | Create in the [Foundry portal](https://ai.azure.com); deploy `text-embedding-3-large` + a supported chat model (e.g. `gpt-5-mini`). |
-| &nbsp;&nbsp;**Azure OpenAI account** | Same role as the Foundry project; older surface. | `az cognitiveservices account create -n <name> -g <rg> --kind OpenAI --sku S0 -l <region>`, then deploy embedding + chat models. |
-
-#### Required only when a deployment has `target: azure`
-
-If **at least one** of Q-MCP or Q-Ingest will run in Azure (the typical setup for Q-MCP):
-
-| Resource | Why Quelch needs it | Create with |
-|---|---|---|
-| **Container Apps environment** | Hosts the Q-MCP / Q-Ingest Container Apps. | `az containerapp env create -n <name> -g <rg> -l <region>` (also creates a Log Analytics Workspace). |
-| **Application Insights** | Telemetry destination for the Container Apps. | `az monitor app-insights component create --app <name> -g <rg> -l <region>` |
-| **Key Vault** | Holds the Q-MCP API key and (if Q-Ingest runs in Azure) the Jira / Confluence credentials. The Container App reads them via managed identity. | `az keyvault create -n <globally-unique-name> -g <rg> -l <region>` |
-
-For **Q-Ingest running on-prem**, none of the three above apply — secrets live wherever your on-prem secret store does (env var / `.env` / k8s `Secret` / HashiCorp Vault / etc.) and `quelch generate-deployment` writes scaffolding for whichever supervisor you're using. See [deployment.md "Hybrid topology"](deployment.md#hybrid-topology).
-
-**Supported chat models** (per the Azure AI Search 2025-11-01-preview): `gpt-4o`, `gpt-4o-mini`, `gpt-4.1`, `gpt-4.1-nano`, `gpt-4.1-mini`, `gpt-5`, `gpt-5-nano`, `gpt-5-mini`. **Recommended: `gpt-5-mini`** — newer than the 4.1 family, in Microsoft's portal-validated subset, similar cost/latency tier. Use `gpt-5` if you need higher answer-synthesis quality and can absorb the cost; use `gpt-5-nano` for lowest latency when query complexity is moderate.
-
-**Recommended embedding model**: `text-embedding-3-large` (3072 dims).
-
-### Source credentials
-
-For whichever sources you'll ingest:
-
-- **Jira Cloud**: an Atlassian email + API token ([generate one here](https://id.atlassian.com/manage-profile/security/api-tokens))
-- **Jira Data Center / Server**: a Personal Access Token from your Jira admin
-- **Confluence Cloud / DC**: same as Jira (often the same token)
-
-### Verify before continuing
+## 1. Install Quelch
 
 ```bash
-az resource list -g <your-rg> -o table
+brew install mklab-se/tap/quelch     # macOS / Linux
+# or
+cargo install quelch
 ```
 
-You should see your Cosmos account, AI Search service, AI provider, ACA environment, App Insights, and Key Vault. `quelch init` and `quelch validate` will check this same list and tell you exactly what's missing.
+Verify:
+
+```bash
+quelch --version
+```
+
+You also need the Azure CLI:
+
+```bash
+az login
+az account show       # confirm the right subscription is active
+```
+
+Quelch uses `DefaultAzureCredential` and reuses your `az login` token chain. There is no separate Quelch identity.
 
 ---
 
-## 1. Initialise the config
+## 2. Create the Azure resources Quelch depends on
+
+Quelch does not provision Azure resources at the account level — it only configures their internals. You create the empty shells once with `az`, Bicep, Terraform, the portal, or whatever you already use; Quelch doesn't care.
+
+What you need:
+
+| Resource | Purpose |
+|---|---|
+| **Resource group** | Container for everything below. |
+| **Cosmos DB account** (NoSQL API) | System of record. Quelch creates the database and containers inside via ARM REST. |
+| **Azure AI Search service** (Basic+ with semantic ranker enabled) | Hosts the indexes, indexers, knowledge sources, and the agentic Knowledge Base. |
+| **Microsoft Foundry project *or* Azure OpenAI account** | Holds the embedding deployment (used by the AI Search vectoriser) and the chat deployment (used by the Knowledge Base for query planning + answer synthesis). |
+
+Copy-pasteable `az` commands:
+
+```bash
+RG=rg-quelch-prod
+LOC=swedencentral
+
+az group create -n "$RG" -l "$LOC"
+
+az cosmosdb create -n my-cosmos -g "$RG" \
+  --kind GlobalDocumentDB --capabilities EnableServerless
+
+az search service create -n my-search -g "$RG" --sku basic
+# Then enable the semantic ranker:
+# https://learn.microsoft.com/azure/search/semantic-how-to-enable-disable
+
+# Pick ONE AI provider. Foundry is recommended (newer surface).
+# Foundry: create the project + deploy text-embedding-3-large + gpt-5-mini
+#          in https://ai.azure.com — there is no `az foundry` yet.
+# Azure OpenAI:
+az cognitiveservices account create -n my-openai -g "$RG" \
+  --kind OpenAI --sku S0 -l "$LOC"
+# Then deploy text-embedding-3-large and gpt-5-mini in the portal.
+```
+
+**Recommended models:** `text-embedding-3-large` (3072 dims) for embeddings; `gpt-5-mini` for chat (in Microsoft's portal-validated subset for AI Search Knowledge Base, similar cost / latency to `gpt-4.1-mini`, newer).
+
+### RBAC the operator running `quelch azure apply` needs
+
+Quelch authenticates to Azure as you. Make sure your principal has, on the resources above:
+
+- **Cosmos DB Operator** on the Cosmos account (to PUT containers via ARM REST).
+- **Search Service Contributor** on the AI Search service (to manage indexes / indexers / knowledge bases via the admin API).
+- **Cognitive Services User** on the AI provider (so the Knowledge Base can be wired with embedding + chat deployments).
+
+You also need read access to the resource group itself. None of these roles allow Quelch to create the resources — they only let it configure their internals.
+
+Source-system credentials (Jira / Confluence PATs / API tokens) are not Azure roles — they live in your shell and end up in env vars Quelch reads at runtime.
+
+---
+
+## 3. Configure Azure resources with the Q-CLI
+
+Pick a directory in your config repo and run:
 
 ```bash
 mkdir -p ~/work/my-quelch && cd ~/work/my-quelch
@@ -94,230 +102,275 @@ quelch init
 
 The wizard:
 
-- Calls `az` to discover your subscriptions and resource groups.
-- Asks which subscription / resource group / region to use.
-- Asks whether your model deployments live in **Microsoft Foundry** or **Azure OpenAI**, lists the existing accounts/projects of that kind in the chosen RG, and lets you pick. If none are found it prints the `az` command you need.
-- Lists the **embedding** and **chat** deployments inside the selected provider so you can pick from supported models, and asks for retrieval reasoning effort + output mode for the Knowledge Base.
-- Asks for source connections one at a time (Jira first, then Confluence). For each it offers to test the credentials by hitting `/rest/api/2/myself`.
-- Asks for the deployment shape — for a first run pick **"single ingest + MCP, both in Azure"**.
-- Runs a final **prerequisite check** against `az` and prints a per-resource ✓/✗/? report. Missing items get a copy-pasteable `az` create command; "?" means `az` couldn't determine status (not signed in, transient, etc.).
+- Asks for the Azure account / resource group / Cosmos / Search / AI provider you created in step 2.
+- Asks for the embedding + chat deployments inside the AI provider.
+- Asks for your source connections (Jira and Confluence, by `(base_url × credential)` tuple).
+- Asks for the named instances you want — one per Q-Ingest worker plus one per Q-MCP server. For a first run, "one ingest instance per source connection plus one MCP" is fine; add more later.
+- Writes `quelch.yaml` (and offers to `git init` + write `.gitignore` if the directory isn't already a repo).
 
-The wizard writes a `quelch.yaml` in the current directory.
+Credentials never end up in `quelch.yaml`. The wizard records env-var references like `${JIRA_PAT_X}`; you set the actual values in your shell before running ingest / MCP.
 
-If you already have credentials in environment variables (recommended for repeatability), the wizard will reference them with `${VAR}` placeholders rather than baking them in.
-
-> **Don't want the wizard?** Use a template:
->
-> ```bash
-> quelch init --non-interactive --from-template minimal
-> ```
->
-> Available templates: `minimal`, `multi-source`, `distributed`. Edit `quelch.yaml` afterwards to fill in subscription / region / credentials.
-
----
-
-## 2. Set environment variables for credentials
-
-Quelch's loader substitutes `${VAR}` references at runtime. Set them in your shell:
-
-```bash
-# Jira Cloud:
-export JIRA_EMAIL="you@example.com"
-export JIRA_API_TOKEN="..."
-
-# Jira Data Center:
-export JIRA_PAT="..."
-
-# Confluence Cloud (often the same token as Jira Cloud):
-export CONFLUENCE_EMAIL="you@example.com"
-export CONFLUENCE_API_TOKEN="..."
-
-# Confluence DC:
-export CONFLUENCE_PAT="..."
-
-# Azure subscription (sometimes used in azure: section):
-export AZURE_SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
-```
-
-Quelch reads these at deploy time and writes them into Azure Key Vault for the Container App workers to consume — your shell env vars never end up directly in the deployed container.
-
----
-
-## 3. Validate the config
+Sanity-check the config:
 
 ```bash
 quelch validate
 ```
 
-Sanity check: are env vars set, are deployments disjoint, do exposed data sources exist? Exit-code 0 means good.
+Validation includes a static **conflict prevention** pass: if any two ingest instances claim overlapping `(source_type, base_url, subsource)` tuples, you get a clear error naming both instances and the conflicting tuples. Fix in YAML before applying.
 
-```bash
-quelch effective-config ingest
-```
-
-Optional but recommended: prints the *sliced* config that the `ingest` deployment will see. Useful for confirming the right credentials and source connections are in scope.
-
----
-
-## 4. Plan the Azure changes
+Show the diff Quelch would apply to Azure:
 
 ```bash
 quelch azure plan
 ```
 
-Quelch generates Bicep into `.quelch/azure/` and `rigg/` files into `rigg/` from your `quelch.yaml`, then runs `az deployment group what-if` and `rigg diff` against your live Azure to show exactly what will change.
+This prints a combined diff in two halves:
 
-The output lists:
+- **Cosmos DB**: containers Quelch will PUT (database + containers, with partition keys).
+- **Azure AI Search**: indexes, skillsets, indexers, data sources, knowledge sources, and a knowledge base per MCP instance — diffed against the live service.
 
-- Bicep changes — the Cosmos database + containers (created inside your existing Cosmos account), one user-assigned managed identity per deployment, role assignments on your existing resources, and the Container App that runs the MCP / ingest worker. **Quelch does not create the Cosmos account, AI Search service, Key Vault, ACA environment, App Insights, or AI provider** — they're referenced via `existing` in the generated Bicep.
-- rigg changes — new indexes, indexers, skillsets, Knowledge Sources, and the Knowledge Base used for Agentic Retrieval (with both the embedding deployment wired into the vectorizer and the chat deployment wired into `models[]`).
-
-Read the diff. Both `.quelch/azure/` and `rigg/` should be committed to your config repo so they're reviewable in PRs alongside `quelch.yaml`.
-
----
-
-## 5. Deploy
+Read it. Then apply:
 
 ```bash
-quelch azure deploy
+quelch azure apply
 ```
 
-Same as `plan` but actually applies the changes. It prompts before doing anything destructive. Use `--yes` in CI.
+`azure apply` is idempotent. Running it again with no YAML changes is a no-op. If you change `quelch.yaml`, it will diff against the live state and apply only the differences.
 
-Steps Quelch runs internally:
-
-1. `az deployment group what-if` (preview) → show the diff again.
-2. Prompt for confirmation.
-3. `az deployment group create` to apply Bicep.
-4. `rigg push` (via the embedded library) to apply the AI Search side.
-5. Save a `last.json` snapshot at `.quelch/azure/<deployment>.last.json` so you can review after the fact.
-
-**Expected duration:** 5–15 minutes for the first deployment (Cosmos accounts and AI Search services take a while to provision). Subsequent deploys are seconds.
+> **No Bicep, no Container Apps, no Key Vault, no role assignments.** `quelch azure apply` only touches Cosmos DB containers and the AI Search service's contents. Hosting Q-Ingest / Q-MCP is up to you (steps 7 and 9).
 
 ---
 
-## 6. Wait for the first ingest cycle
+## 4. Test Q-Ingest locally against one source
 
-Once the deploy completes, the ingest Container App starts on its own. Watch progress:
+Before moving anything to production, smoke-test ingest from your laptop. Set the credential env vars referenced by `quelch.yaml`:
+
+```bash
+# Whichever your config references — typical setup:
+export JIRA_PAT_X="..."
+export CONFLUENCE_PAT="..."
+export AZURE_SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
+```
+
+Pick one ingest instance and run it directly against your real Cosmos:
+
+```bash
+quelch ingest --config quelch.yaml --instance ingest-jira-internal
+```
+
+The worker starts, claims its cursors in `quelch-meta`, and runs the first cycle. Initial backfill takes 1–10 minutes for a typical Jira project; for a 10k-issue project it can take longer. The cursor advances incrementally — interrupting and restarting picks up where it left off.
+
+In another terminal:
 
 ```bash
 quelch status
 ```
 
-Reads the `quelch-meta` Cosmos container and shows last-sync time, doc count, and state per `(source, subsource)` triple.
+Reads `quelch-meta` and shows last-sync time and document count per `(instance, source, subsource)`. Wait until `documents_synced_total` climbs above zero on at least one tuple — that confirms data is landing in Cosmos.
 
-Add `--tui` for the live fleet dashboard:
-
-```bash
-quelch status --tui
-```
-
-The first cycle does a **full backfill** — for a typical Jira project this is 1–10 minutes; for a 10k-issue project it can take longer. Quelch advances the cursor incrementally and persists progress, so a worker restart picks up where it left off.
-
-You can also tail logs from the running Container App:
-
-```bash
-quelch azure logs ingest --follow
-```
-
-(Replace `ingest` with whatever your ingest deployment is named in `quelch.yaml`.)
-
-Once `quelch status` shows non-zero `documents_synced_total` for at least one source, your data is in Cosmos. Within ~15 minutes (the default Indexer cadence), it'll also be in the AI Search index and queryable through the Knowledge Base.
+Stop the local ingest when you're satisfied (`Ctrl-C`).
 
 ---
 
-## 7. Test the MCP server directly
+## 5. Test Q-MCP locally
 
-The MCP server is now running at the URL you'll find in Azure portal under your Container App's *Application Url* (also visible in `az containerapp show --query properties.configuration.ingress.fqdn`).
-
-Quelch does not generate the API key for you — you set it in Key Vault before (or after) the first deploy. Pick a value, store it, point the Container App at it:
+Q-MCP needs an API key for agent authentication. Generate one:
 
 ```bash
-RG=<your-resource-group>
-KV=<your-key-vault-name>          # e.g. quelch-prod-kv
-APP=<your-mcp-container-app-name> # e.g. quelch-prod-mcp
+export QUELCH_MCP_API_KEY="$(openssl rand -base64 32)"
+```
 
-# 1) Generate a key (any high-entropy value works):
-NEW_KEY=$(openssl rand -base64 32)
+(See [api-key.md](api-key.md) for the longer story — generation, storage, rotation, secret-store integration.)
 
-# 2) Store it in Key Vault under the canonical name `quelch-mcp-api-key`:
-az keyvault secret set --vault-name "$KV" --name quelch-mcp-api-key --value "$NEW_KEY"
+Start Q-MCP:
 
-# 3) Restart the Container App revision so it picks up the new secret value:
-az containerapp revision restart -g "$RG" -n "$APP" \
-  --revision $(az containerapp revision list -g "$RG" -n "$APP" \
-                 --query "[?properties.active].name | [0]" -o tsv)
+```bash
+quelch mcp --config quelch.yaml --instance mcp-prod
+```
 
-# 4) Read it back to call Q-MCP from your shell:
-QUELCH_MCP_API_KEY=$(az keyvault secret show --vault-name "$KV" --name quelch-mcp-api-key --query value -o tsv)
-MCP_URL=$(az containerapp show -n "$APP" -g "$RG" --query properties.configuration.ingress.fqdn -o tsv)
+By default it listens on `0.0.0.0:8080`. Confirm connectivity from another terminal:
 
-# 5) List available data sources (round-trip Q-MCP connectivity check):
-curl -X POST "https://$MCP_URL/mcp" \
+```bash
+curl -X POST http://127.0.0.1:8080/mcp \
   -H "Authorization: Bearer $QUELCH_MCP_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 ```
 
-To **rotate** later: re-run steps 1–3. See [mcp-api.md "Setting and rotating the API key"](mcp-api.md#current--api-key) for the on-prem equivalents.
+You should see five tools come back: `search`, `query`, `get`, `list_sources`, `aggregate`. That round-trip is the connectivity check.
 
-If you see a JSON-RPC response listing five tools (`search`, `query`, `get`, `list_sources`, `aggregate`) you're connected.
+Stop the local MCP (`Ctrl-C`).
 
 ---
 
-## 8. Connect an agent
+## 6. Add additional sources
 
-`quelch agent generate` produces a copy-pasteable bundle for the platform you use. Generate one and follow its `README.md`:
+Add more `source_connections` (one per `(base_url × credential)` tuple) and either fold them into existing instances or declare new ones:
 
-```bash
-# For Microsoft 365 Copilot Studio:
-quelch agent generate --target copilot-studio --output ./bundle-copilot-studio
+```yaml
+source_connections:
+  - name: jira-internal-pat-x
+    type: jira
+    base_url: https://jira.internal/
+    auth: { kind: pat, token: ${JIRA_PAT_X} }
+    projects: [DO, ANNA]
 
-# For Claude Code (drops a project-local skill):
-quelch agent generate --target claude-code --output ./bundle-claude
+  - name: confluence-internal       # NEW
+    type: confluence
+    base_url: https://confluence.internal/
+    auth: { kind: pat, token: ${CONFLUENCE_PAT} }
+    spaces: [ENG, DOCS]
 
-# For GitHub Copilot CLI / VS Code Copilot Chat / OpenAI Codex:
-quelch agent generate --target copilot-cli      --output ./bundle-gh
-quelch agent generate --target vscode-copilot   --output ./bundle-vscode
-quelch agent generate --target codex            --output ./bundle-codex
+instances:
+  - name: ingest-jira-internal
+    kind: ingest
+    connections: [jira-internal-pat-x]
+    cycle_interval: 5m
 
-# Generic markdown (paste anywhere):
-quelch agent generate --target markdown --output ./bundle-md
+  - name: ingest-confluence-internal   # NEW
+    kind: ingest
+    connections: [confluence-internal]
+    cycle_interval: 10m
 ```
 
-Each bundle's `README.md` walks through the platform-specific install. Common pattern:
+Then:
 
-1. Copy the included `.mcp.json` (or platform-equivalent) into your IDE / agent config.
-2. Set `QUELCH_API_KEY` in your shell to the value you fetched from Key Vault.
-3. The bundle's main file (`SKILL.md` for Claude Code, `agent-instructions.md` for Copilot Studio, `AGENTS.md` for Codex, `copilot-instructions.md` for VS Code Copilot) goes into the agent's instructions slot.
+```bash
+quelch validate           # static conflict check — fails fast on overlapping ingest claims
+quelch azure plan         # diff: typically just adds new AI Search artefacts for the new container
+quelch azure apply
+```
 
-Now ask your agent something like:
+Test the new ingest the same way as step 4:
 
-> *"How many open Jira issues are assigned to me?"*
+```bash
+quelch ingest --config quelch.yaml --instance ingest-confluence-internal
+```
 
-The agent will call `query(data_source: "jira_issues", where: {...})` against your MCP server and return the answer. See [examples.md](examples.md) for 17 worked walkthroughs.
+Quelch is built for repeated edit / validate / apply / test cycles. There is no "tear down and start over" — every apply is incremental.
 
 ---
 
-## 9. Day-2 operations
+## 7. Move Q-Ingest to production
 
-Once it's deployed, the things you'll most often do:
+The local test in step 4 proved the credentials and config work. Now move the worker off your laptop.
 
-- **Check sync progress**: `quelch status` (or `--tui`).
-- **Reset a stuck cursor**: `quelch reset --source jira-cloud --subsource DO`.
-- **Trigger an indexer run** (if the AI Search index is stale): `quelch azure indexer run jira-issues`.
-- **Tail logs**: `quelch azure logs <deployment>`.
-- **Pull portal-side changes** (if someone edited an index in the Azure portal): `quelch azure pull` brings the live state into local `rigg/` files for review.
-- **Refresh agent bundles** after config changes: re-run `quelch agent generate`, diff, commit.
-- **Roll forward**: `brew upgrade quelch && quelch azure deploy` — Container Apps swap to the new image with a rolling revision.
+Generate a per-instance config file:
+
+```bash
+quelch instance config ingest-jira-internal --kind ingest --output q-ingest-jira.yaml
+```
+
+The output is a **slimmed** config containing only what this one Q-Ingest needs — no control-plane Cosmos fields, no AI Search endpoint, no other instances, no other source connections. Ship it.
+
+On the host where you want to run the worker:
+
+1. Copy `q-ingest-jira.yaml` to the host.
+2. Set the credential env vars in the host's secret store. The variables are exactly the `${VAR}` references in the file; missing ones produce a precise error from `quelch validate --config q-ingest-jira.yaml`.
+3. Run:
+   ```bash
+   quelch ingest --config q-ingest-jira.yaml
+   ```
+
+   `--instance` is auto-detected when the file contains exactly one ingest instance.
+
+For copy-pasteable Docker / systemd / Kubernetes / Azure Container Apps snippets, see [docs/hosting.md](hosting.md). Quelch generates only the per-instance config — the supervisor / scheduler / image runtime is yours.
+
+---
+
+## 8. Verify the deployed Q-Ingest is working
+
+`quelch status` reads `quelch-meta` from Cosmos and shows live sync state for every running ingest, regardless of where it's hosted:
+
+```bash
+quelch status                       # one-shot
+quelch status --tui                 # live fleet dashboard
+```
+
+Per row you see `last_complete_minute`, `documents_synced_total`, `last_error`, and `backfill_in_progress`. A worker that's caught up shows `last_complete_minute` within the last few minutes; one that's still backfilling has `backfill_in_progress: true`.
+
+### Cursor ownership
+
+Every cursor in `quelch-meta` carries an `owner_instance`. The first instance to claim a cursor writes its name; subsequent writes by a *different* instance are refused with a hard error. That catches misconfiguration where two hosts accidentally point at the same Cosmos with overlapping config — the second one fails fast instead of clobbering the first one's cursors.
+
+If you legitimately want to transfer ownership (e.g. you renamed an instance, or you're migrating between hosts), use:
+
+```bash
+quelch reset --instance new-owner --source jira --subsource DO --take-ownership
+```
+
+Without `--take-ownership`, `reset` only operates on cursors already owned by the named instance.
+
+---
+
+## 9. Move Q-MCP to production
+
+Same shape as step 7:
+
+```bash
+quelch instance config mcp-prod --kind mcp --output q-mcp.yaml
+```
+
+The slimmed config contains the Cosmos and AI Search endpoints, the MCP listen address, and an `api_key: ${QUELCH_MCP_API_KEY}` env-var reference. No source connections (Q-MCP doesn't pull from sources).
+
+On the host:
+
+1. Copy `q-mcp.yaml` over.
+2. Generate an API key per [docs/api-key.md](api-key.md) (`openssl rand -base64 32`) and put it in the host's secret store as `QUELCH_MCP_API_KEY`.
+3. Run:
+   ```bash
+   quelch mcp --config q-mcp.yaml
+   ```
+
+For Docker / systemd / Kubernetes / Azure Container Apps snippets, see [docs/hosting.md](hosting.md).
+
+Once Q-MCP is up at a public address, generate an agent bundle and connect:
+
+```bash
+quelch agent generate --target claude-code --output ./bundle-claude
+# Or: --target copilot-studio | copilot-cli | vscode-copilot | codex | markdown
+```
+
+Each bundle's `README.md` walks through the platform-specific installation. The bundle's `.mcp.json` references `${QUELCH_API_KEY}` — set it on the agent host to the same value the Q-MCP server expects.
+
+---
+
+## 10. Monitor and reconfigure the running instances
+
+The day-to-day operator surface:
+
+- **Sync state** — `quelch status` (or `--tui` for the live dashboard).
+- **Operator queries against the data** — `quelch query`, `quelch search`, `quelch get`. These speak the same five-tool MCP API your agents see; useful for spot-checking behaviour without involving an agent.
+- **Reset a stuck cursor** — `quelch reset --instance NAME --source ... --subsource ...`. Forces a fresh backfill on the next cycle. Add `--take-ownership` only if you're moving the cursor between instances.
+- **Nudge an indexer** — `quelch azure indexer run|reset|status [NAME]`. The AI Search index can be stale (its run cadence is on the order of minutes); these commands trigger an immediate run, force a full re-index, or check status.
+
+To change config (add a new project to a connection, expose a new data source on Q-MCP, etc.):
+
+1. Edit `quelch.yaml`.
+2. `quelch validate`.
+3. `quelch azure apply` — picks up the diff.
+4. `quelch instance config NAME --kind ...` — re-emit the affected per-instance configs.
+5. Restart the affected hosts so they pick up the new per-instance configs.
 
 For the full operator command surface, see [cli.md](cli.md).
 
 ---
 
+## 11. Add more sources later
+
+The same loop as step 6, then step 7 if you need a new ingest instance. To see what's currently declared:
+
+```bash
+quelch instance list
+```
+
+Lists every named instance in the master `quelch.yaml` along with its kind and the source connections it owns.
+
+---
+
 ## Try it offline first with `quelch dev`
 
-If you want to evaluate Quelch *before* committing to the Azure provisioning, the `quelch dev` mode runs the simulator, an in-memory Cosmos backend, the ingest worker, and the MCP server — all in one process, no Azure account required.
+If you want to evaluate Quelch *before* committing to any Azure spend, `quelch dev` runs the simulator, an in-memory Cosmos backend, an ingest worker, and the MCP server — all in one process, no Azure account needed.
 
 ```bash
 quelch dev
@@ -326,31 +379,31 @@ quelch dev
 This:
 
 - Spawns mock Jira and Confluence HTTP servers fed by the activity simulator.
-- Runs an ingest worker against those mocks.
+- Runs an ingest worker against those mocks (in-memory Cosmos).
 - Exposes a local MCP server on `127.0.0.1:8080`.
 - Renders the fleet-dashboard TUI.
 
-You can point a local agent at `http://127.0.0.1:8080/mcp` and exercise the same tool calls you'd make against a deployed instance. Press `q` in the TUI to quit.
+You can point a local agent at `http://127.0.0.1:8080/mcp` and exercise the same five tools you'd hit against a real deployment. Press `q` in the TUI to quit.
 
 Useful flags:
 
-- `--no-tui` — disable the dashboard and emit structured logs to stdout instead (global flag).
+- `--no-tui` — disable the dashboard, emit structured logs to stdout.
 - `--mcp-port 9000` — bind the MCP server elsewhere (default `8080`).
 - `--seed 42` — deterministic simulator output for reproducible runs.
-- `--rate-multiplier 5.0` — speed up simulated activity for quicker exercises.
-- `--use-cosmos-emulator` — point at the local Cosmos DB emulator instead of the in-memory backend.
+- `--rate-multiplier 5.0` — speed up simulated activity.
 
-This is the recommended way to **first** experience Quelch before paying for any Azure resources.
+This is the recommended way to **first** experience Quelch.
 
 ---
 
 ## Where to next
 
-- **Multi-source / distributed setups** — see [deployment.md](deployment.md) "Hybrid topology".
-- **On-prem ingest** for sources behind a firewall — see [deployment.md](deployment.md#on-premises-deployment).
-- **Configuration reference** — every section of `quelch.yaml` is documented in [configuration.md](configuration.md).
-- **MCP API reference** for agent authors — [mcp-api.md](mcp-api.md).
-- **Real-question walkthroughs** — [examples.md](examples.md) shows how an agent uses each MCP tool to answer concrete user questions.
-- **Sync correctness deep-dive** if you're debugging anything sync-related — [sync.md](sync.md).
+- **Hosting recipes** — copy-paste snippets for Docker / systemd / Kubernetes / Container Apps: [hosting.md](hosting.md).
+- **Configuration reference** — every field in `quelch.yaml`: [configuration.md](configuration.md).
+- **CLI reference** — every command, flag, and example: [cli.md](cli.md).
+- **MCP API reference** — for agent authors: [mcp-api.md](mcp-api.md).
+- **Q-MCP API key handling** — generation, storage, rotation: [api-key.md](api-key.md).
+- **Real-question walkthroughs** — how an agent uses each MCP tool: [examples.md](examples.md).
+- **Sync correctness deep-dive** — if you're debugging anything sync-related: [sync.md](sync.md).
 
-If you hit something that doesn't work, the first thing to check is `quelch validate` and `quelch azure plan`. If those are happy and ingest still isn't moving, `quelch azure logs <deployment> --follow` shows what the worker is actually doing.
+If something doesn't work, the first things to check are `quelch validate` and `quelch azure plan` (do they fail / show unexpected drift?), then `quelch status` (is ingest making progress?), then your host's own log system (Container Apps log streaming, `journalctl`, `kubectl logs`, `docker logs` — Quelch isn't running the workload, so it doesn't tail your logs).
