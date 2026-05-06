@@ -15,8 +15,8 @@ use colored::Colorize;
 /// Options for `quelch status`.
 #[derive(Debug, Default)]
 pub struct StatusOptions {
-    /// When set, filter results to only cursors from this deployment.
-    pub deployment: Option<String>,
+    /// When set, filter results to only cursors from this instance.
+    pub instance: Option<String>,
     /// Emit machine-readable JSON instead of a table.
     pub json: bool,
     /// Launch the interactive TUI. Planned for Phase 10; errors out for now.
@@ -40,7 +40,7 @@ pub async fn run(config: &Config, options: StatusOptions) -> anyhow::Result<()> 
 
     let filtered: Vec<_> = cursors
         .into_iter()
-        .filter(|(key, _)| match &options.deployment {
+        .filter(|(key, _)| match &options.instance {
             Some(d) => &key.deployment_name == d,
             None => true,
         })

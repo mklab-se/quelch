@@ -38,9 +38,9 @@ pub struct Cli {
 pub enum Commands {
     /// Show sync status for all sources
     Status {
-        /// Filter to cursors belonging to this deployment
+        /// Filter to cursors belonging to this instance
         #[arg(long)]
-        deployment: Option<String>,
+        instance: Option<String>,
         /// Emit machine-readable JSON instead of a table
         #[arg(long)]
         json: bool,
@@ -62,11 +62,6 @@ pub enum Commands {
     },
     /// Validate config file without running
     Validate,
-    /// Print the effective (sliced) config for one deployment
-    EffectiveConfig {
-        /// Name of the deployment to slice for
-        name: String,
-    },
     /// Interactive wizard to scaffold a quelch.yaml config
     Init {
         /// Folder to write `quelch.yaml` into. Defaults to the current
@@ -83,17 +78,6 @@ pub enum Commands {
         /// Overwrite an existing quelch.yaml without asking.
         #[arg(long)]
         force: bool,
-    },
-    /// Generate ready-to-run on-prem deployment artefacts
-    GenerateDeployment {
-        /// Deployment name from quelch.yaml (should be target: onprem).
-        name: String,
-        /// Output target: docker, systemd, or k8s.
-        #[arg(long, value_enum)]
-        target: OnpremTargetArg,
-        /// Output directory for generated artefacts.
-        #[arg(long, default_value = "./deploy")]
-        output: PathBuf,
     },
     /// Start a local mock Jira and Confluence server for testing
     Mock {
@@ -202,11 +186,11 @@ pub enum Commands {
         #[command(subcommand)]
         command: AgentCommands,
     },
-    /// Run the continuous ingest worker for a deployment
+    /// Run the continuous ingest worker for an instance
     Ingest {
-        /// Deployment name — which slice of the config this worker owns.
+        /// Instance name — which slice of the config this worker owns.
         #[arg(long)]
-        deployment: String,
+        instance: String,
         /// Run one cycle then exit (useful for debugging and CI).
         #[arg(long)]
         once: bool,
@@ -214,22 +198,22 @@ pub enum Commands {
         #[arg(long)]
         max_docs: Option<u64>,
     },
-    /// Azure resource management commands (plan, deploy, pull, indexer, logs, destroy).
+    /// Azure resource management commands (plan, indexer).
     Azure {
         #[command(subcommand)]
         command: AzureCommands,
     },
-    /// Start the MCP HTTP server for a deployment.
+    /// Start the MCP HTTP server for an instance.
     ///
     /// Agents (GitHub Copilot, Claude, etc.) connect to this server to query
     /// indexed data via the Model Context Protocol.
     ///
-    /// Example: quelch mcp --deployment mcp --port 8080
+    /// Example: quelch mcp --instance mcp --port 8080
     Mcp {
-        /// Deployment name (required). Tells the server which slice of the
+        /// Instance name (required). Tells the server which slice of the
         /// config it owns and which data sources it exposes.
         #[arg(long)]
-        deployment: String,
+        instance: String,
         /// Port to listen on.
         #[arg(short, long, default_value = "8080")]
         port: u16,
@@ -241,125 +225,26 @@ pub enum Commands {
         #[arg(long)]
         api_key: Option<String>,
     },
-    /// Manage the Q-MCP API key for a deployment.
-    ///
-    /// Sets, rotates, or reads back the value the running Q-MCP expects in
-    /// `Authorization: Bearer ...`. Dispatches by deployment target — Azure
-    /// deployments shell out to `az keyvault secret set/show` against the
-    /// deployment's Key Vault; on-prem deployments print the value with
-    /// instructions on where to set the env var.
-    #[command(name = "mcp-key")]
-    McpKey {
-        #[command(subcommand)]
-        command: McpKeyCommand,
-    },
-}
-
-/// `quelch mcp-key` subcommands.
-#[derive(clap::Subcommand)]
-pub enum McpKeyCommand {
-    /// Set the Q-MCP API key for a deployment.
-    ///
-    /// Without `--value`, generates a fresh random key (32 random base64 bytes).
-    Set {
-        /// Deployment name (must be a `role: mcp` deployment in the config).
-        #[arg(long)]
-        deployment: String,
-        /// Use this exact value instead of generating one.
-        #[arg(long)]
-        value: Option<String>,
-        /// Don't print the new key to stdout — useful for CI / scripts that
-        /// already know the value (`--value`).
-        #[arg(long)]
-        quiet: bool,
-    },
-    /// Rotate the Q-MCP API key — generate a new value and store it.
-    Rotate {
-        /// Deployment name.
-        #[arg(long)]
-        deployment: String,
-        /// Don't print the new key to stdout.
-        #[arg(long)]
-        quiet: bool,
-    },
-    /// Print the current Q-MCP API key for a deployment.
-    Show {
-        /// Deployment name.
-        #[arg(long)]
-        deployment: String,
-    },
-}
-
-/// On-prem target for `quelch generate-deployment`.
-#[derive(Clone, clap::ValueEnum)]
-pub enum OnpremTargetArg {
-    /// Docker Compose.
-    Docker,
-    /// systemd unit file.
-    Systemd,
-    /// Kubernetes manifests.
-    K8s,
 }
 
 /// Top-level `quelch azure` subcommands.
 #[derive(clap::Subcommand)]
 pub enum AzureCommands {
-    /// Synthesise Bicep + rigg files; show the combined diff. No changes applied.
+    /// Plan Azure resource changes (rewritten in the no-deploy pivot).
     Plan {
-        /// Deployment name (omit to plan all).
-        deployment: Option<String>,
-        /// Write Bicep to a custom location (default .quelch/azure/<name>.bicep).
+        /// Instance name (omit to plan all).
+        instance: Option<String>,
+        /// Write Bicep to a custom location (placeholder; pivot replaces this).
         #[arg(long)]
         out: Option<PathBuf>,
         /// Synthesise only; skip the `az deployment group what-if` call.
         #[arg(long)]
         no_what_if: bool,
     },
-    /// Plan + apply the deployment to Azure.
-    Deploy {
-        /// Deployment name (omit to deploy all).
-        deployment: Option<String>,
-        /// Skip the interactive confirmation prompt.
-        #[arg(long)]
-        yes: bool,
-        /// Equivalent to `quelch azure plan` — show the diff but don't apply.
-        #[arg(long)]
-        dry_run: bool,
-    },
-    /// Pull live AI Search/Foundry config back into rigg/.
-    Pull {
-        /// Optional resource type filter (e.g. "index", "indexer").
-        kind: Option<String>,
-        /// Show what would change without writing.
-        #[arg(long)]
-        diff: bool,
-    },
     /// Operate Azure AI Search Indexers.
     Indexer {
         #[command(subcommand)]
         command: IndexerCommands,
-    },
-    /// Tail logs from a deployed Container App.
-    Logs {
-        /// Deployment name.
-        deployment: String,
-        /// Number of log lines to show.
-        #[arg(long, default_value = "100")]
-        tail: usize,
-        /// Stream logs continuously (Ctrl-C to stop).
-        #[arg(long)]
-        follow: bool,
-        /// Only show logs since this time (e.g. "1h", "30m").
-        #[arg(long)]
-        since: Option<String>,
-    },
-    /// Remove a single deployment's Container App from Azure.
-    Destroy {
-        /// Deployment name.
-        deployment: String,
-        /// Skip the interactive confirmation prompt.
-        #[arg(long)]
-        yes: bool,
     },
 }
 
@@ -380,9 +265,9 @@ pub enum AgentCommands {
         #[arg(long, default_value = "./agent-bundle")]
         output: PathBuf,
 
-        /// MCP deployment name (defaults to the first MCP deployment in config).
+        /// MCP instance name (defaults to the first MCP instance in config).
         #[arg(long)]
-        deployment: Option<String>,
+        instance: Option<String>,
 
         /// Override the public URL of the MCP server.
         ///

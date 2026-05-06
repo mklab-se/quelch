@@ -1,4 +1,4 @@
-/// Integration tests for `quelch validate` and `quelch effective-config`.
+/// Integration tests for `quelch validate`.
 use assert_cmd::Command;
 
 /// `quelch validate` succeeds on a valid minimal config.
@@ -39,40 +39,6 @@ fn validate_fails_on_missing_config() {
         .arg("--config")
         .arg("tests/fixtures/nonexistent.yaml")
         .arg("validate")
-        .assert()
-        .failure();
-}
-
-/// `quelch effective-config <name>` outputs YAML for the named deployment.
-#[test]
-fn effective_config_outputs_yaml() {
-    // The minimal fixture has a deployment named "ingest".
-    let output = Command::cargo_bin("quelch")
-        .unwrap()
-        .arg("--config")
-        .arg("tests/fixtures/quelch.minimal.yaml")
-        .arg("effective-config")
-        .arg("ingest")
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "effective-config must succeed");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    // The output is YAML so it should at minimum contain the deployment name.
-    assert!(
-        stdout.contains("ingest"),
-        "expected 'ingest' in effective-config output: {stdout}"
-    );
-}
-
-/// `quelch effective-config` on an unknown deployment name exits with failure.
-#[test]
-fn effective_config_fails_on_unknown_deployment() {
-    Command::cargo_bin("quelch")
-        .unwrap()
-        .arg("--config")
-        .arg("tests/fixtures/quelch.minimal.yaml")
-        .arg("effective-config")
-        .arg("no-such-deployment")
         .assert()
         .failure();
 }

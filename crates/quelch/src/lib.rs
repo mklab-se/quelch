@@ -9,7 +9,6 @@ pub mod ingest;
 pub mod init;
 pub mod mcp;
 pub mod mock;
-pub mod onprem;
 pub mod sim;
 pub mod sources;
 pub mod tui;

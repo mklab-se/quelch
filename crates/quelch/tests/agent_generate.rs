@@ -235,11 +235,11 @@ fn agent_generate_url_override_appears_in_output() {
 }
 
 // ---------------------------------------------------------------------------
-// --deployment flag
+// --instance flag
 // ---------------------------------------------------------------------------
 
 #[test]
-fn agent_generate_explicit_deployment_flag() {
+fn agent_generate_explicit_instance_flag() {
     let dir = tempfile::tempdir().unwrap();
     let bundle_dir = dir.path().join("bundle");
 
@@ -250,7 +250,7 @@ fn agent_generate_explicit_deployment_flag() {
         .arg("generate")
         .arg("--target")
         .arg("markdown")
-        .arg("--deployment")
+        .arg("--instance")
         .arg("mcp")
         .arg("--output")
         .arg(&bundle_dir);
