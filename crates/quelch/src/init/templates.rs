@@ -4,6 +4,12 @@
 //! them in their shell or in a `.env` file before running `quelch validate`,
 //! `quelch ingest`, etc.
 //!
+//! For Atlassian Cloud connections (Jira and/or Confluence), templates
+//! reference a single `${ATLASSIAN_CLOUD_EMAIL}` / `${ATLASSIAN_CLOUD_API_TOKEN}`
+//! pair — the common case is one Atlassian account that owns both products.
+//! If you need distinct credentials per product, edit `quelch.yaml` after
+//! generation.
+//!
 //! All templates are designed to round-trip: `serde_yaml::to_string` →
 //! `serde_yaml::from_str` → [`crate::config::validate::validate`]. The unit
 //! tests below exercise that pipeline for every template.
@@ -74,8 +80,8 @@ pub fn minimal_template() -> Config {
             source_type: SourceType::Jira,
             base_url: "https://your-org.atlassian.net".to_string(),
             auth: SourceAuth::Basic {
-                email: "${JIRA_EMAIL}".to_string(),
-                token: "${JIRA_API_TOKEN}".to_string(),
+                email: "${ATLASSIAN_CLOUD_EMAIL}".to_string(),
+                token: "${ATLASSIAN_CLOUD_API_TOKEN}".to_string(),
             },
             projects: vec!["PROJ".to_string()],
             spaces: vec![],
@@ -115,8 +121,8 @@ pub fn multi_source_template() -> Config {
         source_type: SourceType::Confluence,
         base_url: "https://your-org.atlassian.net/wiki".to_string(),
         auth: SourceAuth::Basic {
-            email: "${JIRA_EMAIL}".to_string(),
-            token: "${JIRA_API_TOKEN}".to_string(),
+            email: "${ATLASSIAN_CLOUD_EMAIL}".to_string(),
+            token: "${ATLASSIAN_CLOUD_API_TOKEN}".to_string(),
         },
         projects: vec![],
         spaces: vec!["ENG".to_string()],
@@ -170,8 +176,8 @@ pub fn distributed_template() -> Config {
         source_type: SourceType::Confluence,
         base_url: "https://your-org.atlassian.net/wiki".to_string(),
         auth: SourceAuth::Basic {
-            email: "${JIRA_EMAIL}".to_string(),
-            token: "${JIRA_API_TOKEN}".to_string(),
+            email: "${ATLASSIAN_CLOUD_EMAIL}".to_string(),
+            token: "${ATLASSIAN_CLOUD_API_TOKEN}".to_string(),
         },
         projects: vec![],
         spaces: vec!["ENG".to_string()],
