@@ -78,7 +78,7 @@ azure_data_cosmos = "0.21"
 azure_identity = "0.21"
 azure_core = "0.21"
 
-# Templating for Bicep / on-prem artefacts
+# Templating for on-prem hosting recipe artefacts
 handlebars = "6"
 
 # Toml for codex-mcp.toml output

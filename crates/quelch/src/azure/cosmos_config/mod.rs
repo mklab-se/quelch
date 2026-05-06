@@ -1,7 +1,7 @@
 //! Cosmos DB control-plane via ARM REST.
 //!
-//! Replaces the old Bicep-based provisioning with direct PUTs against
-//! `management.azure.com`. The high-level entry points are [`plan`] (compute
+//! Direct PUTs against `management.azure.com` create the Quelch database
+//! and its containers. The high-level entry points are [`plan`] (compute
 //! the diff) and [`apply`] (execute it).
 
 pub mod arm_client;

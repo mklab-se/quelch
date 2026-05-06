@@ -73,8 +73,14 @@ jobs:
           ./target/release/quelch --help
       - name: validate against the test fixture
         run: ./target/release/quelch --config crates/quelch/tests/fixtures/quelch.minimal.yaml validate
-      - name: effective-config (deterministic, no external services)
-        run: ./target/release/quelch --config crates/quelch/tests/fixtures/quelch.minimal.yaml effective-config ingest
+      - name: instance list (read-only inspection of the master config)
+        run: ./target/release/quelch --config crates/quelch/tests/fixtures/quelch.minimal.yaml instance list
+      - name: instance config emits a per-instance slice
+        run: |
+          ./target/release/quelch --config crates/quelch/tests/fixtures/quelch.minimal.yaml \
+            instance config ingest --kind ingest --output /tmp/ingest-slice.yaml
+          ./target/release/quelch --config /tmp/ingest-slice.yaml validate
+        timeout-minutes: 1
       - name: agent generate markdown bundle (exercises a non-trivial code path)
         run: |
           ./target/release/quelch --config crates/quelch/tests/fixtures/quelch.minimal.yaml \
@@ -82,10 +88,4 @@ jobs:
           test -f /tmp/agent-bundle/connection.md
           test -f /tmp/agent-bundle/tools.md
           test -f /tmp/agent-bundle/schema.md
-        timeout-minutes: 1
-      - name: azure plan --no-what-if (offline; writes Bicep + rigg locally)
-        run: |
-          ./target/release/quelch --config crates/quelch/tests/fixtures/quelch.minimal.yaml \
-            azure plan ingest --no-what-if
-          test -f .quelch/azure/ingest.bicep
         timeout-minutes: 1

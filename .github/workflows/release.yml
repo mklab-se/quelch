@@ -35,18 +35,18 @@ jobs:
           ./target/release/quelch --help
       - name: validate against the test fixture
         run: ./target/release/quelch --config crates/quelch/tests/fixtures/quelch.minimal.yaml validate
-      - name: effective-config (deterministic, no external services)
-        run: ./target/release/quelch --config crates/quelch/tests/fixtures/quelch.minimal.yaml effective-config ingest
+      - name: instance list (read-only)
+        run: ./target/release/quelch --config crates/quelch/tests/fixtures/quelch.minimal.yaml instance list
+      - name: instance config emits a per-instance slice
+        run: |
+          ./target/release/quelch --config crates/quelch/tests/fixtures/quelch.minimal.yaml \
+            instance config ingest --kind ingest --output /tmp/ingest-slice.yaml
+          ./target/release/quelch --config /tmp/ingest-slice.yaml validate
       - name: agent generate markdown bundle
         run: |
           ./target/release/quelch --config crates/quelch/tests/fixtures/quelch.minimal.yaml \
             agent generate --target markdown --output /tmp/agent-bundle
           test -f /tmp/agent-bundle/connection.md
-      - name: azure plan --no-what-if (offline)
-        run: |
-          ./target/release/quelch --config crates/quelch/tests/fixtures/quelch.minimal.yaml \
-            azure plan ingest --no-what-if
-          test -f .quelch/azure/ingest.bicep
 
   # Build release binaries for each platform
   build:
