@@ -29,14 +29,14 @@ pub async fn run(config: &Config, options: StatusOptions) -> anyhow::Result<()> 
         let cosmos = build_cosmos_backend(config).await?;
         return crate::tui::run_status_dashboard(
             Arc::from(cosmos),
-            config.cosmos.meta_container.clone(),
+            config.azure.cosmos.meta_container.clone(),
             std::time::Duration::from_secs(5),
         )
         .await;
     }
 
     let cosmos = build_cosmos_backend(config).await?;
-    let cursors = meta::list_all(cosmos.as_ref(), &config.cosmos.meta_container).await?;
+    let cursors = meta::list_all(cosmos.as_ref(), &config.azure.cosmos.meta_container).await?;
 
     let filtered: Vec<_> = cursors
         .into_iter()

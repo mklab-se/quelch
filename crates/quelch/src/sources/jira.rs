@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 use tracing::debug;
 
 use super::{BackfillCheckpoint, Companions, FetchPage, SourceConnector, SourceDocument};
-use crate::config::JiraSourceConfig;
+use crate::config::SourceConnection;
 
 // ---------------------------------------------------------------------------
 // Connector struct
@@ -52,23 +52,17 @@ impl JiraConnector {
     ///
     /// * `config` — Jira source config from `quelch.yaml`.
     /// * `client` — pre-built `reqwest_middleware::ClientWithMiddleware` (injected by worker).
-    pub fn new(config: &JiraSourceConfig, client: ClientWithMiddleware) -> anyhow::Result<Self> {
-        let base_url = config.url.trim_end_matches('/').to_owned();
+    pub fn new(config: &SourceConnection, client: ClientWithMiddleware) -> anyhow::Result<Self> {
+        let base_url = config.base_url.trim_end_matches('/').to_owned();
         let auth_header = config.auth.authorization_header();
-        let container = config
-            .container
-            .clone()
-            .unwrap_or_else(|| "jira-issues".to_string());
-
-        // Invert the fields map: friendly name → customfield id
-        let custom_fields = config.fields.clone();
+        let container = "jira-issues".to_string();
 
         Ok(Self {
             source_name: config.name.clone(),
             base_url,
             auth_header,
             projects: config.projects.clone(),
-            custom_fields,
+            custom_fields: HashMap::new(),
             client,
             container,
         })
@@ -1018,25 +1012,24 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
-    use crate::config::AuthConfig;
+    use crate::config::{SourceAuth, SourceType};
 
     // -----------------------------------------------------------------------
     // Test helpers
     // -----------------------------------------------------------------------
 
     /// Build a [`JiraConnector`] pointing at the mock server URI.
-    fn build_connector(server_uri: &str, source_name: &str, auth: AuthConfig) -> JiraConnector {
+    fn build_connector(server_uri: &str, source_name: &str, auth: SourceAuth) -> JiraConnector {
         let base_client = reqwest::Client::new();
         let client = ClientBuilder::new(base_client).build();
 
-        let config = JiraSourceConfig {
+        let config = SourceConnection {
             name: source_name.to_string(),
-            url: server_uri.to_string(),
+            source_type: SourceType::Jira,
+            base_url: server_uri.to_string(),
             auth,
             projects: vec!["DO".to_string()],
-            container: None,
-            companion_containers: Default::default(),
-            fields: HashMap::new(),
+            spaces: Vec::new(),
         };
 
         JiraConnector::new(&config, client).expect("connector construction should not fail")
@@ -1164,11 +1157,8 @@ mod tests {
             .mount(&server)
             .await;
 
-        let connector = build_connector(
-            &server.uri(),
-            "test",
-            AuthConfig::DataCenter { pat: "x".into() },
-        );
+        let connector =
+            build_connector(&server.uri(), "test", SourceAuth::Pat { token: "x".into() });
 
         let start: DateTime<Utc> = "2026-04-30T14:23:00Z".parse().unwrap();
         let end: DateTime<Utc> = "2026-04-30T14:25:00Z".parse().unwrap();
@@ -1200,8 +1190,8 @@ mod tests {
         let connector = build_connector(
             &server.uri(),
             "test",
-            AuthConfig::DataCenter {
-                pat: "my-pat".into(),
+            SourceAuth::Pat {
+                token: "my-pat".into(),
             },
         );
 
@@ -1240,9 +1230,9 @@ mod tests {
         let connector = build_connector(
             &server.uri(),
             "test",
-            AuthConfig::Cloud {
+            SourceAuth::Basic {
                 email: "user@example.com".into(),
-                api_token: "my-api-token".into(),
+                token: "my-api-token".into(),
             },
         );
 
@@ -1440,11 +1430,8 @@ mod tests {
             .mount(&server)
             .await;
 
-        let connector = build_connector(
-            &server.uri(),
-            "test",
-            AuthConfig::DataCenter { pat: "x".into() },
-        );
+        let connector =
+            build_connector(&server.uri(), "test", SourceAuth::Pat { token: "x".into() });
 
         let start: DateTime<Utc> = "2026-04-01T00:00:00Z".parse().unwrap();
         let end: DateTime<Utc> = "2026-04-01T01:00:00Z".parse().unwrap();
@@ -1487,11 +1474,8 @@ mod tests {
             .mount(&server)
             .await;
 
-        let connector = build_connector(
-            &server.uri(),
-            "test",
-            AuthConfig::DataCenter { pat: "x".into() },
-        );
+        let connector =
+            build_connector(&server.uri(), "test", SourceAuth::Pat { token: "x".into() });
 
         let target: DateTime<Utc> = "2026-04-30T14:25:00Z".parse().unwrap();
         let last_seen = BackfillCheckpoint {
@@ -1522,11 +1506,8 @@ mod tests {
             .mount(&server)
             .await;
 
-        let connector = build_connector(
-            &server.uri(),
-            "test",
-            AuthConfig::DataCenter { pat: "x".into() },
-        );
+        let connector =
+            build_connector(&server.uri(), "test", SourceAuth::Pat { token: "x".into() });
 
         let target: DateTime<Utc> = "2026-04-30T14:25:00Z".parse().unwrap();
 
@@ -1580,11 +1561,8 @@ mod tests {
             .mount(&server)
             .await;
 
-        let connector = build_connector(
-            &server.uri(),
-            "test",
-            AuthConfig::DataCenter { pat: "x".into() },
-        );
+        let connector =
+            build_connector(&server.uri(), "test", SourceAuth::Pat { token: "x".into() });
 
         let ids = connector
             .list_all_ids("DO")
@@ -1640,7 +1618,7 @@ mod tests {
         let connector = build_connector(
             &server.uri(),
             "jira-internal",
-            AuthConfig::DataCenter { pat: "x".into() },
+            SourceAuth::Pat { token: "x".into() },
         );
 
         let companions = connector
@@ -1717,11 +1695,8 @@ mod tests {
             .mount(&server)
             .await;
 
-        let connector = build_connector(
-            &server.uri(),
-            "test",
-            AuthConfig::DataCenter { pat: "x".into() },
-        );
+        let connector =
+            build_connector(&server.uri(), "test", SourceAuth::Pat { token: "x".into() });
 
         let target: DateTime<Utc> = "2026-04-30T14:25:00Z".parse().unwrap();
         let page = connector

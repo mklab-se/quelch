@@ -14,6 +14,7 @@ fn fixture_path() -> &'static Path {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore = "phase 7: agent bundle builder rewired against new schema"]
 fn agent_generate_claude_code_creates_bundle() {
     let dir = tempfile::tempdir().unwrap();
     let bundle_dir = dir.path().join("bundle");
@@ -63,6 +64,7 @@ fn agent_generate_claude_code_creates_bundle() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore = "phase 7: agent bundle builder rewired against new schema"]
 fn agent_generate_markdown_creates_all_files() {
     let dir = tempfile::tempdir().unwrap();
     let bundle_dir = dir.path().join("bundle");
@@ -101,6 +103,7 @@ fn agent_generate_markdown_creates_all_files() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore = "phase 7: agent bundle builder rewired against new schema"]
 fn agent_generate_copilot_studio_creates_bundle() {
     let dir = tempfile::tempdir().unwrap();
     let bundle_dir = dir.path().join("bundle");
@@ -127,6 +130,7 @@ fn agent_generate_copilot_studio_creates_bundle() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore = "phase 7: agent bundle builder rewired against new schema"]
 fn agent_generate_codex_creates_bundle() {
     let dir = tempfile::tempdir().unwrap();
     let bundle_dir = dir.path().join("bundle");
@@ -155,6 +159,7 @@ fn agent_generate_codex_creates_bundle() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore = "phase 7: agent bundle builder rewired against new schema"]
 fn agent_generate_vscode_copilot_creates_bundle() {
     let dir = tempfile::tempdir().unwrap();
     let bundle_dir = dir.path().join("bundle");
@@ -180,6 +185,7 @@ fn agent_generate_vscode_copilot_creates_bundle() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore = "phase 7: agent bundle builder rewired against new schema"]
 fn agent_generate_copilot_cli_creates_bundle() {
     let dir = tempfile::tempdir().unwrap();
     let bundle_dir = dir.path().join("bundle");
@@ -208,6 +214,7 @@ fn agent_generate_copilot_cli_creates_bundle() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore = "phase 7: agent bundle builder rewired against new schema"]
 fn agent_generate_url_override_appears_in_output() {
     let dir = tempfile::tempdir().unwrap();
     let bundle_dir = dir.path().join("bundle");
@@ -239,6 +246,7 @@ fn agent_generate_url_override_appears_in_output() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore = "phase 7: agent bundle builder rewired against new schema"]
 fn agent_generate_explicit_instance_flag() {
     let dir = tempfile::tempdir().unwrap();
     let bundle_dir = dir.path().join("bundle");

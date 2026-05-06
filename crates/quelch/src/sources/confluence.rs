@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 use tracing::debug;
 
 use super::{BackfillCheckpoint, Companions, FetchPage, SourceConnector, SourceDocument};
-use crate::config::ConfluenceSourceConfig;
+use crate::config::SourceConnection;
 
 // ---------------------------------------------------------------------------
 // Connector struct
@@ -50,16 +50,10 @@ impl ConfluenceConnector {
     ///
     /// * `config` — Confluence source config from `quelch.yaml`.
     /// * `client` — pre-built `reqwest_middleware::ClientWithMiddleware` (injected by worker).
-    pub fn new(
-        config: &ConfluenceSourceConfig,
-        client: ClientWithMiddleware,
-    ) -> anyhow::Result<Self> {
-        let base_url = config.url.trim_end_matches('/').to_owned();
+    pub fn new(config: &SourceConnection, client: ClientWithMiddleware) -> anyhow::Result<Self> {
+        let base_url = config.base_url.trim_end_matches('/').to_owned();
         let auth_header = config.auth.authorization_header();
-        let container = config
-            .container
-            .clone()
-            .unwrap_or_else(|| "confluence-pages".to_string());
+        let container = "confluence-pages".to_string();
 
         Ok(Self {
             source_name: config.name.clone(),
@@ -567,7 +561,7 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
-    use crate::config::AuthConfig;
+    use crate::config::{SourceAuth, SourceType};
 
     // -----------------------------------------------------------------------
     // Test helpers
@@ -577,18 +571,18 @@ mod tests {
     fn build_connector(
         server_uri: &str,
         source_name: &str,
-        auth: AuthConfig,
+        auth: SourceAuth,
     ) -> ConfluenceConnector {
         let base_client = reqwest::Client::new();
         let client = ClientBuilder::new(base_client).build();
 
-        let config = ConfluenceSourceConfig {
+        let config = SourceConnection {
             name: source_name.to_string(),
-            url: server_uri.to_string(),
+            source_type: SourceType::Confluence,
+            base_url: server_uri.to_string(),
             auth,
+            projects: Vec::new(),
             spaces: vec!["ENG".to_string()],
-            container: None,
-            companion_containers: Default::default(),
         };
 
         ConfluenceConnector::new(&config, client).expect("connector construction should not fail")
@@ -678,7 +672,7 @@ mod tests {
         let connector = build_connector(
             &server.uri(),
             "confluence-test",
-            AuthConfig::DataCenter { pat: "x".into() },
+            SourceAuth::Pat { token: "x".into() },
         );
 
         let start: DateTime<Utc> = "2026-04-30T14:23:00Z".parse().unwrap();
@@ -849,11 +843,8 @@ mod tests {
             .mount(&server)
             .await;
 
-        let connector = build_connector(
-            &server.uri(),
-            "test",
-            AuthConfig::DataCenter { pat: "x".into() },
-        );
+        let connector =
+            build_connector(&server.uri(), "test", SourceAuth::Pat { token: "x".into() });
 
         let start: DateTime<Utc> = "2026-04-01T00:00:00Z".parse().unwrap();
         let end: DateTime<Utc> = "2026-04-02T00:00:00Z".parse().unwrap();
@@ -894,11 +885,8 @@ mod tests {
             .mount(&server)
             .await;
 
-        let connector = build_connector(
-            &server.uri(),
-            "test",
-            AuthConfig::DataCenter { pat: "x".into() },
-        );
+        let connector =
+            build_connector(&server.uri(), "test", SourceAuth::Pat { token: "x".into() });
 
         let target: DateTime<Utc> = "2026-04-30T14:25:00Z".parse().unwrap();
         // last_seen.key is the numeric page_id, NOT the composite id
@@ -952,11 +940,8 @@ mod tests {
             .mount(&server)
             .await;
 
-        let connector = build_connector(
-            &server.uri(),
-            "test",
-            AuthConfig::DataCenter { pat: "x".into() },
-        );
+        let connector =
+            build_connector(&server.uri(), "test", SourceAuth::Pat { token: "x".into() });
 
         let target: DateTime<Utc> = "2026-04-30T14:25:00Z".parse().unwrap();
         let fetch_page = connector
@@ -1002,7 +987,7 @@ mod tests {
         let connector = build_connector(
             &server.uri(),
             "confluence-prod",
-            AuthConfig::DataCenter { pat: "x".into() },
+            SourceAuth::Pat { token: "x".into() },
         );
 
         let ids = connector
@@ -1043,7 +1028,7 @@ mod tests {
         let connector = build_connector(
             &server.uri(),
             "confluence-internal",
-            AuthConfig::DataCenter { pat: "x".into() },
+            SourceAuth::Pat { token: "x".into() },
         );
 
         let companions = connector
@@ -1089,7 +1074,7 @@ mod tests {
         let connector = build_connector(
             &server.uri(),
             "confluence-internal",
-            AuthConfig::DataCenter { pat: "x".into() },
+            SourceAuth::Pat { token: "x".into() },
         );
 
         let companions = connector
@@ -1129,8 +1114,8 @@ mod tests {
         let connector = build_connector(
             &server.uri(),
             "test",
-            AuthConfig::DataCenter {
-                pat: "my-pat".into(),
+            SourceAuth::Pat {
+                token: "my-pat".into(),
             },
         );
 
@@ -1168,9 +1153,9 @@ mod tests {
         let connector = build_connector(
             &server.uri(),
             "test",
-            AuthConfig::Cloud {
+            SourceAuth::Basic {
                 email: "user@example.com".into(),
-                api_token: "my-api-token".into(),
+                token: "my-api-token".into(),
             },
         );
 

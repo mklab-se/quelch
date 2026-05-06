@@ -20,7 +20,7 @@ pub struct ResetOptions {
 /// Run `quelch reset`.
 pub async fn run(config: &Config, options: ResetOptions) -> anyhow::Result<()> {
     let cosmos = build_cosmos_backend(config).await?;
-    let all = meta::list_all(cosmos.as_ref(), &config.cosmos.meta_container).await?;
+    let all = meta::list_all(cosmos.as_ref(), &config.azure.cosmos.meta_container).await?;
 
     let to_reset: Vec<_> = all
         .iter()
@@ -66,7 +66,7 @@ pub async fn run(config: &Config, options: ResetOptions) -> anyhow::Result<()> {
         let cleared = meta::Cursor::default();
         meta::save(
             cosmos.as_ref(),
-            &config.cosmos.meta_container,
+            &config.azure.cosmos.meta_container,
             key,
             &cleared,
         )

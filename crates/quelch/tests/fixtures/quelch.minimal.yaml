@@ -1,48 +1,32 @@
-# Minimal valid quelch.yaml — used by config tests.
 azure:
-  subscription_id: "sub-test-123"
-  resource_group: "rg-quelch-test"
-  region: "swedencentral"
+  cosmos:
+    endpoint: https://acct.documents.azure.com
+    database: quelch
+  ai:
+    provider: azure_openai
+    endpoint: https://test.openai.azure.com
+    embedding:
+      deployment: text-embedding-3-large
+      dimensions: 3072
+    chat:
+      deployment: gpt-5-mini
+      model_name: gpt-5-mini
 
-cosmos:
-  database: "quelch"
+source_connections:
+  - name: jira-cloud
+    type: jira
+    base_url: https://example.atlassian.net
+    auth: { kind: basic, email: user@example.com, token: test-token }
+    projects: [DO]
 
-ai:
-  provider: azure_openai
-  endpoint: "https://test.openai.azure.com"
-  embedding:
-    deployment: "text-embedding-3-large"
-    dimensions: 3072
-  chat:
-    deployment: "gpt-5-mini"
-    model_name: "gpt-5-mini"
-
-sources:
-  - type: jira
-    name: jira-cloud
-    url: "https://example.atlassian.net"
-    auth:
-      email: "user@example.com"
-      api_token: "test-token"
-    projects: ["DO"]
-
-deployments:
+instances:
   - name: ingest
-    role: ingest
-    target: azure
-    sources:
-      - source: jira-cloud
+    kind: ingest
+    connections: [jira-cloud]
+    cycle_interval: 5m
   - name: mcp
-    role: mcp
-    target: azure
-    expose:
-      - jira_issues
-    auth:
-      mode: "api_key"
-
-mcp:
-  data_sources:
-    jira_issues:
-      kind: jira_issue
-      backed_by:
-        - container: jira-issues
+    kind: mcp
+    expose: [jira_issues]
+    api_key: dev
+    knowledge_base: kb
+    listen: 0.0.0.0:8080

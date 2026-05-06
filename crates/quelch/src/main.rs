@@ -247,22 +247,20 @@ fn parse_where_arg(
 async fn cmd_validate(config_path: &Path) -> Result<()> {
     let config = config::load_config(config_path)?;
     println!("Config is valid.");
-    println!("  Azure subscription: {}", config.azure.subscription_id);
-    println!("  Resource group:     {}", config.azure.resource_group);
-    if !config.azure.region.is_empty() {
-        println!("  Region:             {}", config.azure.region);
+    if let Some(sub) = &config.azure.cosmos.subscription_id {
+        println!("  Azure subscription: {sub}");
     }
-    println!("  Sources:            {}", config.sources.len());
-    for source in &config.sources {
-        println!("    - {}", source.name());
+    if let Some(rg) = &config.azure.cosmos.resource_group {
+        println!("  Resource group:     {rg}");
     }
-    println!("  Deployments:        {}", config.deployments.len());
-    for deployment in &config.deployments {
-        println!("    - {}", deployment.name);
+    println!("  Source connections: {}", config.source_connections.len());
+    for source in &config.source_connections {
+        println!("    - {}", source.name);
     }
-
-    let report = quelch::init::prereq::check_all(&config).await;
-    report.print();
+    println!("  Instances:          {}", config.instances.len());
+    for instance in &config.instances {
+        println!("    - {} ({:?})", instance.name, instance.kind());
+    }
 
     Ok(())
 }
@@ -273,10 +271,16 @@ async fn cmd_validate(config_path: &Path) -> Result<()> {
 
 async fn cmd_azure_indexer(config_path: &Path, command: IndexerCommands) -> Result<()> {
     let config = quelch::config::load_config(config_path)?;
-    let service = config
+    let endpoint = config
+        .azure
         .search
-        .service
-        .as_deref()
+        .as_ref()
+        .map(|s| s.endpoint.as_str())
+        .unwrap_or("https://quelch-prod-search.search.windows.net");
+    let service = endpoint
+        .trim_start_matches("https://")
+        .split('.')
+        .next()
         .unwrap_or("quelch-prod-search");
 
     match command {
@@ -325,14 +329,13 @@ fn cmd_agent_generate(
 ) -> Result<()> {
     let config = quelch::config::load_config(config_path)?;
 
-    // Resolve instance name: use explicit arg or find the first MCP deployment.
     let instance_name = instance
         .or_else(|| {
             config
-                .deployments
+                .instances
                 .iter()
-                .find(|d| d.role == quelch::config::DeploymentRole::Mcp)
-                .map(|d| d.name.clone())
+                .find(|i| i.kind() == quelch::config::InstanceKind::Mcp)
+                .map(|i| i.name.clone())
         })
         .ok_or_else(|| anyhow::anyhow!("no MCP instance found in config; use --instance"))?;
 

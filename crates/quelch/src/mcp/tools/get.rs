@@ -180,7 +180,7 @@ mod tests {
             )
             .await
             .unwrap();
-        use crate::config::{BackedBy, data_sources::ResolvedDataSource};
+        use crate::config::data_sources::{BackedBy, ResolvedDataSource};
         use crate::mcp::expose::ExposeResolver;
         use std::collections::HashMap;
         let mut map = HashMap::new();

@@ -35,8 +35,7 @@ pub(crate) mod test_helpers {
 
     use serde_json::json;
 
-    use crate::config::BackedBy;
-    use crate::config::data_sources::ResolvedDataSource;
+    use crate::config::data_sources::{BackedBy, ResolvedDataSource};
     use crate::cosmos::{CosmosBackend, InMemoryCosmos};
     use crate::mcp::expose::ExposeResolver;
 

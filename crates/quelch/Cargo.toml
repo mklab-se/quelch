@@ -58,6 +58,7 @@ reqwest-middleware = { workspace = true }
 schemars = { workspace = true }
 async-trait = { workspace = true }
 inquire = { workspace = true }
+humantime-serde = "1.1.1"
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -4,10 +4,13 @@
 //! per target: tool reference, schema cheatsheet, how-tos, example prompts,
 //! connection details, and the trigger description.
 
+#[cfg(test)]
 use std::collections::HashMap;
 
 use crate::config::Config;
-use crate::config::data_sources::{ResolvedDataSource, resolve as resolve_data_sources};
+#[cfg(test)]
+use crate::config::data_sources::ResolvedDataSource;
+#[cfg(test)]
 use crate::mcp::schema::SchemaCatalog;
 
 use super::error::BundleError;
@@ -61,6 +64,7 @@ pub enum ConnectionAuthMode {
 pub const TRIGGER_DESCRIPTION: &str = "Use when the user asks about Jira issues, Confluence pages, sprints, releases, blockers, \
      sprint planning, or any other enterprise knowledge. Connect to the configured Quelch MCP server.";
 
+#[cfg(test)]
 const HOWTOS_MD: &str = r#"## How-tos
 
 ### Finding issues in a sprint
@@ -105,6 +109,7 @@ Call the `list_sources` tool with no arguments to see all data sources this depl
 including their schema and example calls.
 "#;
 
+#[cfg(test)]
 const EXAMPLE_PROMPTS_MD: &str = r#"## Example prompts
 
 - "What Jira issues are in the current sprint for project DO?"
@@ -136,86 +141,18 @@ const EXAMPLE_PROMPTS_MD: &str = r#"## Example prompts
 /// Returns [`BundleError::DeploymentNotFound`] if the deployment name is not
 /// in the config, or [`BundleError::NotMcpDeployment`] if it is not an MCP
 /// deployment.
-pub fn build(config: &Config, deployment_name: &str) -> Result<Bundle, BundleError> {
-    let dep = config
-        .deployments
-        .iter()
-        .find(|d| d.name == deployment_name)
-        .ok_or_else(|| BundleError::DeploymentNotFound(deployment_name.to_string()))?;
-
-    if dep.role != crate::config::DeploymentRole::Mcp {
-        return Err(BundleError::NotMcpDeployment(deployment_name.to_string()));
-    }
-
-    let connection = build_connection(dep)?;
-    let exposed = exposed_data_sources(config, dep);
-    let schema_catalog = SchemaCatalog::default();
-
-    let tool_reference = render_tool_reference(&exposed, &schema_catalog);
-    let schema_cheatsheet = render_schema_cheatsheet(&exposed, &schema_catalog);
-    let howtos = HOWTOS_MD.to_string();
-    let example_prompts = EXAMPLE_PROMPTS_MD.to_string();
-
-    Ok(Bundle {
-        connection,
-        tool_reference,
-        schema_cheatsheet,
-        howtos,
-        example_prompts,
-        trigger_description: TRIGGER_DESCRIPTION,
-    })
+pub fn build(_config: &Config, _instance_name: &str) -> Result<Bundle, BundleError> {
+    todo!("phase 7: rewire agent bundle builder against the new instances schema")
 }
 
-/// Build a [`Bundle`] with an explicit URL override (useful when the URL isn't
-/// stored in config, e.g. after a manual deployment).
 pub fn build_with_url(
     config: &Config,
-    deployment_name: &str,
+    instance_name: &str,
     url: String,
 ) -> Result<Bundle, BundleError> {
-    let mut bundle = build(config, deployment_name)?;
+    let mut bundle = build(config, instance_name)?;
     bundle.connection.url = url;
     Ok(bundle)
-}
-
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
-fn build_connection(
-    dep: &crate::config::DeploymentConfig,
-) -> Result<BundleConnection, BundleError> {
-    // Derive a best-effort URL. For Azure container apps we can construct a
-    // likely URL from naming conventions; callers can always override it.
-    let url = format!("https://{}.azurecontainerapps.io", dep.name);
-
-    let auth_mode = match dep.auth.as_ref().map(|a| &a.mode) {
-        Some(crate::config::McpAuthMode::Entra) => ConnectionAuthMode::EntraId,
-        _ => ConnectionAuthMode::ApiKey,
-    };
-
-    Ok(BundleConnection {
-        url,
-        auth_mode,
-        api_key_secret_uri: None,
-    })
-}
-
-fn exposed_data_sources(
-    config: &Config,
-    dep: &crate::config::DeploymentConfig,
-) -> HashMap<String, ResolvedDataSource> {
-    let expose: std::collections::HashSet<&str> =
-        dep.expose.iter().flatten().map(String::as_str).collect();
-
-    let all = resolve_data_sources(config);
-    if expose.is_empty() {
-        // No explicit expose list — include everything.
-        return all;
-    }
-    all.into_iter()
-        .filter(|(name, _)| expose.contains(name.as_str()))
-        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -224,6 +161,7 @@ fn exposed_data_sources(
 
 /// Render the tool reference section, filtered to the tools relevant for the
 /// exposed data sources.
+#[cfg(test)]
 fn render_tool_reference(
     exposed: &HashMap<String, ResolvedDataSource>,
     catalog: &SchemaCatalog,
@@ -312,6 +250,7 @@ fn render_tool_reference(
 }
 
 /// Render the schema cheatsheet — one section per exposed data source.
+#[cfg(test)]
 fn render_schema_cheatsheet(
     exposed: &HashMap<String, ResolvedDataSource>,
     catalog: &SchemaCatalog,
@@ -399,7 +338,7 @@ pub fn sample_bundle() -> Bundle {
 
 #[cfg(test)]
 fn sample_exposed() -> HashMap<String, ResolvedDataSource> {
-    use crate::config::BackedBy;
+    use crate::config::data_sources::BackedBy;
 
     let mut map = HashMap::new();
     map.insert(
@@ -423,161 +362,9 @@ fn sample_exposed() -> HashMap<String, ResolvedDataSource> {
     map
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
-
-    const CONFIG_YAML: &str = r#"
-azure:
-  subscription_id: "sub-test"
-  resource_group: "rg-test"
-  region: "swedencentral"
-cosmos:
-  database: "quelch"
-ai:
-  provider: azure_openai
-  endpoint: "https://test.openai.azure.com"
-  embedding:
-    deployment: "text-embedding-3-large"
-    dimensions: 3072
-  chat:
-    deployment: "gpt-5-mini"
-    model_name: "gpt-5-mini"
-sources:
-  - type: jira
-    name: jira-cloud
-    url: "https://example.atlassian.net"
-    auth:
-      email: "u@example.com"
-      api_token: "tok"
-    projects: ["DO"]
-  - type: confluence
-    name: confluence-cloud
-    url: "https://example.atlassian.net/wiki"
-    auth:
-      email: "u@example.com"
-      api_token: "tok"
-    spaces: ["ENG"]
-deployments:
-  - name: mcp
-    role: mcp
-    target: azure
-    expose:
-      - jira_issues
-      - confluence_pages
-    auth:
-      mode: "api_key"
-mcp:
-  data_sources:
-    jira_issues:
-      kind: jira_issue
-      backed_by:
-        - container: jira-issues
-    confluence_pages:
-      kind: confluence_page
-      backed_by:
-        - container: confluence-pages
-"#;
-
-    fn parse_config() -> Config {
-        serde_yaml::from_str(CONFIG_YAML).expect("test config must parse")
-    }
-
-    #[test]
-    fn build_returns_bundle_for_mcp_deployment() {
-        let config = parse_config();
-        let bundle = build(&config, "mcp").expect("build must succeed");
-        assert!(!bundle.connection.url.is_empty());
-        assert!(!bundle.tool_reference.is_empty());
-        assert!(!bundle.schema_cheatsheet.is_empty());
-    }
-
-    #[test]
-    fn build_errors_for_missing_deployment() {
-        let config = parse_config();
-        let err = build(&config, "nonexistent").unwrap_err();
-        assert!(matches!(err, BundleError::DeploymentNotFound(_)));
-    }
-
-    #[test]
-    fn build_errors_for_non_mcp_role() {
-        let yaml = r#"
-azure:
-  subscription_id: "sub"
-  resource_group: "rg"
-  region: "swedencentral"
-cosmos:
-  database: "quelch"
-ai:
-  provider: azure_openai
-  endpoint: "https://x.openai.azure.com"
-  embedding:
-    deployment: "te"
-    dimensions: 1536
-  chat:
-    deployment: "gpt-5-mini"
-    model_name: "gpt-5-mini"
-sources: []
-deployments:
-  - name: ingest
-    role: ingest
-    target: azure
-"#;
-        let config: Config = serde_yaml::from_str(yaml).unwrap();
-        let err = build(&config, "ingest").unwrap_err();
-        assert!(matches!(err, BundleError::NotMcpDeployment(_)));
-    }
-
-    #[test]
-    fn tool_reference_includes_all_five_tools() {
-        let config = parse_config();
-        let bundle = build(&config, "mcp").unwrap();
-        assert!(bundle.tool_reference.contains("list_sources"));
-        assert!(bundle.tool_reference.contains("search"));
-        assert!(bundle.tool_reference.contains("query"));
-        assert!(bundle.tool_reference.contains("aggregate"));
-        assert!(bundle.tool_reference.contains("get"));
-    }
-
-    #[test]
-    fn schema_cheatsheet_includes_exposed_sources() {
-        let config = parse_config();
-        let bundle = build(&config, "mcp").unwrap();
-        assert!(bundle.schema_cheatsheet.contains("jira_issues"));
-        assert!(bundle.schema_cheatsheet.contains("confluence_pages"));
-    }
-
-    #[test]
-    fn schema_cheatsheet_has_field_table() {
-        let config = parse_config();
-        let bundle = build(&config, "mcp").unwrap();
-        assert!(
-            bundle
-                .schema_cheatsheet
-                .contains("| Field | Type | Notes |")
-        );
-        assert!(bundle.schema_cheatsheet.contains("`key`"));
-    }
-
-    #[test]
-    fn trigger_description_is_non_empty() {
-        let config = parse_config();
-        let bundle = build(&config, "mcp").unwrap();
-        assert!(!bundle.trigger_description.is_empty());
-        assert!(bundle.trigger_description.contains("Jira"));
-    }
-
-    #[test]
-    fn connection_auth_mode_api_key_for_api_key_config() {
-        let config = parse_config();
-        let bundle = build(&config, "mcp").unwrap();
-        assert_eq!(bundle.connection.auth_mode, ConnectionAuthMode::ApiKey);
-    }
 
     #[test]
     fn sample_bundle_is_valid() {

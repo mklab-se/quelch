@@ -1,57 +1,27 @@
-//! `quelch dev` — all-in-one local development mode.
-//!
-//! Spins up the following components in one process:
-//! 1. A mock HTTP server exposing the Jira DC and Confluence DC REST APIs,
-//!    populated with the built-in fixture dataset from `mock::data`.
-//! 2. An ingest worker that reads from those mock servers and writes to an
-//!    in-memory Cosmos backend.
-//! 3. An MCP server backed by the same in-memory Cosmos backend.
-//! 4. Optionally, the fleet-dashboard TUI (default: enabled).
-//!
-//! This lets a developer iterate on the full stack without any cloud accounts.
-
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
 use tracing::info;
 
-use crate::config::schema::{
-    AzureConfig, CompanionContainersConfig, DeploymentAuthConfig, NamingConfig,
-};
 use crate::config::{
-    AiChatConfig, AiConfig, AiEmbeddingConfig, AiProvider, AuthConfig, Config, CosmosConfig,
-    DeploymentConfig, DeploymentRole, DeploymentSource, DeploymentTarget, IngestConfig,
-    JiraSourceConfig, McpAuthMode, McpConfig, OutputMode, ReasoningEffort, RiggConfig,
-    SearchConfig, SourceConfig, StateConfig,
+    AiChat, AiConfig, AiEmbedding, AiProvider, AzureConfig, Config, ContainerLayout, CosmosConfig,
+    IngestInstance, InstanceConfig, InstanceSpec, McpInstance, SearchConfig, SourceAuth,
+    SourceConnection, SourceType,
 };
 use crate::cosmos::{CosmosBackend, InMemoryCosmos};
 use crate::ingest::config::CycleConfig;
 use crate::ingest::connector_kind::AnyConnector;
 use crate::ingest::worker::{WorkerOptions, run_with};
 
-// ---------------------------------------------------------------------------
-// Options
-// ---------------------------------------------------------------------------
-
-/// Options for `quelch dev`.
 #[derive(Debug)]
 pub struct DevOptions {
-    /// Use the real Azure AI Search adapter (requires Azure credentials).
-    /// Default: false (use no-op in-memory mock).
     pub use_real_search: bool,
-    /// Use the Cosmos emulator at `https://localhost:8081` instead of in-memory.
-    /// Default: false.
     pub use_cosmos_emulator: bool,
-    /// Port for the embedded MCP server. Default: 8080.
     pub mcp_port: u16,
-    /// Optional RNG seed for the fixture dataset (reserved for future use).
     pub seed: Option<u64>,
-    /// Activity rate multiplier (reserved for future use).
     pub rate_multiplier: f64,
-    /// Skip the TUI; emit structured logs to stdout instead.
     pub no_tui: bool,
-    /// Run one ingest cycle and exit.  Useful for tests.
     pub once: bool,
 }
 
@@ -69,43 +39,26 @@ impl Default for DevOptions {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Entry point
-// ---------------------------------------------------------------------------
-
-/// Run the all-in-one local development server.
-///
-/// # Shutdown
-///
-/// - Without `--no-tui`: exits when the user presses `q` / `Esc` in the TUI.
-/// - With `--no-tui` and without `--once`: waits for Ctrl-C.
-/// - With `--once`: runs exactly one ingest cycle then exits.
 pub async fn run(options: DevOptions) -> Result<()> {
     let cancel = tokio_util::sync::CancellationToken::new();
 
-    // 1. Start the mock Jira + Confluence server on a random port.
     let mock_base_url = start_mock_server(cancel.clone()).await?;
     let mock_jira_url = format!("{mock_base_url}/jira");
     let mock_confluence_url = format!("{mock_base_url}/confluence");
 
     info!(%mock_jira_url, %mock_confluence_url, "dev mock servers started");
 
-    // 2. Build the in-memory Cosmos backend shared between ingest and MCP.
-    //    `InMemoryCosmos` is `Clone`; all clones share the same `Arc<Mutex<...>>`.
     let cosmos = if options.use_cosmos_emulator {
-        None // handled below
+        None
     } else {
         Some(InMemoryCosmos::new())
     };
 
-    // Build the shared Arc<dyn CosmosBackend> for MCP / TUI, and a Box for ingest.
     let (mcp_cosmos, ingest_cosmos_box): (Arc<dyn CosmosBackend>, Box<dyn CosmosBackend>) =
         if options.use_cosmos_emulator {
             let endpoint = "https://localhost:8081".to_string();
             let client = crate::cosmos::CosmosClient::new(&endpoint, "quelch").await?;
             let arc: Arc<dyn CosmosBackend> = Arc::new(client);
-            // For the emulator, ingest and MCP cannot easily share a single backend
-            // without cloning.  Use a second connection for ingest.
             let client2 = crate::cosmos::CosmosClient::new(&endpoint, "quelch").await?;
             (arc, Box::new(client2))
         } else {
@@ -115,14 +68,11 @@ pub async fn run(options: DevOptions) -> Result<()> {
             (arc, boxed)
         };
 
-    // 3. Build a synthetic config.
     let config = build_dev_config(&mock_jira_url, &mock_confluence_url, options.mcp_port);
 
-    // 4. Build ingest connectors from the config.
     let connectors = build_dev_connectors(&config)?;
     let cycle_cfg = CycleConfig::from_config(&config, "dev-ingest");
 
-    // 5. Spawn the ingest worker.
     let worker_options = WorkerOptions {
         once: options.once,
         max_docs: None,
@@ -143,7 +93,6 @@ pub async fn run(options: DevOptions) -> Result<()> {
         }
     });
 
-    // 6. Spawn the MCP server.
     let mcp_port = options.mcp_port;
     let mcp_cosmos_clone = mcp_cosmos.clone();
     let mcp_config = config.clone();
@@ -166,11 +115,8 @@ pub async fn run(options: DevOptions) -> Result<()> {
         }
     });
 
-    // 7. Run the TUI, or wait for signal/once.
     if options.once {
-        // Wait for the ingest worker to finish (one cycle).
         let _ = ingest_handle.await;
-        // Give the MCP server a moment to accept connections before cancelling.
         tokio::time::sleep(Duration::from_millis(200)).await;
     } else if options.no_tui {
         info!(
@@ -183,20 +129,12 @@ pub async fn run(options: DevOptions) -> Result<()> {
             .await?;
     }
 
-    // 8. Graceful shutdown.
     cancel.cancel();
     let _ = mcp_handle.await;
 
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Mock server startup
-// ---------------------------------------------------------------------------
-
-/// Start the mock Jira/Confluence server on a random OS-assigned port.
-///
-/// Returns the base URL (e.g. `http://127.0.0.1:54321`).
 async fn start_mock_server(cancel: tokio_util::sync::CancellationToken) -> Result<String> {
     use std::net::SocketAddr;
 
@@ -223,121 +161,81 @@ async fn start_mock_server(cancel: tokio_util::sync::CancellationToken) -> Resul
     Ok(url)
 }
 
-// ---------------------------------------------------------------------------
-// Synthetic config
-// ---------------------------------------------------------------------------
-
 fn build_dev_config(mock_jira_url: &str, mock_confluence_url: &str, _mcp_port: u16) -> Config {
-    use crate::config::ConfluenceSourceConfig;
-
     Config {
         azure: AzureConfig {
-            subscription_id: "dev-subscription".into(),
-            resource_group: "dev-rg".into(),
-            region: "swedencentral".into(),
-            naming: NamingConfig::default(),
-            skip_role_assignments: true,
-            resources: crate::config::AzureExistingResources::default(),
-        },
-        cosmos: CosmosConfig {
-            account: None,
-            account_resource_group: None,
-            database: "quelch".into(),
-            containers: Default::default(),
-            meta_container: "quelch-meta".into(),
-            throughput: Default::default(),
-        },
-        search: SearchConfig::default(),
-        ai: AiConfig {
-            provider: AiProvider::AzureOpenai,
-            endpoint: "https://dev.openai.azure.com".into(),
-            resource_group: None,
-            embedding: AiEmbeddingConfig {
-                deployment: "dev-te".into(),
-                dimensions: 1536,
+            cosmos: CosmosConfig {
+                subscription_id: None,
+                resource_group: None,
+                account: None,
+                endpoint: "https://dev-cosmos.example".into(),
+                database: "quelch".into(),
+                containers: ContainerLayout::default(),
+                meta_container: "quelch-meta".into(),
             },
-            chat: AiChatConfig {
-                deployment: "gpt-5-mini".into(),
-                model_name: "gpt-5-mini".into(),
-                retrieval_reasoning_effort: ReasoningEffort::Low,
-                output_mode: OutputMode::AnswerSynthesis,
-            },
+            search: Some(SearchConfig {
+                endpoint: "https://dev-search.example".into(),
+            }),
+            ai: Some(AiConfig {
+                provider: AiProvider::AzureOpenai,
+                endpoint: "https://dev.openai.azure.com".into(),
+                embedding: AiEmbedding {
+                    deployment: "dev-te".into(),
+                    dimensions: 1536,
+                },
+                chat: AiChat {
+                    deployment: "gpt-5-mini".into(),
+                    model_name: "gpt-5-mini".into(),
+                },
+            }),
         },
-        sources: vec![
-            SourceConfig::Jira(JiraSourceConfig {
+        source_connections: vec![
+            SourceConnection {
                 name: "dev-jira".into(),
-                url: mock_jira_url.into(),
-                auth: AuthConfig::DataCenter {
-                    pat: crate::mock::MOCK_TOKEN.into(),
+                source_type: SourceType::Jira,
+                base_url: mock_jira_url.into(),
+                auth: SourceAuth::Pat {
+                    token: crate::mock::MOCK_TOKEN.into(),
                 },
                 projects: vec!["QUELCH".into(), "DEMO".into()],
-                container: None,
-                companion_containers: CompanionContainersConfig::default(),
-                fields: Default::default(),
-            }),
-            SourceConfig::Confluence(ConfluenceSourceConfig {
-                name: "dev-confluence".into(),
-                url: mock_confluence_url.into(),
-                auth: AuthConfig::DataCenter {
-                    pat: crate::mock::MOCK_TOKEN.into(),
-                },
-                spaces: vec!["QUELCH".into(), "INFRA".into()],
-                container: None,
-                companion_containers: CompanionContainersConfig::default(),
-            }),
-        ],
-        ingest: IngestConfig {
-            poll_interval: "10s".into(),
-            safety_lag_minutes: 0,
-            ..IngestConfig::default()
-        },
-        deployments: vec![
-            DeploymentConfig {
-                name: "dev-ingest".into(),
-                role: DeploymentRole::Ingest,
-                target: DeploymentTarget::Onprem,
-                sources: Some(vec![
-                    DeploymentSource {
-                        source: "dev-jira".into(),
-                        projects: None,
-                        spaces: None,
-                    },
-                    DeploymentSource {
-                        source: "dev-confluence".into(),
-                        projects: None,
-                        spaces: None,
-                    },
-                ]),
-                expose: None,
-                azure: None,
-                auth: None,
+                spaces: Vec::new(),
             },
-            DeploymentConfig {
+            SourceConnection {
+                name: "dev-confluence".into(),
+                source_type: SourceType::Confluence,
+                base_url: mock_confluence_url.into(),
+                auth: SourceAuth::Pat {
+                    token: crate::mock::MOCK_TOKEN.into(),
+                },
+                projects: Vec::new(),
+                spaces: vec!["QUELCH".into(), "INFRA".into()],
+            },
+        ],
+        instances: vec![
+            InstanceConfig {
+                name: "dev-ingest".into(),
+                spec: InstanceSpec::Ingest(IngestInstance {
+                    connections: vec!["dev-jira".into(), "dev-confluence".into()],
+                    cycle_interval: Duration::from_secs(10),
+                }),
+            },
+            InstanceConfig {
                 name: "dev-mcp".into(),
-                role: DeploymentRole::Mcp,
-                target: DeploymentTarget::Onprem,
-                sources: None,
-                expose: Some(vec![
-                    "jira_issues".into(),
-                    "confluence_pages".into(),
-                    "jira_sprints".into(),
-                    "confluence_spaces".into(),
-                ]),
-                azure: None,
-                auth: Some(DeploymentAuthConfig {
-                    mode: McpAuthMode::ApiKey,
+                spec: InstanceSpec::Mcp(McpInstance {
+                    expose: vec![
+                        "jira_issues".into(),
+                        "confluence_pages".into(),
+                        "jira_sprints".into(),
+                        "confluence_spaces".into(),
+                    ],
+                    api_key: "dev".into(),
+                    knowledge_base: "dev-kb".into(),
+                    listen: "0.0.0.0:8080".into(),
                 }),
             },
         ],
-        mcp: McpConfig::default(),
-        rigg: RiggConfig::default(),
-        state: StateConfig::default(),
     }
 }
-
-// ---------------------------------------------------------------------------
-// Connector builder
-// ---------------------------------------------------------------------------
 
 fn build_dev_connectors(
     config: &Config,
@@ -345,40 +243,38 @@ fn build_dev_connectors(
     use crate::cosmos::meta::CursorKey;
     use crate::ingest::rate_limit::build_rate_limited_client;
 
-    let sliced = crate::config::slice::for_deployment(config, "dev-ingest")?;
-    let http = build_rate_limited_client(reqwest::Client::new(), sliced.ingest.max_retries);
-    let dep = sliced
-        .deployments
-        .first()
-        .expect("slice guarantees one dep");
+    let sliced = crate::config::slice::slice_for_instance(config, "dev-ingest")?;
+    let http = build_rate_limited_client(reqwest::Client::new(), 5);
+    let dep = sliced.instances.first().expect("slice guarantees one inst");
     let mut out: Vec<(CursorKey, AnyConnector)> = Vec::new();
 
-    for src_config in &sliced.sources {
-        match src_config {
-            SourceConfig::Jira(j) => {
-                let connector = crate::sources::jira::JiraConnector::new(j, http.clone())
-                    .map_err(|e| anyhow::anyhow!("build JiraConnector '{}': {e}", j.name))?;
-                for project in &j.projects {
+    for conn in &sliced.source_connections {
+        match conn.source_type {
+            SourceType::Jira => {
+                let connector = crate::sources::jira::JiraConnector::new(conn, http.clone())
+                    .map_err(|e| anyhow::anyhow!("build JiraConnector '{}': {e}", conn.name))?;
+                for project in &conn.projects {
                     out.push((
                         CursorKey {
                             deployment_name: dep.name.clone(),
-                            source_name: j.name.clone(),
+                            source_name: conn.name.clone(),
                             subsource: project.clone(),
                         },
                         AnyConnector::Jira(connector.clone()),
                     ));
                 }
             }
-            SourceConfig::Confluence(c) => {
+            SourceType::Confluence => {
                 let connector =
-                    crate::sources::confluence::ConfluenceConnector::new(c, http.clone()).map_err(
-                        |e| anyhow::anyhow!("build ConfluenceConnector '{}': {e}", c.name),
-                    )?;
-                for space in &c.spaces {
+                    crate::sources::confluence::ConfluenceConnector::new(conn, http.clone())
+                        .map_err(|e| {
+                            anyhow::anyhow!("build ConfluenceConnector '{}': {e}", conn.name)
+                        })?;
+                for space in &conn.spaces {
                     out.push((
                         CursorKey {
                             deployment_name: dep.name.clone(),
-                            source_name: c.name.clone(),
+                            source_name: conn.name.clone(),
                             subsource: space.clone(),
                         },
                         AnyConnector::Confluence(connector.clone()),
@@ -391,27 +287,24 @@ fn build_dev_connectors(
     Ok(out)
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::InstanceKind;
 
     #[test]
-    fn build_dev_config_has_expected_deployments() {
+    fn build_dev_config_has_expected_instances() {
         let cfg = build_dev_config(
             "http://127.0.0.1:9999/jira",
             "http://127.0.0.1:9999/confluence",
             8080,
         );
-        assert_eq!(cfg.deployments.len(), 2);
-        assert_eq!(cfg.deployments[0].name, "dev-ingest");
-        assert_eq!(cfg.deployments[0].role, DeploymentRole::Ingest);
-        assert_eq!(cfg.deployments[1].name, "dev-mcp");
-        assert_eq!(cfg.deployments[1].role, DeploymentRole::Mcp);
-        assert_eq!(cfg.sources.len(), 2);
+        assert_eq!(cfg.instances.len(), 2);
+        assert_eq!(cfg.instances[0].name, "dev-ingest");
+        assert_eq!(cfg.instances[0].kind(), InstanceKind::Ingest);
+        assert_eq!(cfg.instances[1].name, "dev-mcp");
+        assert_eq!(cfg.instances[1].kind(), InstanceKind::Mcp);
+        assert_eq!(cfg.source_connections.len(), 2);
     }
 
     #[test]
@@ -421,53 +314,12 @@ mod tests {
             "http://127.0.0.1:9999/confluence",
             8080,
         );
-        let names: Vec<&str> = cfg.sources.iter().map(|s| s.name()).collect();
+        let names: Vec<&str> = cfg
+            .source_connections
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
         assert!(names.contains(&"dev-jira"));
         assert!(names.contains(&"dev-confluence"));
-    }
-
-    /// End-to-end smoke test: spin up dev mode with `once = true`, verify the
-    /// MCP server responds.
-    ///
-    /// Marked `#[ignore]` because it is timing-sensitive and requires port
-    /// availability. Run manually with:
-    ///   cargo test -p quelch dev_mode_e2e -- --ignored --nocapture
-    #[tokio::test]
-    #[ignore]
-    async fn dev_mode_e2e_once() {
-        // Find a free port.
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        drop(listener);
-
-        let options = DevOptions {
-            mcp_port: port,
-            no_tui: true,
-            once: true,
-            ..Default::default()
-        };
-
-        let handle = tokio::spawn(run(options));
-
-        // Give dev a moment to start and run one cycle.
-        tokio::time::sleep(Duration::from_secs(4)).await;
-
-        let resp = reqwest::Client::new()
-            .post(format!("http://127.0.0.1:{port}/mcp"))
-            .json(&serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/list",
-                "params": {}
-            }))
-            .send()
-            .await
-            .expect("MCP server must respond");
-        assert_eq!(resp.status(), 200);
-
-        handle
-            .await
-            .expect("dev run must complete")
-            .expect("dev run must not error");
     }
 }

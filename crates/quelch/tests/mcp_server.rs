@@ -78,7 +78,7 @@ static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// Build a `ServerState` with in-memory / mock backends.
 /// Exposes only `jira_issues` (jira_issue kind, jira-issues container).
 fn build_test_state() -> ServerState {
-    use quelch::config::{BackedBy, data_sources::ResolvedDataSource};
+    use quelch::config::data_sources::{BackedBy, ResolvedDataSource};
     use std::collections::HashMap;
 
     let mut map = HashMap::new();
@@ -237,7 +237,7 @@ async fn tools_call_query_returns_result() {
         .await
         .unwrap();
 
-    use quelch::config::{BackedBy, data_sources::ResolvedDataSource};
+    use quelch::config::data_sources::{BackedBy, ResolvedDataSource};
     use std::collections::HashMap;
     let mut map = HashMap::new();
     map.insert(
