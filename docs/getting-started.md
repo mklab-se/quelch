@@ -174,25 +174,32 @@ Stop the local ingest when you're satisfied (`Ctrl-C`).
 
 ## 5. Test Q-MCP locally
 
-Q-MCP needs an API key for agent authentication. Generate one:
+Q-MCP needs an API key for agent authentication. The env-var **name** was decided during `quelch init` — open `quelch.yaml`, find the `mcp-prod` instance, and look at the `api_key:` field; it will read something like `api_key: ${MCP_PROD_API_KEY}`. The wizard derives the default from the instance name (`mcp-prod` → `MCP_PROD_API_KEY`), but you may have chosen a different name. The rest of this section uses `MCP_PROD_API_KEY` as a stand-in — substitute whatever your yaml references.
+
+Generate the **value** once and reuse it everywhere — Q-MCP and the agent / `curl` test must present the matching string:
 
 ```bash
-export QUELCH_MCP_API_KEY="$(openssl rand -base64 32)"
+export MCP_PROD_API_KEY="$(openssl rand -base64 32)"
+echo "$MCP_PROD_API_KEY"   # note this value — you'll re-export it in any other shell that talks to Q-MCP
 ```
+
+> Re-running `openssl rand …` produces a **new** key each time. If you do that in a second terminal, your `curl` will fail with `unauthenticated`.
 
 (See [api-key.md](api-key.md) for the longer story — generation, storage, rotation, secret-store integration.)
 
-Start Q-MCP:
+Start Q-MCP in the current terminal:
 
 ```bash
 quelch mcp --config quelch.yaml --instance mcp-prod
 ```
 
-By default it listens on `0.0.0.0:8080`. Confirm connectivity from another terminal:
+By default it listens on `0.0.0.0:8080`. From another terminal, export the **same** value (paste the string you noted above) and confirm connectivity:
 
 ```bash
+export MCP_PROD_API_KEY=<paste the value from above>
+
 curl -X POST http://127.0.0.1:8080/mcp \
-  -H "Authorization: Bearer $QUELCH_MCP_API_KEY" \
+  -H "Authorization: Bearer $MCP_PROD_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 ```
@@ -311,12 +318,12 @@ Same shape as step 7:
 quelch instance config mcp-prod --kind mcp --output q-mcp.yaml
 ```
 
-The slimmed config contains the Cosmos and AI Search endpoints, the MCP listen address, and an `api_key: ${QUELCH_MCP_API_KEY}` env-var reference. No source connections (Q-MCP doesn't pull from sources).
+The slimmed config contains the Cosmos and AI Search endpoints, the MCP listen address, and an `api_key: ${...}` env-var reference (the name your wizard chose for this instance — typically `MCP_PROD_API_KEY` for an instance named `mcp-prod`). No source connections (Q-MCP doesn't pull from sources).
 
 On the host:
 
 1. Copy `q-mcp.yaml` over.
-2. Generate an API key per [docs/api-key.md](api-key.md) (`openssl rand -base64 32`) and put it in the host's secret store as `QUELCH_MCP_API_KEY`.
+2. Generate an API key per [docs/api-key.md](api-key.md) (`openssl rand -base64 32`) and put it in the host's secret store under the env-var name your `q-mcp.yaml` references in `api_key:`.
 3. Run:
    ```bash
    quelch mcp --config q-mcp.yaml

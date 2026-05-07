@@ -335,6 +335,8 @@ async fn cmd_validate(config_path: &Path) -> Result<()> {
     for instance in &config.instances {
         println!("    - {} ({:?})", instance.name, instance.kind());
     }
+    println!();
+    println!("Run `quelch azure plan` to verify Azure-side state (Cosmos + AI Search).");
 
     Ok(())
 }

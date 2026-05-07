@@ -234,10 +234,7 @@ impl RiggClientAdapter {
 
 impl RiggApiAdapter for RiggClientAdapter {
     async fn list_resources(&self, kind: ResourceKind) -> Result<Vec<JsonValue>, anyhow::Error> {
-        self.client
-            .list(kind)
-            .await
-            .map_err(|e| anyhow::anyhow!("{e}"))
+        self.client.list(kind).await.map_err(format_rigg_err)
     }
 
     async fn upsert_resource(
@@ -250,8 +247,42 @@ impl RiggApiAdapter for RiggClientAdapter {
             .create_or_update(kind, name, body)
             .await
             .map(|_| ())
-            .map_err(|e| anyhow::anyhow!("{e}"))
+            .map_err(format_rigg_err)
     }
+}
+
+/// Wrap a `rigg-client` error into an `anyhow::Error` with the client's
+/// suggested remediation appended, plus a quelch-tailored line for the most
+/// common failure (403 Forbidden — RBAC misconfigured on the AI Search
+/// service).
+///
+/// Without this, the typed `ClientError` collapses to its `Display` text
+/// when crossing the `anyhow::Error` boundary and the user only sees
+/// `Access denied (403 Forbidden): foo.search.windows.net` — true, but
+/// not enough to act on.
+fn format_rigg_err(e: rigg_client::ClientError) -> anyhow::Error {
+    let mut msg = format!("{e}\n\nSuggested fix:\n{}", e.suggestion());
+    if let rigg_client::ClientError::Forbidden { service, .. } = &e
+        && let Some(name) = service.split('.').next()
+        && !name.is_empty()
+    {
+        msg.push_str(&format!(
+            "\n\nFor your service '{name}', the concrete commands are:\n  \
+             az search service update \\\n    \
+             --name {name} --resource-group <RG> \\\n    \
+             --auth-options aadOrApiKey\n  \
+             az role assignment create \\\n    \
+             --assignee \"$(az ad signed-in-user show --query id -o tsv)\" \\\n    \
+             --role \"Search Service Contributor\" \\\n    \
+             --scope $(az search service show --name {name} --resource-group <RG> --query id -o tsv)\n  \
+             az role assignment create \\\n    \
+             --assignee \"$(az ad signed-in-user show --query id -o tsv)\" \\\n    \
+             --role \"Search Index Data Contributor\" \\\n    \
+             --scope $(az search service show --name {name} --resource-group <RG> --query id -o tsv)\n\
+             (substitute <RG> for the resource group hosting the search service)"
+        ));
+    }
+    anyhow::anyhow!("{msg}")
 }
 
 // ---------------------------------------------------------------------------
@@ -647,6 +678,53 @@ pub mod tests {
         assert!(s.contains("= data_sources/b"), "{s}");
         assert!(s.contains("~ skillsets/c"), "{s}");
         assert!(s.contains("fields.0.searchable: false → true"), "{s}");
+    }
+
+    #[test]
+    fn format_rigg_err_appends_suggestion_for_forbidden() {
+        let e = rigg_client::ClientError::Forbidden {
+            service: "flir-ai-search.search.windows.net".to_string(),
+            message: "Access denied".to_string(),
+            body: String::new(),
+        };
+        let wrapped = format_rigg_err(e);
+        let s = format!("{wrapped:#}");
+        // Original rigg-client display text is preserved.
+        assert!(
+            s.contains("403 Forbidden"),
+            "preserves the original error: {s}"
+        );
+        // Generic rigg suggestion block is appended.
+        assert!(s.contains("Suggested fix:"), "appends suggestion: {s}");
+        assert!(
+            s.contains("aadOrApiKey"),
+            "includes RBAC enablement hint: {s}"
+        );
+        // Quelch-specific tailored block uses the service name extracted
+        // from the error.
+        assert!(
+            s.contains("flir-ai-search"),
+            "substitutes the service name: {s}"
+        );
+        assert!(
+            s.contains("Search Service Contributor"),
+            "includes role assignment commands: {s}"
+        );
+        assert!(
+            s.contains("Search Index Data Contributor"),
+            "includes data-plane role: {s}"
+        );
+    }
+
+    #[test]
+    fn format_rigg_err_appends_suggestion_for_non_forbidden() {
+        let e = rigg_client::ClientError::Auth(rigg_client::auth::AuthError::NotLoggedIn);
+        let wrapped = format_rigg_err(e);
+        let s = format!("{wrapped:#}");
+        assert!(s.contains("Suggested fix:"), "{s}");
+        assert!(s.contains("az login"), "{s}");
+        // No tailored Forbidden block for a non-403 error.
+        assert!(!s.contains("Search Service Contributor"), "{s}");
     }
 
     #[test]

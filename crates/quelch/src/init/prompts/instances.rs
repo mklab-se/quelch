@@ -161,8 +161,11 @@ fn prompt_mcp_instance(
         .with_initial_value("0.0.0.0:8080")
         .prompt()?;
 
-    let knowledge_base: String = inquire::Text::new("  Knowledge Base name (rigg + AI Search):")
+    let knowledge_base: String = inquire::Text::new("  Knowledge Base name:")
         .with_initial_value("quelch-prod-kb")
+        .with_help_message(
+            "Used by the MCP `search` tool; created in Azure AI Search by `quelch azure apply`.",
+        )
         .prompt()?;
 
     Ok(InstanceConfig {
